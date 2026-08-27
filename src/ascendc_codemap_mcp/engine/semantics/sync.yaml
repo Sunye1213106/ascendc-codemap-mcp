@@ -1,0 +1,202 @@
+# AscendC / CANN synchronization primitives.
+# Catalog aligned with public tikcfw interface headers + CCE intrinsics ops actually call.
+# Engine for HardEvent Set/Wait is resolved at the call site from HardEvent::SRC_DST
+# (see ascendc_sync.py); YAML default UNKNOWN means "resolve from template".
+version: ascendc-semantic-registry/v1
+ops:
+  # --- HardEvent pipe sync (kernel_operator_block_sync_intf.h) ---
+  SetFlag:
+    category: sync_signal
+    engine: UNKNOWN
+    confidence: confirmed
+    mechanism: hard_event
+  WaitFlag:
+    category: sync_wait
+    engine: UNKNOWN
+    confidence: confirmed
+    mechanism: hard_event
+
+  # --- Same-pipe / all-pipe barriers ---
+  PipeBarrier:
+    category: sync_barrier
+    engine: UNKNOWN
+    confidence: confirmed
+    mechanism: barrier
+  DataSyncBarrier:
+    category: sync_barrier
+    engine: UNKNOWN
+    confidence: confirmed
+    mechanism: barrier
+  SyncAll:
+    category: sync_barrier
+    engine: ALL
+    confidence: confirmed
+    mechanism: barrier
+
+  # --- Cross-core (AIC↔AIV) ---
+  CrossCoreSetFlag:
+    category: sync_signal
+    engine: UNKNOWN
+    confidence: confirmed
+    mechanism: cross_core
+  CrossCoreWaitFlag:
+    category: sync_wait
+    engine: UNKNOWN
+    confidence: confirmed
+    mechanism: cross_core
+
+  # --- Inter-block (IB) ---
+  IBSet:
+    category: sync_signal
+    engine: UNKNOWN
+    confidence: confirmed
+    mechanism: inter_block
+  IBWait:
+    category: sync_wait
+    engine: UNKNOWN
+    confidence: confirmed
+    mechanism: inter_block
+
+  # --- Mutex (dav_3510 / arch35) — AscendC::Mutex / AllocMutexID ---
+  AllocMutexID:
+    category: sync_signal
+    engine: UNKNOWN
+    confidence: confirmed
+    mechanism: mutex
+  ReleaseMutexID:
+    category: sync_wait
+    engine: UNKNOWN
+    confidence: confirmed
+    mechanism: mutex
+  Lock:
+    category: sync_signal
+    engine: UNKNOWN
+    confidence: confirmed
+    mechanism: mutex
+  Unlock:
+    category: sync_wait
+    engine: UNKNOWN
+    confidence: confirmed
+    mechanism: mutex
+
+  # Queue-side sync (kernel_operator_block_sync_intf.h TQueSync).
+  TQueSync:
+    category: sync_barrier
+    engine: UNKNOWN
+    confidence: confirmed
+    mechanism: queue_sync
+
+  # --- Determine-compute block handshake ---
+  InitDetermineComputeWorkspace:
+    category: sync_signal
+    engine: UNKNOWN
+    confidence: confirmed
+    mechanism: determine_compute
+  WaitPreBlock:
+    category: sync_wait
+    engine: UNKNOWN
+    confidence: confirmed
+    mechanism: determine_compute
+  NotifyNextBlock:
+    category: sync_signal
+    engine: UNKNOWN
+    confidence: confirmed
+    mechanism: determine_compute
+
+  # --- SuperKernel task handshake (kernel_operator_common_intf.h) ---
+  SetNextTaskStart:
+    category: sync_signal
+    engine: UNKNOWN
+    confidence: confirmed
+    mechanism: superkernel
+  WaitPreTaskEnd:
+    category: sync_wait
+    engine: UNKNOWN
+    confidence: confirmed
+    mechanism: superkernel
+
+  # --- TPipe event-id pool (kernel_tpipe.h) ---
+  AllocEventID:
+    category: sync_signal
+    engine: UNKNOWN
+    confidence: confirmed
+    mechanism: tpipe
+    receiver: pipe
+  ReleaseEventID:
+    category: sync_wait
+    engine: UNKNOWN
+    confidence: confirmed
+    mechanism: tpipe
+    receiver: pipe
+  FetchEventID:
+    category: sync_signal
+    engine: UNKNOWN
+    confidence: confirmed
+    mechanism: tpipe
+    receiver: pipe
+  AllocCrossSyncId:
+    category: sync_signal
+    engine: UNKNOWN
+    confidence: confirmed
+    mechanism: tpipe
+    receiver: pipe
+  GetTPipePtr:
+    category: sync_signal
+    engine: UNKNOWN
+    confidence: confirmed
+    mechanism: tpipe
+
+  # --- Reg / MicroAPI membar ---
+  LocalMemBar:
+    category: sync_barrier
+    engine: VECTOR
+    confidence: confirmed
+    mechanism: membar
+
+  # --- GroupBarrier (core_mng/roc) — Arrive only; Wait is not a short-name root ---
+  Arrive:
+    category: sync_signal
+    engine: UNKNOWN
+    confidence: confirmed
+    mechanism: group_barrier
+
+  # --- SIMT ---
+  asc_syncthreads:
+    category: sync_barrier
+    engine: UNKNOWN
+    confidence: confirmed
+    mechanism: simt
+  asc_threadfence:
+    category: sync_barrier
+    engine: UNKNOWN
+    confidence: confirmed
+    mechanism: simt
+  asc_threadfence_block:
+    category: sync_barrier
+    engine: UNKNOWN
+    confidence: confirmed
+    mechanism: simt
+
+  # --- CCE hardware intrinsics (CrossCore / SyncAll lowering) ---
+  ffts_cross_core_sync:
+    category: sync_signal
+    engine: UNKNOWN
+    confidence: confirmed
+    mechanism: cross_core
+  wait_flag_dev:
+    category: sync_wait
+    engine: UNKNOWN
+    confidence: confirmed
+    mechanism: cross_core
+
+  # Legacy spelled aliases still seen in some ops / generated code.
+  SetFlag_PIPE_MTE2_TO_PIPE_V:
+    category: sync_signal
+    engine: MTE
+    confidence: partial
+    mechanism: hard_event
+  WaitFlag_PIPE_MTE2_TO_PIPE_V:
+    category: sync_wait
+    engine: VECTOR
+    confidence: partial
+    mechanism: hard_event

@@ -1,0 +1,84 @@
+# AscendC memory / transfer primitives (architecture-neutral roles).
+version: ascendc-semantic-registry/v1
+ops:
+  DataCopy:
+    category: memory_transfer
+    engine: MTE
+    confidence: confirmed
+    args:
+      "0": write_buffer
+      "1": read_buffer
+  DataCopyPad:
+    category: memory_transfer
+    engine: MTE
+    confidence: confirmed
+    args:
+      "0": write_buffer
+      "1": read_buffer
+  Copy:
+    category: memory_transfer
+    engine: MTE
+    confidence: partial
+    args:
+      "0": write_buffer
+      "1": read_buffer
+  InitGlobalMemory:
+    category: memory_init
+    engine: MTE
+    confidence: confirmed
+    args:
+      "0": write_buffer
+  SetAtomicAdd:
+    category: memory_atomic
+    engine: MTE
+    confidence: confirmed
+  SetAtomicNone:
+    category: memory_atomic
+    engine: MTE
+    confidence: confirmed
+  SetAtomicType:
+    category: memory_atomic
+    engine: MTE
+    confidence: partial
+  SetGlobalBuffer:
+    category: memory_init
+    engine: UNKNOWN
+    confidence: confirmed
+    receiver: write
+  GetPhyAddr:
+    category: buffer_view
+    engine: UNKNOWN
+    confidence: confirmed
+    receiver: read
+  InitOutput:
+    category: memory_init
+    engine: MTE
+    confidence: confirmed
+    args:
+      "0": write_buffer
+  DataCopyScatter:
+    category: memory_transfer
+    engine: MTE
+    confidence: confirmed
+    args:
+      "0": write_buffer
+      "1": read_buffer
+  PopStackBuffer:
+    category: buffer_acquire
+    engine: UNKNOWN
+    confidence: confirmed
+    mechanism: stack
+    # CANN leftover UB after TQue (kernel_pop_stack_buffer.h). No InitBuffer.
+    args:
+      "0": write_buffer
+  InitShareBufStart:
+    category: buffer_init
+    engine: UNKNOWN
+    confidence: confirmed
+    mechanism: share
+    # CANN free function (kernel_tpipe.h). Shared UB between cores; not InitBuffer.
+  InitShareBufEnd:
+    category: buffer_init
+    engine: UNKNOWN
+    confidence: confirmed
+    mechanism: share

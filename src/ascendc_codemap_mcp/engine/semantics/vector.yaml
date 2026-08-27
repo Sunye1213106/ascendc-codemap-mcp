@@ -1,0 +1,99 @@
+# AscendC vector compute primitives (non-exhaustive; extend by CANN version).
+version: ascendc-semantic-registry/v1
+ops:
+  Exp:
+    category: vector_compute
+    engine: VECTOR
+    confidence: confirmed
+    args:
+      "0": write_buffer
+      "1": read_buffer
+  Abs:
+    category: vector_compute
+    engine: VECTOR
+    confidence: confirmed
+    args:
+      "0": write_buffer
+      "1": read_buffer
+  Add:
+    category: vector_compute
+    engine: VECTOR
+    confidence: confirmed
+    args:
+      "0": write_buffer
+      "1": read_buffer
+      "2": read_buffer
+  Mul:
+    category: vector_compute
+    engine: VECTOR
+    confidence: confirmed
+    args:
+      "0": write_buffer
+      "1": read_buffer
+      "2": read_buffer
+  Sub:
+    category: vector_compute
+    engine: VECTOR
+    confidence: confirmed
+    args:
+      "0": write_buffer
+      "1": read_buffer
+      "2": read_buffer
+  Div:
+    category: vector_compute
+    engine: VECTOR
+    confidence: confirmed
+    args:
+      "0": write_buffer
+      "1": read_buffer
+      "2": read_buffer
+  Max:
+    category: vector_compute
+    engine: VECTOR
+    confidence: confirmed
+    args:
+      "0": write_buffer
+      "1": read_buffer
+      "2": read_buffer
+  Min:
+    category: vector_compute
+    engine: VECTOR
+    confidence: confirmed
+    args:
+      "0": write_buffer
+      "1": read_buffer
+      "2": read_buffer
+  Muls:
+    category: vector_compute
+    engine: VECTOR
+    confidence: confirmed
+    args:
+      "0": write_buffer
+      "1": read_buffer
+  Adds:
+    category: vector_compute
+    engine: VECTOR
+    confidence: confirmed
+    args:
+      "0": write_buffer
+      "1": read_buffer
+  Cast:
+    category: vector_compute
+    engine: VECTOR
+    confidence: confirmed
+    args:
+      "0": write_buffer
+      "1": read_buffer
+  Duplicate:
+    category: vector_compute
+    engine: VECTOR
+    confidence: confirmed
+    args:
+      "0": write_buffer
+  SoftMax:
+    category: vector_compute
+    engine: VECTOR
+    confidence: partial
+    args:
+      "0": write_buffer
+      "1": read_buffer

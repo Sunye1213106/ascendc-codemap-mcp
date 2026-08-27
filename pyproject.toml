@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ascendc-codemap-mcp"
+version = "0.1.0"
+description = "AscendC operator CodeMap MCP — build and query Host/Tiling/Kernel graphs for coding agents"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["mcp", "ascendc", "codemap", "clang"]
+dependencies = [
+  "libclang>=18.1.1",
+  "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+ascendc-codemap-mcp = "ascendc_codemap_mcp.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+ascendc_codemap_mcp = ["engine/semantics/*.yaml", "skills/*/SKILL.md"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

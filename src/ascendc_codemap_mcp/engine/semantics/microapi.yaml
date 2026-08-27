@@ -1,0 +1,126 @@
+# AscendC MicroAPI / Reg compute primitives (dav_3510+ / arch35).
+# CANN: namespace MicroAPI = Reg. Not compiled on arch22 (__NPU_ARCH__==2201).
+# Full spelling set is scanned from kernel_reg_compute_*.h (ascendc_vf.py);
+# this file gives roles for the load/store/mask family.
+version: ascendc-semantic-registry/v1
+ops:
+  LoadAlign:
+    category: reg_load
+    engine: VECTOR
+    confidence: confirmed
+    requires_vf: true
+    args:
+      "0": write_register
+      "1": read_buffer
+  LoadUnAlign:
+    category: reg_load
+    engine: VECTOR
+    confidence: confirmed
+    requires_vf: true
+  LoadUnAlignPre:
+    category: reg_load
+    engine: VECTOR
+    confidence: confirmed
+    requires_vf: true
+  StoreAlign:
+    category: reg_store
+    engine: VECTOR
+    confidence: confirmed
+    requires_vf: true
+    args:
+      "0": write_buffer
+      "1": read_register
+  StoreUnAlign:
+    category: reg_store
+    engine: VECTOR
+    confidence: confirmed
+    requires_vf: true
+    args:
+      "0": write_buffer
+      "1": read_register
+  StoreUnAlignPost:
+    category: reg_store
+    engine: VECTOR
+    confidence: confirmed
+    requires_vf: true
+  Cast:
+    category: reg_compute
+    engine: VECTOR
+    confidence: partial
+    args:
+      "0": write_register
+      "1": read_register
+  Interleave:
+    category: reg_compute
+    engine: VECTOR
+    confidence: partial
+  DeInterleave:
+    category: reg_compute
+    engine: VECTOR
+    confidence: partial
+  CreateMask:
+    category: reg_mask
+    engine: VECTOR
+    confidence: confirmed
+    requires_vf: true
+  UpdateMask:
+    category: reg_mask
+    engine: VECTOR
+    confidence: confirmed
+    requires_vf: true
+  MoveMask:
+    category: reg_mask
+    engine: VECTOR
+    confidence: confirmed
+    requires_vf: true
+  CreateAddrReg:
+    category: reg_mask
+    engine: VECTOR
+    confidence: confirmed
+    requires_vf: true
+  MaskGenWithRegTensor:
+    category: reg_mask
+    engine: VECTOR
+    confidence: confirmed
+    requires_vf: true
+  ReduceSum:
+    category: reg_compute
+    engine: VECTOR
+    confidence: partial
+    args:
+      "0": write_register
+      "1": read_register
+  Compare:
+    category: reg_compute
+    engine: VECTOR
+    confidence: confirmed
+    requires_vf: true
+  Compares:
+    category: reg_compute
+    engine: VECTOR
+    confidence: confirmed
+    requires_vf: true
+  Duplicate:
+    category: reg_compute
+    engine: VECTOR
+    confidence: confirmed
+  ExpSub:
+    category: reg_compute
+    engine: VECTOR
+    confidence: confirmed
+    requires_vf: true
+  MulDstAdd:
+    category: reg_compute
+    engine: VECTOR
+    confidence: confirmed
+    requires_vf: true
+  AbsSub:
+    category: reg_compute
+    engine: VECTOR
+    confidence: confirmed
+    requires_vf: true
+  MulsCast:
+    category: reg_compute
+    engine: VECTOR
+    confidence: confirmed
+    requires_vf: true

@@ -1,0 +1,19 @@
+# AscendC cube / matmul primitives.
+version: ascendc-semantic-registry/v1
+ops:
+  Matmul:
+    category: cube_compute
+    engine: CUBE
+    confidence: confirmed
+  Mmad:
+    category: cube_compute
+    engine: CUBE
+    confidence: confirmed
+  LoadData:
+    category: cube_load
+    engine: CUBE
+    confidence: partial
+  Fixpipe:
+    category: cube_store
+    engine: CUBE
+    confidence: partial

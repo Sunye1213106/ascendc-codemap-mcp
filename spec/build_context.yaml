@@ -1,0 +1,241 @@
+# Baseline libclang -I/-D for Ascend C operator analysis.
+# Architecture macros (__NPU_ARCH__ / __DAV_* / __CCE_AICORE__) are injected
+# by BuildContext from the arch_dir table, not frozen here.
+#
+# Prepare additionally runs include_heal: missing headers are located under
+# {cann_root}/{ops_root} and extra -I dirs are persisted per operator at
+#   .ascendc-codemap/<arch>/summary/build_context_extras.yaml
+# extract reloads those extras. Do not treat file-not-found as operator noise.
+# Disable heal with UO_INCLUDE_HEAL=0.
+#
+# Placeholders resolved by the host engine at runtime:
+#   {cann_root}   absolute path to extracted toolkit packages
+#   {ops_root}    absolute path to the ops repository root
+#   {compat_root} this directory's compat/ sibling (spec/compat)
+#   {op_dir}      absolute path to the operator directory under analysis
+#   {arch_dir}    architecture subdirectory name (arch35 | arch22 | ...)
+
+version: 1
+cann_version: "9.1.0-beta.3"
+
+# cann_root and ops_root are deliberately absent: they name trees outside this
+# repository and differ per checkout, so uo_init.paths resolves them from the
+# environment. Setting them here once made every other machine skip the tests
+# that need them, silently.
+defaults:
+  compat_root: "{repo_root}/spec/compat"
+
+# The .run is a nested makeself archive: the outer tar holds one .run per
+# sub-package. `scripts/cann_extract.py` reads `skip=` out of the shell header
+# and derives the payload offset from it, so no byte offset is recorded here --
+# every CANN release moves them.
+provenance:
+  unpacked_by: "scripts/cann_extract.py"
+  inner_packages_extracted:
+    - cann-metadef        # register/*, exe_graph/*
+    - cann-asc-devkit     # tiling/*, AscendC kernel API, TPL DSL
+    - cann-opbase         # op_common/log/*
+    - cann-npu-runtime    # dlog_pub.h
+    - cann-ge-compiler
+    - cann-tbe-tik
+    - cann-bisheng-compiler   # used only as a sysroot donor (libstdc++ + clang builtins)
+
+# --- toolchain -------------------------------------------------------------
+# aarch64 triple is a deliberate choice: it matches the libstdc++ copy shipped
+# in the bisheng package. Host tiling really compiles as x86_64, but both are
+# LP64 so pointer/size_t widths agree; struct layout differences are immaterial
+# to control-flow, template and if-constexpr analysis.
+target: "aarch64-linux-gnu"
+std: "c++17"
+base_flags:
+  - "-x"
+  - "c++"
+  - "-nostdinc"
+  - "-nostdinc++"
+  - "-ferror-limit=0"
+  - "-Wno-everything"
+
+sysroot_includes:                       # -isystem, order matters
+  - "{cann_root}/bisheng/tools/hcc/aarch64-target-linux-gnu/include/c++/7.3.0"
+  - "{cann_root}/bisheng/tools/hcc/aarch64-target-linux-gnu/include/c++/7.3.0/aarch64-target-linux-gnu"
+  - "{cann_root}/bisheng/tools/hcc/aarch64-target-linux-gnu/include/c++/7.3.0/backward"
+  - "{cann_root}/bisheng/tools/bisheng_compiler/lib/clang/15.0.5/include"
+  - "{cann_root}/bisheng/tools/hcc/aarch64-target-linux-gnu/sys-include"
+  - "{cann_root}/bisheng/tools/hcc/aarch64-target-linux-gnu/include"
+
+# --- host variant ----------------------------------------------------------
+host:
+  force_include:
+    # Host TUs commonly write unqualified ``string``; this matches that house style
+    # without editing operator sources.
+    - "{compat_root}/host_prelude.h"
+  defines:
+    # metadef ships op_def.h guarded on this; without it op_def.h pulls
+    # graph/operator_reg.h, which is not present in the toolkit package at all.
+    NO_OPERATOR_IMPL: ""
+  includes:
+    - "{compat_root}"
+    - "{cann_root}/cann-metadef/x86_64-linux/include"
+    - "{cann_root}/cann-metadef/x86_64-linux/pkg_inc"
+    - "{cann_root}/cann-asc-devkit/x86_64-linux/asc/include"
+    - "{cann_root}/cann-asc-devkit/x86_64-linux/ascendc/include/highlevel_api"
+    - "{cann_root}/cann-asc-devkit/x86_64-linux/asc/include/adv_api/hccl/internal/hcomm/pkg_inc"
+    - "{cann_root}/cann-asc-devkit/x86_64-linux/asc/include/adv_api/hccl/internal/hcomm"
+    - "{cann_root}/cann-opbase/x86_64-linux/include"
+    # The API layer includes `opdev/...`, which ships one level down under
+    # `aclnn/`. Without this the whole aclnn TU fails at its first include and
+    # the input contract it encodes stays invisible.
+    - "{cann_root}/cann-opbase/x86_64-linux/include/aclnn"
+    - "{cann_root}/cann-opbase/x86_64-linux/include/op_common"
+    # Host tiling uses `#include "util/math_util.h"` (opbase op_host, not op_common/util).
+    - "{cann_root}/cann-opbase/x86_64-linux/include/op_common/op_host"
+    - "{cann_root}/cann-opbase/x86_64-linux/pkg_inc"
+    - "{cann_root}/cann-ge-compiler/x86_64-linux/include"
+    - "{cann_root}/cann-npu-runtime/x86_64-linux/include"
+    - "{cann_root}/cann-npu-runtime/x86_64-linux/pkg_inc/base"
+    # `#include <alog_pub.h>` lives under include/base, not pkg_inc/base.
+    - "{cann_root}/cann-npu-runtime/x86_64-linux/include/base"
+    - "{ops_root}"
+    - "{ops_root}/common/include"
+    - "{op_dir}/op_host"
+    - "{op_dir}/op_host/{arch_dir}"
+
+# --- kernel variant --------------------------------------------------------
+kernel:
+  # Bisheng address-space and function qualifiers are true compiler keywords,
+  # not macros: nothing in CANN #defines __gm__ or __ubuf__. Defining them empty
+  # discards only address-space information, which no downstream analysis uses.
+  erase_qualifiers:
+    - __aicore__
+    - __gm__
+    - __ubuf__
+    - __cbuf__
+    - __ca__
+    - __cb__
+    - __cc__
+    - __fbuf__
+    - __global__
+    - __host_aicore__
+    - __sync_alias__
+    - __check_sync_alias__
+    - __in_pipe__
+    - __out_pipe__
+    - __inout_pipe__
+    - __simd_callee__
+    - __simt_callee__
+    - __simd__
+    - __simd_vf__
+    - __simt_vf__
+    - LAUNCH_BOUND
+    - __launch_bounds__
+    - __no_simd_vf_fusion__
+    - __vec_callee__
+    - __ssbuf__
+    - __sync_noalias__
+  # Arch-specific -D (__NPU_ARCH__, __DAV_*, __CCE_AICORE__) come from
+  # platform_ini.ARCH_KERNEL_MACROS, not this map.
+  # NOT_DYNAMIC_COMPILE matches ops-transformer UT cmake (`add_definitions`).
+  # Without it, fused kernels take the copied-tree `#include "../sibling/op.cpp"`
+  # branch; with it they `__has_include` the in-repo `../../sibling/op_kernel/...`.
+  defines:
+    NOT_DYNAMIC_COMPILE: ""
+
+  # CANN ge::DataType numeric lookup. Every ORIG_DTYPE_* in the kernel include
+  # closure is injected (not only ORIG_DTYPE_QUERY in the entry .cpp). When the
+  # closure has `#if TILING_KEY_VAR == IDENT`, one IDENT compatible with the
+  # dtype variant is also injected so a single packed-key path instantiates.
+  dtype_variants:
+    values: [DT_FLOAT16, DT_FLOAT, DT_BF16]
+    dt_enum_defines:
+      DT_FLOAT: 0
+      DT_FLOAT16: 1
+      DT_BF16: 27
+  force_include:
+    # Bisheng builtins absent from CANN headers under vanilla clang.
+    # Residual errors (if any) stay in CANN impl headers / bisheng asm.
+    # Cube/softmax tiling PODs (TCubeTiling / SoftMaxTiling) stay in CANN
+    # ``kernel_tiling.h``; include_heal force-includes that header when a
+    # probe reports them as unknown types. Do not -include it on every TU:
+    # quoted lookup then collides with kernel_operator atomics / fp8 aliases.
+    - "{compat_root}/bisheng_prelude.h"
+  # Kernel -I order mirrors ops-transformer UT CMake (asc/ first):
+  #   asc/include, asc/impl/*, asc/ — NOT ascendc/include/basic_api.
+  # Putting ascendc/include/basic_api on -I makes clang open
+  #   ascendc/include/basic_api/impl/utils/std/type_traits/is_tuple.h
+  # via the impl/utils junction; then ``#include "../../../../include/..."``
+  # resolves to ascendc/.../impl/include (missing) instead of asc/include.
+  # Keep only ascendc/include/highlevel_api for kernel_tiling.h.
+  includes:
+    - "{compat_root}"
+    - "{cann_root}/cann-asc-devkit/x86_64-linux/asc/include"
+    - "{cann_root}/cann-asc-devkit/x86_64-linux/asc/include/adv_api"
+    - "{cann_root}/cann-asc-devkit/x86_64-linux/asc/include/basic_api"
+    - "{cann_root}/cann-asc-devkit/x86_64-linux/asc/include/utils/std"
+    - "{cann_root}/cann-asc-devkit/x86_64-linux/asc/impl/basic_api"
+    - "{cann_root}/cann-asc-devkit/x86_64-linux/asc/impl/utils/std/tuple"
+    - "{cann_root}/cann-asc-devkit/x86_64-linux/asc/impl/utils/std/type_traits"
+    - "{cann_root}/cann-asc-devkit/x86_64-linux/asc"
+    - "{cann_root}/cann-asc-devkit/x86_64-linux/ascendc/include/highlevel_api"
+    - "{cann_root}/cann-asc-devkit/x86_64-linux/asc/include/adv_api/hccl/internal/hcomm/pkg_inc"
+    - "{cann_root}/cann-asc-devkit/x86_64-linux/asc/include/adv_api/hccl/internal/hcomm"
+    - "{cann_root}/cann-asc-devkit/x86_64-linux/tikcpp/tikcfw"
+    - "{cann_root}/cann-metadef/x86_64-linux/include"
+    # Kernel sources include "op_kernel/platform_util.h"; that file lives under
+    # opbase op_common (host -I already has this root).
+    - "{cann_root}/cann-opbase/x86_64-linux/include/op_common"
+    - "{ops_root}"
+    - "{ops_root}/common/include"
+    - "{ops_root}/common/include/op_kernel"
+    - "{op_dir}/op_kernel"
+    - "{op_dir}/op_kernel/{arch_dir}"
+
+# --- filesystem fixups required after extraction ---------------------------
+# Windows tar materialises tar symlinks that point at directories as *file*
+# reparse points, which the OS refuses to traverse; clang then reports
+# "permission denied" on the path. Rewrite them before parsing.
+post_extract_fixups:
+  - kind: retarget_symlinks
+    root: "{cann_root}/cann-asc-devkit"
+    rule: "directory targets -> junction; file targets -> materialise a copy"
+    observed: {symlinks: 334, dir_junctions: 43, files_copied: 291, dangling: 0}
+  - kind: junction
+    link: "{cann_root}/cann-asc-devkit/x86_64-linux/asc/impl/include"
+    target: "{cann_root}/cann-asc-devkit/x86_64-linux/asc/include"
+    reason: >
+      asc/impl/adv_api/detail/std is itself a link to asc/impl/utils/std, so
+      headers under it that escape via ../../../../include/... resolve against
+      the literal path asc/impl rather than asc. This junction absorbs that.
+
+# --- version skew between ops repo and toolkit -----------------------------
+compat_shims:
+  - header: "ascendc/host_api/tiling/template_argument.h"
+    forwards_to: "tiling/template_argument.h"
+    reason: >
+      ops-transformer targets a CANN layout where the TPL DSL header lives under
+      ascendc/host_api/; 9.1.0-beta.3 ships it under asc/include/tiling/. The
+      ops repo is built against a different toolkit revision, so further silent
+      API differences are possible and remain an open risk.
+
+# --- hard constraint on the TPL DSL layer ----------------------------------
+# ASCENDC_TPL_*_DECL/_SEL expand to nothing under a normal compile, so the
+# TilingKey schema is INVISIBLE in the AST even with a perfect clang setup.
+# It must be recovered by text/tree-sitter parsing. CANN's own toolchain does
+# the same: under -DASCENDC_TPL_PRE the macros expand to @@MARKER@@ = {...}
+# text for an external scraper.
+tpl_dsl:
+  parse_strategy: textual
+  bit_width_rule: 'regex ASCENDC_TPL_(\d+)_BW  -- do NOT table-lookup; CANN only
+    defines 1/2/4/8_BW yet operators may use 3/10/12_BW'
+  uint_encoding: 'index of the value within the DECL vals array, where vals[0]
+    is the ASCENDC_TPL_UI_LIST/UI_RANGE marker itself -- not the value'
+  bool_encoding: 'the value itself (0/1), width fixed at 1 bit'
+  layout: 'sequential: tilingKey |= encodeVal << totalBits; totalBits += bitWidth'
+  max_bits: 64
+  invalid_key: 0xFFFFFFFFFFFFFFFF   # returned when a UINT value is absent from vals
+
+# --- how to fold kernel-side `if constexpr` --------------------------------
+# Uninstantiated templates leave if-constexpr conditions symbolic. Fold via an
+# explicit-instantiation harness. Entry name, file, and NTTP arity come from
+# OpSpec.kernel_entry + parsed TPL DECL — not from operator-specific yaml.
+constexpr_folding:
+  strategy: explicit_instantiation_harness

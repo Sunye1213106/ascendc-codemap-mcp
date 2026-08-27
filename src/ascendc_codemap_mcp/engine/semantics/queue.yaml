@@ -1,0 +1,60 @@
+# AscendC queue / buffer acquire-release primitives.
+version: ascendc-semantic-registry/v1
+ops:
+  InitBuffer:
+    category: buffer_init
+    engine: UNKNOWN
+    confidence: confirmed
+    receiver: pipe
+    mechanism: tpipe
+    # CANN TPipe::InitBuffer / TBufPool::InitBuffer — binds a TQue or TBuf.
+  AllocTensor:
+    category: buffer_acquire
+    engine: UNKNOWN
+    confidence: confirmed
+    receiver: queue
+    returns: buffer_view
+    mechanism: tque
+  FreeTensor:
+    category: buffer_release
+    engine: UNKNOWN
+    confidence: confirmed
+    receiver: queue
+    args:
+      "0": write_buffer
+    mechanism: tque
+  EnQue:
+    category: queue_enqueue
+    engine: UNKNOWN
+    confidence: confirmed
+    receiver: queue
+    mechanism: tque
+    # CANN TQueBind::EnQue posts the pipe event internally (SetFlag).
+    handshake: encapsulated
+    args:
+      "0": read_buffer
+  DeQue:
+    category: queue_dequeue
+    engine: UNKNOWN
+    confidence: confirmed
+    receiver: queue
+    mechanism: tque
+    # CANN TQueBind::DeQue waits the pipe event internally (WaitFlag).
+    handshake: encapsulated
+    returns: buffer_view
+  Get:
+    category: buffer_view
+    engine: UNKNOWN
+    confidence: partial
+    receiver: read
+  GetTensor:
+    category: buffer_view
+    engine: UNKNOWN
+    confidence: confirmed
+    receiver: read
+    returns: buffer_view
+  ReinterpretCast:
+    category: buffer_view
+    engine: UNKNOWN
+    confidence: partial
+    receiver: read
