@@ -9,7 +9,7 @@ Use MCP server `ascendc-codemap-mcp`. Prefer typed tools. `query_codemap` is a c
 
 ## Before querying
 
-1. `codemap_discover` with the operator `project` if you do not yet have a `codemap.id` (`p:<workspace>/op@arch`; `op@arch` is an alias).
+1. `codemap_discover` with the operator `project` if you do not yet have a `codemap.id` (`p:<workspace>::op@arch`; `op@arch` is an alias).
 2. `codemap_status(codemap_id)`. Read `freshness`.
 3. `freshness=unknown` and `indexed=false` → skill `index-operator`. `stale` or `dirty` → skill `update-operator`. `building` → wait and status again.
 

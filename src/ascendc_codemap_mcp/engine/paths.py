@@ -9,8 +9,8 @@ the OpenCode cache file, then a short list of layouts relative to the
 repository -- and when nothing matches, `explain()` says what was tried so the
 failure is actionable instead of silent.
 
-``doctor``, ``scripts/dev/check_cann.py`` and prepare all call
-``require_cann_ready()``; a green check must mean prepare's CANN gate would pass.
+``doctor`` and prepare both call ``require_cann_ready()``; a green check must
+mean the index CANN gate would pass.
 """
 
 from __future__ import annotations
@@ -435,14 +435,8 @@ def iter_asc_dirs(root: Path) -> list[Path]:
 
 
 def _load_cann_extract():  # pragma: no cover - import plumbing
-    import importlib.util
+    from ascendc_codemap_mcp import cann_extract as mod
 
-    path = repo_root() / "scripts" / "cann_extract.py"
-    spec = importlib.util.spec_from_file_location("_pilot_cann_extract", path)
-    if spec is None or spec.loader is None:
-        raise ImportError(str(path))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
     return mod
 
 
@@ -491,10 +485,17 @@ def cann_layout_issues(root: Path | None = None) -> list[str]:
         repo = repo_root()
         looked = [str(p) for p in _cann_candidates()]
         looked.append(f"cache {opencode_cann_root_cache_path()}")
+        dest = repo / "_cann" / "pkg"
+        from ascendc_codemap_mcp.constants import CANN_DOWNLOAD_CENTER, CANN_TOOLKIT_RUN_NAME
+
         return [
-            "CANN packages not found. Set UO_CANN_ROOT / ASCEND_CANN_PACKAGE_PATH "
-            "/ ASCEND_HOME_PATH "
-            f"or run: python scripts/cann_extract.py <toolkit.run> --dest {repo / '_cann' / 'pkg'}"
+            "CANN packages not found. Download "
+            f"{CANN_TOOLKIT_RUN_NAME} from {CANN_DOWNLOAD_CENTER} "
+            "(Huawei account required), then unpack without running the installer: "
+            f"python -m ascendc_codemap_mcp cann-extract <toolkit.run> --dest {dest} "
+            f"&& python -m ascendc_codemap_mcp cann-extract --fixup --dest {dest}. "
+            "Or set ASCENDC_CODEMAP_CANN_ROOT / ASCEND_CANN_PACKAGE_PATH / "
+            "ASCEND_HOME_PATH to an already unpacked or official tree."
             "\nLooked in:\n"
             + "\n".join(f"  {p}" for p in looked)
         ]

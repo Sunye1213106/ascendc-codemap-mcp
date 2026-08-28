@@ -12,6 +12,7 @@ from typing import Any
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.context import Context
+from mcp.server.mcpserver.resources.templates import ResourceSecurity
 from mcp.types import (
     Completion,
     PromptReference,
@@ -42,9 +43,9 @@ AscendC CodeMap is a semantic compiler graph for one operator + one architecture
 It answers what the code is, not what a previous agent thought.
 
 Workflow:
-1. codemap_discover (project= operator directory) → keep codemap.id (p:<workspace>/op@arch). op@arch is an alias; if it matches multiple workspaces, use the canonical id.
+1. codemap_discover (project= operator directory) → keep codemap.id (p:<workspace>::op@arch). op@arch is an alias; if it matches multiple workspaces, use the canonical id.
 2. Read resource codemap://map/{codemap_id} or call codemap_status
-3. If not indexed: codemap_doctor then codemap_index (minutes). Do not index on connect.
+3. If not indexed: codemap_doctor then codemap_index (minutes). Do not index on connect. If doctor.ok is false, follow doctor.next_steps (download CANN Toolkit .run, cann-extract, install LLVM 18). Do not run the .run installer.
 4. If stale or dirty: codemap_update. If state=needs_confirmation, ask the user before confirm_scope=true.
 5. Query with typed tools: codemap_overview, codemap_symbol, codemap_selection, codemap_evidence.
 
@@ -219,13 +220,13 @@ def codemap_evidence(
 
 @mcp.tool(title="CodeMap doctor", annotations=READ, structured_output=True)
 def codemap_doctor(project: str = "", architecture: str = "") -> DoctorResult:
-    """Check CANN headers, libclang, operator directory, and architecture before indexing."""
+    """Check CANN headers, clang/libclang, and the operator path before indexing. If ok is false, follow next_steps (download Toolkit .run, cann-extract, LLVM 18)."""
     return _doctor(doctor_impl(project=project, architecture=architecture))
 
 
 @mcp.tool(title="Index operator", annotations=WRITE_ADDITIVE, structured_output=True)
 async def codemap_index(project: str, architecture: str, ctx: Context) -> Envelope:
-    """Cold-build a CodeMap (prepare → extract → analyze → commit). Minutes. Only when no .uo exists. Do not call on connect. Cancellable between steps."""
+    """Cold-build a CodeMap (prepare → extract → analyze → commit). Minutes. Only when no .uo exists; if one already exists, returns ALREADY_INDEXED and tells you to use codemap_update. Do not call on connect. Cancellable between steps."""
     on_progress = _progress(ctx)
 
     def work(stop: threading.Event) -> dict[str, Any]:
@@ -339,6 +340,9 @@ def runtime_resource() -> str:
     title="CodeMap snapshot",
     description="Freshness and identity for one operator@architecture CodeMap.",
     mime_type="application/json",
+    # `p:<hex>::op@arch` is an opaque id. MCP's default resource policy treats
+    # `p:` as a Windows drive path; this id is never joined onto the filesystem.
+    security=ResourceSecurity(exempt_params={"codemap_id"}),
 )
 def map_resource(codemap_id: str) -> str:
     payload = status_impl(codemap_id=codemap_id)

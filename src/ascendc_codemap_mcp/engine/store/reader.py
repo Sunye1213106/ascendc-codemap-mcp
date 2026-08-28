@@ -43,7 +43,14 @@ def _connect_readonly(path: str | Path) -> sqlite3.Connection:
     db = Path(path).expanduser().resolve()
     if not db.is_file():
         raise FileNotFoundError(f"missing .uo product: {db}")
-    conn = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
+    # Queries stay on the creating thread via (path, thread_ident).
+    # check_same_thread=False only so a writer can close idle handles after
+    # SnapshotLocks has drained readers.
+    conn = sqlite3.connect(
+        f"file:{db.as_posix()}?mode=ro",
+        uri=True,
+        check_same_thread=False,
+    )
     return _configure_readonly(conn)
 
 
@@ -64,17 +71,29 @@ def shared_uo(path: str | Path) -> sqlite3.Connection:
     with _CONN_LOCK:
         again = _CONN.get(slot)
         if again is not None:
-            try:
-                conn.close()
-            except sqlite3.Error:
-                pass
+            _close_conn(conn)
             return again
         _CONN[slot] = conn
         return conn
 
 
+def _close_conn(conn: sqlite3.Connection) -> None:
+    try:
+        conn.close()
+    except sqlite3.ProgrammingError as exc:
+        if "closed" not in str(exc).lower():
+            raise
+    except sqlite3.Error:
+        pass
+
+
 def close_uo_connections(path: str | Path | None = None) -> None:
-    """Close pooled read connections so Windows can replace the ``.uo``."""
+    """Close pooled read connections so Windows can replace the ``.uo``.
+
+    Safe to call from the writer thread: connections are opened with
+    ``check_same_thread=False`` solely so this close can run after readers
+    have drained. SQL still runs only on the creating thread.
+    """
     with _CONN_LOCK:
         if path is None:
             items = list(_CONN.items())
@@ -84,11 +103,14 @@ def close_uo_connections(path: str | Path | None = None) -> None:
             items = [(slot, conn) for slot, conn in list(_CONN.items()) if slot[0] == key]
             for slot, _ in items:
                 _CONN.pop(slot, None)
+    errors: list[BaseException] = []
     for _, conn in items:
         try:
-            conn.close()
-        except sqlite3.Error:
-            pass
+            _close_conn(conn)
+        except sqlite3.ProgrammingError as exc:
+            errors.append(exc)
+    if errors:
+        raise errors[0]
 
 
 def open_handle_count(path: str | Path | None = None) -> int:

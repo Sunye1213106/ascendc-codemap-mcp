@@ -21,6 +21,8 @@ def test_bundled_skills_exist() -> None:
     assert "codemap_id" in text
     index = (root / "index-operator" / "SKILL.md").read_text(encoding="utf-8")
     assert "codemap_index" in index
+    assert "cann-extract" in index
+    assert "next_steps" in index
 
 
 def test_install_skills_under_fake_home(tmp_path: Path, monkeypatch) -> None:

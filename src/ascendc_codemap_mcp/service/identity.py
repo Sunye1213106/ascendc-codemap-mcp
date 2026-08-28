@@ -16,7 +16,7 @@ from ascendc_codemap_mcp.service.envelope import fail
 
 FORMAT = "codemap-uo"
 _TOKEN_RE = re.compile(r"^p:[0-9a-f]{6}$")
-_ID_SPLIT_RE = re.compile(r"^(?:(p:[0-9a-f]{6})/)?(.+)$")
+_ID_SPLIT_RE = re.compile(r"^(?:(p:[0-9a-f]{6})(?:::|/))?(.+)$")
 
 
 @dataclass
@@ -33,7 +33,7 @@ class CodemapRef:
 
 
 class Registry:
-    """Process-local map of canonical ``p:<ws>/op@arch`` → operator directory.
+    """Process-local map of canonical ``p:<ws>::op@arch`` → operator directory.
 
     ``op@arch`` is an alias. If two workspaces share an alias, resolving the
     alias returns ``AMBIGUOUS_CODEMAP_ID`` instead of overwriting.
@@ -99,7 +99,7 @@ def make_id(op_name: str, architecture: str, project: str | Path | None = None) 
     alias = f"{name}@{arch}"
     if project is None:
         return alias
-    return f"{project_token(project)}/{alias}"
+    return f"{project_token(project)}::{alias}"
 
 
 def parse_id(text: str) -> tuple[str, str] | None:
@@ -115,7 +115,7 @@ def parse_id(text: str) -> tuple[str, str] | None:
     name, arch = rest.rsplit("@", 1)
     name = name.strip()
     arch = arch.strip()
-    if not name or "/" in name or not is_product_architecture(arch):
+    if not name or "/" in name or name.startswith("p:") or not is_product_architecture(arch):
         return None
     return name, arch
 
@@ -263,7 +263,7 @@ def bind(
 def _ambiguous(alias: str, refs: list[CodemapRef]) -> dict[str, Any]:
     return fail(
         f"codemap_id {alias} matches {len(refs)} workspaces; pass canonical "
-        "codemap.id (p:<workspace>/op@arch) or project=",
+        "codemap.id (p:<workspace>::op@arch) or project=",
         error_code="AMBIGUOUS_CODEMAP_ID",
         extra={
             "alias": alias,
@@ -307,7 +307,7 @@ def resolve(
         parsed = parse_id(cid)
         if parsed is None:
             return fail(
-                "codemap_id must look like p:<workspace>/op_name@arch35 or op_name@arch35",
+                "codemap_id must look like p:<workspace>::op_name@arch35 or op_name@arch35",
                 error_code="INVALID_CODEMAP_ID",
             )
         op_name, parsed_arch = parsed

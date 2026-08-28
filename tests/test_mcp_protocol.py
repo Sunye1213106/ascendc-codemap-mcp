@@ -118,7 +118,7 @@ def test_status_not_indexed(tmp_path: Path) -> None:
     assert payload["ok"] is True
     assert payload["indexed"] is False
     assert payload["codemap"]["alias"] == "op@arch35"
-    assert payload["codemap"]["id"].endswith("/op@arch35")
+    assert payload["codemap"]["id"].endswith("::op@arch35")
 
 
 def test_inmemory_client_lists_tools() -> None:
@@ -160,6 +160,35 @@ def test_inmemory_client_lists_tools() -> None:
             contents = getattr(runtime_res, "contents", None) or []
             assert contents
             assert "cache_size" in str(contents[0].text)
+
+    asyncio.run(_run())
+
+
+def test_map_resource_reads_canonical_id(tmp_path: Path) -> None:
+    from mcp import Client
+    from ascendc_codemap_mcp.mcp_adapter import create_server
+    from tests.conftest import write_uo_fixture
+
+    op = tmp_path / "toy_op"
+    op.mkdir()
+    write_uo_fixture(op)
+
+    async def _run() -> None:
+        async with Client(create_server()) as client:
+            st = await client.call_tool(
+                "codemap_status",
+                {"project": str(op), "architecture": "arch35"},
+            )
+            structured = getattr(st, "structured_content", None) or {}
+            cid = str((structured.get("codemap") or {}).get("id") or "")
+            assert "::" in cid
+            assert "/" not in cid
+            mapped = await client.read_resource(f"codemap://map/{cid}")
+            contents = getattr(mapped, "contents", None) or []
+            assert contents
+            text = str(contents[0].text)
+            assert cid in text or "toy_op@arch35" in text
+            assert '"ok"' in text or "ok" in text
 
     asyncio.run(_run())
 
@@ -265,3 +294,4 @@ def test_cli_help_mentions_http() -> None:
     text = buf.getvalue()
     assert "streamable-http" in text
     assert "serve" in text
+    assert "cann-extract" in text

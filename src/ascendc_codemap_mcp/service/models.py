@@ -69,7 +69,10 @@ class DoctorResult(BaseModel):
     project: str = ""
     architecture: str = ""
     cann_root: str | None = None
+    clang_exe: str | None = None
+    libclang_ok: bool = False
     issues: list[str] = Field(default_factory=list)
+    next_steps: list[str] = Field(default_factory=list)
     explain: str = ""
     product_dir: str = ""
     runtime: dict[str, Any] = Field(default_factory=dict)

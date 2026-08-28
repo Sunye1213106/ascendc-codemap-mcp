@@ -206,11 +206,68 @@ def status(
     )
 
 
+def _env_next_steps(
+    *,
+    clang_exe: str | None,
+    libclang_ok: bool,
+    cann: Path | None,
+) -> list[str]:
+    """Actionable bootstrap for an agent when doctor is not green."""
+    import os
+
+    from ascendc_codemap_mcp.constants import (
+        CANN_DOWNLOAD_CENTER,
+        CANN_TOOLKIT_RUN_NAME,
+    )
+    from ascendc_codemap_mcp.engine.paths import repo_root
+
+    dest = repo_root() / "_cann" / "pkg"
+    steps: list[str] = []
+    if not libclang_ok:
+        steps.append("pip install 'libclang>=18.1.1'")
+    if not clang_exe:
+        if os.name == "nt":
+            steps.append("winget install --id LLVM.LLVM --version 18.1.8 -e")
+            steps.append(
+                r"If clang is not on PATH, set CLANG_EXE=C:\Program Files\LLVM\bin\clang.exe"
+            )
+        else:
+            steps.append("sudo apt-get update && sudo apt-get install -y clang")
+        steps.append("clang --version")
+    if cann is None:
+        steps.append(
+            f"Search the machine for {CANN_TOOLKIT_RUN_NAME} "
+            "(Downloads, ~/Downloads) before asking the user to download again."
+        )
+        steps.append(
+            "Download CANN Toolkit .run (Huawei/Ascend login required; "
+            f"unsigned wget usually fails): {CANN_DOWNLOAD_CENTER}"
+        )
+        steps.append(
+            "Need the Toolkit package, not kernels/nnal. On Windows still download "
+            "the linux-x86_64 .run — cann-extract unpacks it and does not execute "
+            "the installer."
+        )
+        steps.append(
+            "python -m ascendc_codemap_mcp cann-extract "
+            f"<path-to/{CANN_TOOLKIT_RUN_NAME}> --dest {dest}"
+        )
+        steps.append(
+            f"python -m ascendc_codemap_mcp cann-extract --fixup --dest {dest}"
+        )
+        steps.append(
+            f"Optional: set ASCENDC_CODEMAP_CANN_ROOT={dest} "
+            "(User-level env; a session-only export disappears)."
+        )
+    return steps
+
+
 def doctor(
     *,
     project: str = "",
     architecture: str = "",
 ) -> dict[str, Any]:
+    from ascendc_codemap_mcp.engine.clang_cmd import find_clang
     from ascendc_codemap_mcp.engine.paths import explain, require_cann_ready
 
     issues: list[str] = []
@@ -220,10 +277,19 @@ def doctor(
     arch = str(architecture or "").strip()
     if not arch:
         issues.append("architecture is required (e.g. arch35)")
+    libclang_ok = False
     try:
         import clang.cindex  # noqa: F401
+
+        libclang_ok = True
     except Exception as exc:  # noqa: BLE001
         issues.append(f"libclang import failed: {exc}")
+    clang_exe = find_clang()
+    if not clang_exe:
+        issues.append(
+            "clang executable not found (pip libclang is not enough; "
+            "TPL preprocess needs clang -E). Install LLVM 18 and/or set CLANG_EXE."
+        )
     cann, cann_issues = require_cann_ready()
     issues.extend(cann_issues)
     stats = runtime.cache_stats()
@@ -234,7 +300,14 @@ def doctor(
         "project": str(root) if root else "",
         "architecture": arch,
         "cann_root": str(cann) if cann else None,
+        "clang_exe": clang_exe,
+        "libclang_ok": libclang_ok,
         "issues": issues,
+        "next_steps": _env_next_steps(
+            clang_exe=clang_exe,
+            libclang_ok=libclang_ok,
+            cann=cann,
+        ),
         "explain": explain(),
         "product_dir": (
             str(root / PRODUCT_DIR_NAME / arch) if root is not None and arch else ""
@@ -368,6 +441,31 @@ def index_operator(
             extra={"engine": "codemap_index", "error_code": "BUILDING"},
         )
     with runtime.locks.write(ref.id):
+        ref = bind(project=root, architecture=arch, registry=runtime.registry)
+        if ref.product is not None and Path(ref.product).is_file():
+            meta = _meta(ref.product)
+            from ascendc_codemap_mcp.service.freshness import compute as compute_freshness
+
+            info = compute_freshness(
+                ref.project,
+                meta=meta,
+                building=False,
+                blocked=runtime.is_blocked(ref.id),
+            )
+            handle = public_handle(ref, meta=meta, freshness_info=info)
+            return envelope(
+                ok=True,
+                state=STATE_COMPLETED,
+                updated=False,
+                codemap=handle,
+                extra={
+                    "engine": "codemap_index",
+                    "mode": "noop",
+                    "error_code": "ALREADY_INDEXED",
+                    "hint": "CodeMap already exists; use codemap_update",
+                    "path": str(ref.product),
+                },
+            )
         runtime.mark_building(ref.id)
         if ref.product is not None:
             runtime.cache.drop(ref.product)

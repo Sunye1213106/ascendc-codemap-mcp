@@ -22,6 +22,10 @@ def test_codemap_id_parse(tmp_path: Path) -> None:
         "flash_attention_score_grad",
         "arch35",
     )
+    assert parse_id("p:a91f42::flash_attention_score_grad@arch35") == (
+        "flash_attention_score_grad",
+        "arch35",
+    )
     assert parse_id("p:a91f42/flash_attention_score_grad@arch35") == (
         "flash_attention_score_grad",
         "arch35",
@@ -30,7 +34,7 @@ def test_codemap_id_parse(tmp_path: Path) -> None:
     assert make_id("toy_op", "arch35") == "toy_op@arch35"
     canonical = make_id("toy_op", "arch35", project=tmp_path)
     assert canonical.startswith("p:")
-    assert canonical.endswith("/toy_op@arch35")
+    assert canonical.endswith("::toy_op@arch35")
 
 
 def test_status_reports_identity_and_freshness(tmp_path: Path, monkeypatch) -> None:
@@ -57,7 +61,7 @@ def test_status_reports_identity_and_freshness(tmp_path: Path, monkeypatch) -> N
     assert st["indexed"] is True
     assert st["freshness"] == "fresh"
     assert st["codemap"]["alias"] == "toy_op@arch35"
-    assert st["codemap"]["id"].endswith("/toy_op@arch35")
+    assert st["codemap"]["id"].endswith("::toy_op@arch35")
     assert st["codemap"]["snapshot_id"].startswith("cm:")
     meta = read_meta(product)
     assert st["snapshot_id"] == snapshot_id(product, meta)

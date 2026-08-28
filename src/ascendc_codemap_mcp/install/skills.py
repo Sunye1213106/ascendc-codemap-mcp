@@ -15,8 +15,8 @@ _AGENTS_BODY = """# AscendC CodeMap MCP
 
 Use MCP server `ascendc-codemap-mcp` for AscendC operator structure.
 
-- Identity: `codemap_discover` then pass `codemap.id` (`p:<workspace>/op@arch`). `op@arch` is an alias; if it matches two workspaces, use the canonical id.
-- Missing CodeMap: `codemap_doctor` then `codemap_index` with `project` + `architecture`.
+- Identity: `codemap_discover` then pass `codemap.id` (`p:<workspace>::op@arch`). `op@arch` is an alias; if it matches two workspaces, use the canonical id.
+- Missing CodeMap: `codemap_doctor` then `codemap_index`. If doctor fails, follow `next_steps` (CANN Toolkit `.run` + `cann-extract`, LLVM 18). Do not run the `.run` installer.
 - Existing CodeMap after source change: `codemap_status` (read `freshness`) then `codemap_update`. `ok` is not the workflow state; read `state` and `updated`.
 - Questions about the graph: `codemap_overview` / `codemap_symbol` / `codemap_selection` / `codemap_evidence`. Follow `evidence[].id`. If `coverage.truncated`, pass `next_cursor`.
 - `count: 0` is not proof of absence. Follow `hint`.

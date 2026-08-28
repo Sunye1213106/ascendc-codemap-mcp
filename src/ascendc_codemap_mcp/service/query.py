@@ -305,6 +305,8 @@ def _run_query(
     cursor: str = "",
     flatten: bool = False,
     engine: str = "",
+    expected_snapshot_id: str = "",
+    evidence_id: str = "",
 ) -> dict[str, Any]:
     if runtime.is_building(ref.id) or not runtime.locks.try_read(ref.id):
         return _building(ref)
@@ -327,6 +329,41 @@ def _run_query(
         )
         handle = public_handle(ref, meta=meta, freshness_info=info)
         snapshot = str(handle.get("snapshot_id") or "")
+        expected = str(expected_snapshot_id or "").strip()
+        if expected and snapshot and expected != snapshot:
+            return fail(
+                "evidence belongs to a previous CodeMap snapshot; re-resolve",
+                error_code="SNAPSHOT_CHANGED",
+                extra={
+                    "codemap": handle,
+                    "expected_snapshot_id": expected,
+                    "current_snapshot_id": snapshot,
+                },
+            )
+        path = str(file or "").strip()
+        line_n = int(line or 0)
+        ev_id = str(evidence_id or "").strip()
+        if ev_id and not (path and line_n):
+            with runtime.cache.open(product) as query:
+                located = evidence_mod.lookup_span(query, ev_id)
+            if located is None:
+                return fail(
+                    f"unknown evidence_id: {ev_id}",
+                    error_code="EVIDENCE_NOT_FOUND",
+                    extra={"codemap": handle},
+                )
+            path = str(located.get("file") or "")
+            line_n = int(located.get("line") or 0)
+            if line_end <= 0:
+                line_end = line_n
+        if engine == "codemap_evidence" and (not path or line_n <= 0):
+            return fail(
+                "evidence_id, entity_id, or file+line is required",
+                error_code="EVIDENCE_REQUIRED",
+                extra={"codemap": handle},
+            )
+        file = path
+        line = line_n
         qfp = query_fingerprint(
             engine=engine,
             pattern=pattern,
@@ -495,52 +532,10 @@ def evidence(
     ref = _need_ref(codemap_id=codemap_id, project=project, architecture=architecture)
     if not is_ref(ref):
         return ref  # type: ignore[return-value]
-    expected = str(expected_snapshot_id or "").strip()
-    if expected:
-        product = ref.product
-        meta = _meta(product) if product is not None and product.is_file() else {}
-        from ascendc_codemap_mcp.service.freshness import compute
-
-        info = compute(
-            ref.project,
-            meta=meta,
-            building=runtime.is_building(ref.id),
-            blocked=runtime.is_blocked(ref.id),
-        )
-        handle = public_handle(ref, meta=meta, freshness_info=info)
-        current = str(handle.get("snapshot_id") or "")
-        if current and expected != current:
-            return fail(
-                "evidence belongs to a previous CodeMap snapshot; re-resolve",
-                error_code="SNAPSHOT_CHANGED",
-                extra={
-                    "codemap": handle,
-                    "expected_snapshot_id": expected,
-                    "current_snapshot_id": current,
-                },
-            )
     path = str(file or "").strip()
     line_n = int(line or 0)
     ev_id = str(evidence_id or entity_id or "").strip()
-    if ev_id and not (path and line_n):
-        if runtime.is_building(ref.id) or not runtime.locks.try_read(ref.id):
-            return _building(ref)
-        try:
-            product = ref.product
-            if product is None:
-                return fail("no .uo", error_code="CODEMAP_NOT_INDEXED")
-            with runtime.cache.open(product) as query:
-                located = evidence_mod.lookup_span(query, ev_id)
-            if located is None:
-                return fail(
-                    f"unknown evidence_id: {ev_id}",
-                    error_code="EVIDENCE_NOT_FOUND",
-                )
-            path = str(located.get("file") or "")
-            line_n = int(located.get("line") or 0)
-        finally:
-            runtime.locks.release_read(ref.id)
-    if not path or line_n <= 0:
+    if not ev_id and (not path or line_n <= 0):
         return fail(
             "evidence_id, entity_id, or file+line is required",
             error_code="EVIDENCE_REQUIRED",
@@ -553,6 +548,8 @@ def evidence(
         limit=limit,
         cursor=cursor,
         engine="codemap_evidence",
+        expected_snapshot_id=str(expected_snapshot_id or "").strip(),
+        evidence_id=ev_id,
     )
 
 

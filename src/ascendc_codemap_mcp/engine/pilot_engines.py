@@ -184,8 +184,8 @@ def _cann_env_block(engine: str, ctx: dict[str, Any] | None = None) -> dict[str,
             "或设置 ASCENDC_CODEMAP_CANN_ROOT / ASCEND_CANN_PACKAGE_PATH 指向解包后的 cann-* 根，"
             "或官方安装的 ASCEND_HOME_PATH。"
             "官方 CANN 包不缺头文件；配好 cann_root 后 prepare 不再按单个相对路径失败。"
-            "doctor / check_cann.py / prepare 共用 require_cann_ready；"
-            "可先执行: python scripts/dev/check_cann.py"
+            "doctor 与 prepare 共用 require_cann_ready；"
+            "可先执行: python -m ascendc_codemap_mcp doctor --project <算子目录> --architecture <arch>"
         ),
     }
 

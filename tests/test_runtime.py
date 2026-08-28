@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -40,14 +41,14 @@ def test_sqlite_connections_are_thread_local(tmp_path: Path) -> None:
     op.mkdir()
     product = write_uo_fixture(op)
     barrier = threading.Barrier(8)
-    ids: list[int] = []
+    conns: list[sqlite3.Connection] = []
     errors: list[BaseException] = []
 
     def worker() -> None:
         try:
             barrier.wait()
             conn = shared_uo(product)
-            ids.append(id(conn))
+            conns.append(conn)
             conn.execute("SELECT COUNT(*) FROM entity").fetchone()
         except BaseException as exc:  # noqa: BLE001
             errors.append(exc)
@@ -58,8 +59,17 @@ def test_sqlite_connections_are_thread_local(tmp_path: Path) -> None:
     for thread in threads:
         thread.join()
     assert not errors
-    assert len(set(ids)) == 8
+    assert len({id(c) for c in conns}) == 8
     close_uo_connections(product)
+    assert open_handle_count(product) == 0
+    for conn in conns:
+        try:
+            conn.execute("SELECT 1")
+            raise AssertionError("connection still usable after cross-thread close")
+        except sqlite3.ProgrammingError:
+            pass
+    product.unlink()
+    write_uo_fixture(op, symbol="Other", revision="zzz")
 
 
 def test_mcp_worker_threads_can_query_in_parallel(tmp_path: Path, monkeypatch) -> None:
@@ -308,4 +318,30 @@ def test_canonical_ids_differ_per_workspace(tmp_path: Path) -> None:
     b = tmp_path / "wt_b" / "op"
     a.mkdir(parents=True)
     b.mkdir(parents=True)
-    assert make_id("op", "arch35", project=a) != make_id("op", "arch35", project=b)
+    left = make_id("op", "arch35", project=a)
+    right = make_id("op", "arch35", project=b)
+    assert left != right
+    assert "::" in left and "/" not in left
+    assert "::" in right and "/" not in right
+
+
+def test_index_noop_when_product_already_exists(monkeypatch, tmp_path: Path) -> None:
+    from ascendc_codemap_mcp.service.control import index_operator
+
+    op = tmp_path / "toy_op"
+    op.mkdir()
+    write_uo_fixture(op)
+    called: list[str] = []
+
+    def _prepare(*_a, **_k):
+        called.append("prepare")
+        return {"ok": True}
+
+    monkeypatch.setattr("ascendc_codemap_mcp.engine.codemap_engines.prepare", _prepare)
+    payload = index_operator(project=str(op), architecture="arch35")
+    assert payload.get("ok") is True
+    assert payload.get("updated") is False
+    assert payload.get("mode") == "noop"
+    assert payload.get("error_code") == "ALREADY_INDEXED"
+    assert called == []
+

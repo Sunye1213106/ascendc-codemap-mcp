@@ -29,6 +29,7 @@ def main(argv: list[str] | None = None) -> int:
             "  install [--dry-run]    configure Cursor / Claude Code / Codex / OpenCode\n"
             "  uninstall [--dry-run]  remove owned MCP entries and skills\n"
             "  doctor    --project DIR --architecture ARCH\n"
+            "  cann-extract [.run] --dest DIR [--fixup] [--list]\n"
             "  discover  [--project DIR] [--architecture ARCH]\n"
             "  index     --project DIR --architecture ARCH\n"
             "  update    (--codemap-id ID | --project DIR --architecture ARCH) [--confirm-scope]\n"
@@ -71,6 +72,10 @@ def main(argv: list[str] | None = None) -> int:
 
         dry = "--dry-run" in rest
         return run_uninstall(dry_run=dry)
+    if cmd in {"cann-extract", "extract-cann"}:
+        from ascendc_codemap_mcp.cann_extract import main as extract_main
+
+        return extract_main(rest)
     if cmd in {"doctor", "index", "update", "query", "status", "discover"}:
         parser = argparse.ArgumentParser(prog=f"{PRODUCT_NAME} {cmd}")
         parser.add_argument("--project", default="")

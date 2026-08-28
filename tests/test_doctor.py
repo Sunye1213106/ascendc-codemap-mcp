@@ -23,6 +23,20 @@ def test_doctor_fail_closed_without_cann(tmp_path: Path, monkeypatch) -> None:
     payload = doctor(project=str(op), architecture="arch35")
     assert payload["ok"] is False
     assert any("CANN" in i or "not found" in i.lower() for i in payload["issues"])
+    joined = "\n".join(payload["next_steps"])
+    assert "hiascend.com" in joined
+    assert "cann-extract" in joined
+    assert "linux-x86_64" in joined
+
+
+def test_missing_cann_layout_mentions_download(monkeypatch) -> None:
+    from ascendc_codemap_mcp.engine import paths
+
+    monkeypatch.setattr(paths, "cann_root", lambda explicit=None: None)
+    text = "\n".join(paths.cann_layout_issues(None))
+    assert "cann-extract" in text
+    assert "hiascend.com" in text
+    assert "_cann" in text
 
 
 def test_doctor_requires_architecture(tmp_path: Path, monkeypatch) -> None:

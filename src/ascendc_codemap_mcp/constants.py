@@ -17,4 +17,10 @@ CODEX_ENV_VARS = (
     "ASCEND_HOME_PATH",
     "ASCEND_CANN_PACKAGE_PATH",
 )
+# Huawei account required. Unsigned wget of community packages usually fails.
+CANN_DOWNLOAD_CENTER = (
+    "https://www.hiascend.com/developer/download/community/result?module=cann"
+)
+CANN_SOFTWARE_PAGE = "https://www.hiascend.com/software/cann"
+CANN_TOOLKIT_RUN_NAME = "Ascend-cann-toolkit_<version>_linux-x86_64.run"
 SKILL_NAMES = ("index-operator", "update-operator", "query-codemap")
