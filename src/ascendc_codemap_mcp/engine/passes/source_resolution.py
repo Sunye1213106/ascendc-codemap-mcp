@@ -25,7 +25,8 @@ from ascendc_codemap_mcp.engine.source_layout import iter_cpp, selected_host_fil
 
 _CPP_SUFFIXES = {".h", ".hpp", ".hh", ".cpp", ".cc", ".cxx"}
 _CONSTEXPR_RE = re.compile(
-    r"\bconstexpr\s+(?:static\s+)?(?:const\s+)?[A-Za-z_:][\w:<>,\s*&]*?\s+([A-Za-z_]\w*)(?:\[[^\]]+\])?\s*=\s*([^;]+);"
+    r"\b(?:static\s+constexpr|constexpr\s+static|constexpr)\s+"
+    r"(?:const\s+)?[A-Za-z_:][\w:<>,\s*&]*?\s+([A-Za-z_]\w*)(?:\[[^\]]+\])?\s*=\s*([^;]+);"
 )
 _DEFINE_OBJECT_RE = re.compile(r"^\s*#define\s+([A-Za-z_]\w*)\s+([^\n\\]+)\s*$", re.M)
 _ENUM_RE = re.compile(r"enum(?:\s+class)?\s+([A-Za-z_]\w*)[^\{;]*\{(.*?)\};", re.S)

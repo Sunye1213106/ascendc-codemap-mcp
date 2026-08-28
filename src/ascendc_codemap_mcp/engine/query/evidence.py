@@ -26,6 +26,9 @@ USEFUL_EDGE_KINDS: tuple[str, ...] = (
     "DERIVES",
     "SELECTS",
     "LAUNCHES",
+    "CALLS_UNDER_GUARD",
+    "MATERIALIZES_AS",
+    "ALLOCATES",
     "SIGNALS",
     "AWAITS",
     "FLOWS_TO",
@@ -39,9 +42,27 @@ USEFUL_EDGE_KINDS: tuple[str, ...] = (
     "ACTIVE_UNDER",
     "CONTAINS",
     "RETURNS",
+    "EXPANDS_TO",
 )
 
-_FIELD_EDGE_KINDS = frozenset({"WRITES", "READS", "DERIVES", "CONTROLS"})
+# Semantic impact walk. CALLS is omitted on purpose (site-collapsed, too broad).
+CLOSURE_EDGE_KINDS: tuple[str, ...] = (
+    "ALIASES",
+    "DERIVES",
+    "WRITES",
+    "READS",
+    "BINDS",
+    "SELECTS",
+    "MATERIALIZES_AS",
+    "GUARDED_BY",
+    "CONTROLS",
+    "CALLS_UNDER_GUARD",
+    "FLOWS_TO",
+    "ALLOCATES",
+    "EXPANDS_TO",
+)
+
+_FIELD_EDGE_KINDS = frozenset(CLOSURE_EDGE_KINDS)
 
 _FLAG_SYNC_CALLEES = FLAG_SYNC_CALLEES
 _TQUE_CALLEES = TQUE_CALLEES

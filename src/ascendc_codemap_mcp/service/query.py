@@ -46,6 +46,10 @@ _KIND_LAYER = {
     "EVENT": "kernel",
     "QUEUE": "kernel",
     "REGISTER": "kernel",
+    "CONTRACT": "host",
+    "PREDICATE": "host",
+    "BRANCH": "host",
+    "COMPILE_VAR": "template",
 }
 
 _PAGE_KEYS = (
@@ -147,8 +151,13 @@ def _edges_truncated(payload: dict[str, Any]) -> bool:
 
 
 def _infer_verdict(payload: dict[str, Any], *, truncated: bool) -> str:
-    if payload.get("empty_reason") == "nl_or_multi_token":
+    completeness = str(payload.get("completeness") or "")
+    if completeness == "UNKNOWN" or payload.get("empty_reason") == "nl_or_multi_token":
         return VERDICT_UNKNOWN
+    if completeness == "INCOMPLETE" or completeness == "AMBIGUOUS":
+        return VERDICT_PARTIAL
+    if completeness == "COMPLETE":
+        return VERDICT_ANSWERED if not truncated else VERDICT_PARTIAL
     if not payload.get("ok"):
         return VERDICT_UNKNOWN
     shape = str(payload.get("shape") or "")
@@ -159,8 +168,7 @@ def _infer_verdict(payload: dict[str, Any], *, truncated: bool) -> str:
         return VERDICT_ANSWERED
     if count == 0:
         return VERDICT_PARTIAL if payload.get("hint") else VERDICT_UNKNOWN
-    completeness = str(payload.get("completeness") or "")
-    if completeness and completeness not in {"full", "siblings_checked"}:
+    if completeness and completeness not in {"full", "siblings_checked", ""}:
         if not payload.get("answerable"):
             return VERDICT_PARTIAL
     return VERDICT_ANSWERED
@@ -550,6 +558,49 @@ def evidence(
         engine="codemap_evidence",
         expected_snapshot_id=str(expected_snapshot_id or "").strip(),
         evidence_id=ev_id,
+    )
+
+
+def explore(
+    *,
+    codemap_id: str = "",
+    project: str = "",
+    architecture: str = "",
+    query: str = "",
+    pattern: str = "",
+    file: str = "",
+    line: int = 0,
+    line_end: int = 0,
+    evidence_id: str = "",
+    cursor: str = "",
+    limit: int = 8,
+    expected_snapshot_id: str = "",
+) -> dict[str, Any]:
+    """Single agent entry: ident / Dim=V / file:line / phenomenon / evidence page."""
+    ev = str(evidence_id or "").strip()
+    if ev:
+        return evidence(
+            codemap_id=codemap_id,
+            project=project,
+            architecture=architecture,
+            evidence_id=ev,
+            file=file,
+            line=line,
+            line_end=line_end,
+            limit=limit,
+            cursor=cursor,
+            expected_snapshot_id=expected_snapshot_id,
+        )
+    return query_codemap(
+        codemap_id=codemap_id,
+        project=project,
+        architecture=architecture,
+        pattern=str(query or pattern or ""),
+        file=file,
+        line=line,
+        line_end=line_end,
+        limit=limit,
+        cursor=cursor,
     )
 
 

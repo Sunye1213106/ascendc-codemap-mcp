@@ -47,6 +47,9 @@ class EntityKind(str, Enum):
     EVENT = "EVENT"
     QUEUE = "QUEUE"
 
+    # Index-time configuration contract (producers + transport + consumers).
+    CONTRACT = "CONTRACT"
+
     # Escapes for legacy KB kinds during adaptation.
     OTHER = "OTHER"
 

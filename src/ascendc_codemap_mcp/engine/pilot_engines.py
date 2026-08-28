@@ -194,12 +194,16 @@ def _ops_root(ctx: dict[str, Any], project_root: Path) -> str | None:
     raw = ctx.get("ops_root")
     if raw:
         return str(raw)
-    # Typical layout: …/ops-transformer/attention/<op>. Confirm by shape rather
-    # than by existence, or an operator two levels below anything at all would
-    # silently hand clang an include root with no headers in it.
-    parent = project_root.parent.parent
-    if (parent / "common" / "include").is_dir():
-        return str(parent)
+    # Typical layouts: …/ops-transformer/attention/<op> or
+    # …/ops-transformer/experimental/attention/<op>. Walk ancestors for the
+    # family `common/include` tree instead of assuming a fixed depth.
+    cur = project_root.parent
+    for _ in range(6):
+        if (cur / "common" / "include").is_dir():
+            return str(cur)
+        if cur.parent == cur:
+            break
+        cur = cur.parent
     found = paths.ops_root()
     return str(found) if found is not None else None
 

@@ -36,6 +36,14 @@ from ascendc_codemap_mcp.engine.passes.tiling_host_writes import enrich_tiling_h
 from ascendc_codemap_mcp.engine.passes.value_defining_sites import enrich_value_defining_sites
 from ascendc_codemap_mcp.engine.passes.host_checks import enrich_host_checks
 from ascendc_codemap_mcp.engine.passes.tiling_context_apis import enrich_tiling_context_apis
+from ascendc_codemap_mcp.engine.passes.guarded_calls import enrich_guarded_calls
+from ascendc_codemap_mcp.engine.passes.constexpr_alias import enrich_constexpr_aliases
+from ascendc_codemap_mcp.engine.passes.host_predicates import enrich_host_predicates
+from ascendc_codemap_mcp.engine.passes.compile_policy import enrich_compile_policy
+from ascendc_codemap_mcp.engine.passes.workspace_abi import enrich_workspace_abi
+from ascendc_codemap_mcp.engine.passes.consumer_role import enrich_consumer_roles
+from ascendc_codemap_mcp.engine.passes.entry_path import enrich_entry_paths
+from ascendc_codemap_mcp.engine.passes.contracts import enrich_contracts
 from ascendc_codemap_mcp.engine.passes.tiling_kernel_reads import rebuild_verified_tiling_reads
 from ascendc_codemap_mcp.engine.passes.tiling_registration import enrich_tiling_registrations
 from ascendc_codemap_mcp.engine.passes.tiling_template_registry import enrich_tiling_template_registry
@@ -46,7 +54,7 @@ from ascendc_codemap_mcp.engine.timing import log as _tlog, timing_enabled
 # Same-process reuse between analyze (commit=False) and commit. Avoids paying
 # the full source-enrichment stack twice in one uo-init run.
 _COMPILE_MEM: dict[str, dict[str, Any]] = {}
-ANALYZE_CACHE_VERSION = 1
+ANALYZE_CACHE_VERSION = 2
 
 
 def _cache_key(op_root: Path, op_name: str, architecture: str) -> str:
@@ -282,6 +290,14 @@ def compile_codemap(
             ("kernel_tiling_metrics", finalize_kernel_tiling_metrics, {"skip_arch": True}),
             # Kernel Root Trace (UO canonical): wrappers / calls → AscendC root.
             ("kernel_root_trace", finalize_kernel_root_trace, {}),
+            ("guarded_calls", enrich_guarded_calls, {"needs_irs": True}),
+            ("constexpr_alias", enrich_constexpr_aliases, {}),
+            ("host_predicates", enrich_host_predicates, {"needs_host_ir": True}),
+            ("compile_policy", enrich_compile_policy, {}),
+            ("workspace_abi", enrich_workspace_abi, {}),
+            ("consumer_roles", enrich_consumer_roles, {}),
+            ("entry_paths", enrich_entry_paths, {"needs_host_ir": True}),
+            ("contracts", enrich_contracts, {}),
             # After root-trace purge: host TilingContext APIs are not kernel ops.
             ("tiling_context_apis", enrich_tiling_context_apis, {"needs_host_ir": True}),
         ):

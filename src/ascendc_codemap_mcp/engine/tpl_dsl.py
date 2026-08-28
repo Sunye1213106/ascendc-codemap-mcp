@@ -42,6 +42,12 @@ def bool_value_aliases(value: int | bool | str) -> tuple[str, ...]:
     return (text,)
 
 
+def is_tiling_struct_sel(sel: dict) -> bool:
+    """ARGS_SEL layout pick, not a TilingKey dim."""
+    kind = str((sel or {}).get("kind") or "").upper()
+    return kind in {"TILING_STRUCT", "TILING_STRUCT_SEL"} or bool((sel or {}).get("struct"))
+
+
 def canonicalize_sel_vals(kind: str, vals: list[str]) -> list[str]:
     if str(kind).upper() != "BOOL":
         return [str(v) for v in vals]
@@ -172,6 +178,11 @@ def schema_construct_macros(schema: TplSchema) -> frozenset[str]:
                 names.add("ASCENDC_TPL_UI_LIST")
             if "UI_RANGE" in marker:
                 names.add("ASCENDC_TPL_UI_RANGE")
+    if has_sel:
+        for group in schema.selections:
+            if any(is_tiling_struct_sel(sel) for sel in group):
+                names.add("ASCENDC_TPL_TILING_STRUCT_SEL")
+                break
     return frozenset(names)
 
 
@@ -547,11 +558,28 @@ def parse_args_sel(src: str) -> list[list[dict]]:
         body = _balanced_paren_body(src, m.end() - 1)
         sels: list[dict] = []
         for sm in re.finditer(
-            r"ASCENDC_TPL_(UINT|BOOL|DTYPE|FORMAT)_SEL\s*\(", body
+            r"ASCENDC_TPL_(UINT|BOOL|DTYPE|FORMAT)_SEL\s*\(|"
+            r"ASCENDC_TPL_TILING_STRUCT_SEL\s*\(",
+            body,
         ):
-            kind = sm.group(1)
             inner = _balanced_paren_body(body, sm.end() - 1)
             parts = _split_args(inner)
+            token = sm.group(0)
+            if "TILING_STRUCT_SEL" in token:
+                struct = (parts[0].split("::")[-1] if parts else "").strip()
+                if not struct:
+                    continue
+                sels.append(
+                    {
+                        "name": struct,
+                        "kind": "TILING_STRUCT",
+                        "vals": [struct],
+                        "struct": struct,
+                        "line": line,
+                    }
+                )
+                continue
+            kind = sm.group(1)
             sels.append(
                 {
                     "name": parts[0],
@@ -614,6 +642,8 @@ def expand_legal_instances(schema: TplSchema) -> list[dict[str, str]]:
     for group in schema.selections:
         axes: list[tuple[str, list[str]]] = []
         for sel in group:
+            if is_tiling_struct_sel(sel):
+                continue
             name = sel["name"]
             vals = sel["vals"]
             # UINT_SEL often: name, UI_LIST, v1, v2... or name, UI_RANGE, lo, hi

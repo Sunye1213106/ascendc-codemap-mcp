@@ -490,6 +490,39 @@ def _upsert_sel_groups(codemap: CodeMap, schema: TplSchema, header_ref: str) -> 
                 },
                 status="confirmed",
             )
+        group = schema.selections[block.sel_group_index] if 0 <= block.sel_group_index < len(schema.selections) else []
+        from ascendc_codemap_mcp.engine.tpl_dsl import is_tiling_struct_sel
+
+        for sel in group:
+            if not is_tiling_struct_sel(sel):
+                continue
+            struct = str(sel.get("struct") or sel.get("name") or "").split("::")[-1]
+            if not struct:
+                continue
+            hits = codemap.by_name(struct, kind=EntityKind.TILING_DATA)
+            target = hits[0] if hits else codemap.upsert(
+                EntityKind.TILING_DATA,
+                struct,
+                attrs={
+                    "provenance": "source_tpl_tiling_struct_sel",
+                    "registered_only": True,
+                },
+                file=header_ref,
+                line=int(sel.get("line") or block.line_start or 0),
+                status="confirmed",
+            )
+            codemap.link(
+                RelationKind.SELECTS,
+                tpl.id,
+                target.id,
+                attrs={
+                    "provenance": "source_tpl_tiling_struct_sel",
+                    "sel_group_index": block.sel_group_index,
+                    "file": header_ref,
+                    "line": int(sel.get("line") or block.line_start or 0),
+                },
+                status="confirmed",
+            )
 
 
 def _build_tpl_views(schema: TplSchema, header_ref: str) -> dict[str, Any]:

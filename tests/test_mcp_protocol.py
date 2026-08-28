@@ -12,6 +12,7 @@ from ascendc_codemap_mcp.service.query import query_codemap
 EXPECTED_TOOLS = [
     "codemap_discover",
     "codemap_status",
+    "codemap_explore",
     "codemap_overview",
     "codemap_symbol",
     "codemap_selection",
@@ -65,6 +66,7 @@ def test_mcp_server_tool_names() -> None:
     names = _tool_names(create_server())
     for name in EXPECTED_TOOLS:
         assert name in names
+    assert names.index("codemap_explore") < names.index("codemap_symbol")
     assert names.index("codemap_symbol") < names.index("query_codemap")
 
 

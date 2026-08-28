@@ -13,14 +13,16 @@ from ascendc_codemap_mcp.constants import (
 
 _AGENTS_BODY = """# AscendC CodeMap MCP
 
-Use MCP server `ascendc-codemap-mcp` for AscendC operator structure.
+Use MCP server `ascendc-codemap-mcp`. Identity: `codemap_discover` then `codemap.id` (`p:<workspace>::op@arch`). Missing → `codemap_doctor` / `codemap_index`. Stale/dirty → `codemap_update`.
 
-- Identity: `codemap_discover` then pass `codemap.id` (`p:<workspace>::op@arch`). `op@arch` is an alias; if it matches two workspaces, use the canonical id.
-- Missing CodeMap: `codemap_doctor` then `codemap_index`. If doctor fails, follow `next_steps` (CANN Toolkit `.run` + `cann-extract`, LLVM 18). Do not run the `.run` installer.
-- Existing CodeMap after source change: `codemap_status` (read `freshness`) then `codemap_update`. `ok` is not the workflow state; read `state` and `updated`.
-- Questions about the graph: `codemap_overview` / `codemap_symbol` / `codemap_selection` / `codemap_evidence`. Follow `evidence[].id`. If `coverage.truncated`, pass `next_cursor`.
-- `count: 0` is not proof of absence. Follow `hint`.
-- Answer the layer asked (domain / template / host / kernel). Do not write LLM patches into `.uo`.
+```text
+代码语义（谁写谁读 / 为什么走这条路 / 改了影响谁）  → codemap_explore
+已知文件 + 精确源码细节                            → targeted Read
+字面文本 / 正则 / 文档 / 配置                      → grep/read
+CodeMap 报 INCOMPLETE                              → 按它给的窗口做 targeted 源码兜底
+```
+
+CLI fallback (same engine): `ascendc-codemap-mcp query --codemap-id ID "<ident|Dim=V|现象>"`.
 """
 
 

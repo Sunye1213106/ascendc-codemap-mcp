@@ -32,6 +32,7 @@ from ascendc_codemap_mcp.service.control import (
 from ascendc_codemap_mcp.service.models import DoctorResult, Envelope
 from ascendc_codemap_mcp.service.query import (
     evidence as evidence_impl,
+    explore as explore_impl,
     overview as overview_impl,
     query_codemap as query_impl,
     selection as selection_impl,
@@ -47,7 +48,8 @@ Workflow:
 2. Read resource codemap://map/{codemap_id} or call codemap_status
 3. If not indexed: codemap_doctor then codemap_index (minutes). Do not index on connect. If doctor.ok is false, follow doctor.next_steps (download CANN Toolkit .run, cann-extract, install LLVM 18). Do not run the .run installer.
 4. If stale or dirty: codemap_update. If state=needs_confirmation, ask the user before confirm_scope=true.
-5. Query with typed tools: codemap_overview, codemap_symbol, codemap_selection, codemap_evidence.
+5. Query with codemap_explore (ident / Dim=V / file:line / phenomenon). evidence_id or cursor continues a prior card.
+Typed tools remain as CLI/service primitives.
 
 Rules:
 - Never guess architecture. Never pass a natural-language sentence as a symbol.
@@ -148,6 +150,34 @@ def codemap_status(
     """Freshness of one CodeMap versus current sources. Pass codemap_id, or project AND architecture."""
     return _envelope(
         status_impl(codemap_id=codemap_id, project=project, architecture=architecture)
+    )
+
+
+@mcp.tool(title="Explore CodeMap", annotations=READ, structured_output=True)
+def codemap_explore(
+    codemap_id: str,
+    query: str = "",
+    file: str = "",
+    line: int = 0,
+    line_end: int = 0,
+    evidence_id: str = "",
+    cursor: str = "",
+    limit: int = 8,
+    expected_snapshot_id: str = "",
+) -> Envelope:
+    """Unified contract card. Pass one identifier, Dim=V, file+line, a phenomenon phrase, or evidence_id/cursor to continue."""
+    return _envelope(
+        explore_impl(
+            codemap_id=codemap_id,
+            query=query,
+            file=file,
+            line=line,
+            line_end=line_end,
+            evidence_id=evidence_id,
+            cursor=cursor,
+            limit=limit,
+            expected_snapshot_id=expected_snapshot_id,
+        )
     )
 
 
@@ -280,7 +310,7 @@ def query_codemap(
     limit: int = 8,
     cursor: str = "",
 ) -> Envelope:
-    """Compatibility facade. Prefer codemap_overview / codemap_symbol / codemap_selection / codemap_evidence. Requires codemap_id, or project AND architecture together."""
+    """Compatibility facade. Prefer codemap_explore. Requires codemap_id, or project AND architecture together."""
     return _envelope(
         query_impl(
             codemap_id=codemap_id,
@@ -352,17 +382,16 @@ def map_resource(codemap_id: str) -> str:
 @mcp.prompt(
     name="query_operator",
     title="Query an operator CodeMap",
-    description="Typed CodeMap query workflow for one codemap_id.",
+    description="Explore a CodeMap for one codemap_id.",
 )
 def query_operator(codemap_id: str, focus: str = "") -> str:
     extra = f" Focus: {focus}." if str(focus or "").strip() else ""
     return (
         f"Query AscendC CodeMap `{codemap_id}` with MCP tools on server {SERVER_NAME}."
         f"{extra}\n"
-        "Use codemap_status first (freshness). Then codemap_overview, "
-        "codemap_symbol (one identifier), codemap_selection (dim + optional value), "
-        "or codemap_evidence (evidence_id). Do not pass a natural-language sentence "
-        "as symbol. Follow evidence[].id. If coverage.truncated, pass next_cursor."
+        "Use codemap_status first (freshness). Then codemap_explore with one "
+        "identifier, Dim=V, file+line, or a phenomenon phrase. Continue with "
+        "evidence_id or cursor. completeness=COMPLETE is the only finished answer."
     )
 
 

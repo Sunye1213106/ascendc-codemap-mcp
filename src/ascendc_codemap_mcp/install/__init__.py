@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 from ascendc_codemap_mcp.constants import PRODUCT_NAME
 from ascendc_codemap_mcp.install import claude, codex, cursor, opencode, skills as skill_install
@@ -13,7 +14,13 @@ def mcp_command() -> list[str]:
 
 
 def mcp_env() -> dict[str, str]:
-    return {"PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"}
+    # Pin the agent to this checkout even if another site-packages copy exists.
+    src = str(Path(__file__).resolve().parents[2])
+    return {
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONPATH": src,
+    }
 
 
 def run_install(*, dry_run: bool = False) -> int:

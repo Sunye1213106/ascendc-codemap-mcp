@@ -1110,6 +1110,16 @@ class CodeMap:
                 rel.attrs["file"] = site_file
                 rel.attrs["line"] = site_line
 
+        from ascendc_codemap_mcp.engine.passes.guarded_calls import ingest_guarded_calls
+
+        ingest_guarded_calls(
+            cm,
+            getattr(host_ir, "call_sites", None) or [],
+            side="host",
+            architecture=architecture,
+            ordinals=host_branch_ordinals,
+        )
+
         _ingest_host_checks(cm, host_ir, host_branch_ordinals)
         from ascendc_codemap_mcp.engine.passes.host_graph_status import enrich_host_graph_status
 

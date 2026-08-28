@@ -119,7 +119,7 @@ def test_query_by_codemap_id_after_status(tmp_path: Path) -> None:
     assert payload.get("ok") is True
 
 
-def test_query_rejects_natural_language(tmp_path: Path) -> None:
+def test_query_phenomenon_does_not_reject_natural_language(tmp_path: Path) -> None:
     op = tmp_path / "toy_op"
     op.mkdir()
     _write_fixture(op)
@@ -128,8 +128,13 @@ def test_query_rejects_natural_language(tmp_path: Path) -> None:
         architecture="arch35",
         pattern="who writes IsPse",
     )
-    assert payload.get("ok") is False
-    assert payload.get("empty_reason") == "nl_or_multi_token"
+    assert payload.get("empty_reason") != "nl_or_multi_token"
+    assert payload.get("match") == "phenomenon" or payload.get("shape") in {
+        "explore",
+        "name",
+        "index",
+    }
+    assert payload.get("completeness") != "COMPLETE"
 
 
 def test_evidence_id_roundtrip(tmp_path: Path) -> None:

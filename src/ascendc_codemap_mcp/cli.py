@@ -34,6 +34,7 @@ def main(argv: list[str] | None = None) -> int:
             "  index     --project DIR --architecture ARCH\n"
             "  update    (--codemap-id ID | --project DIR --architecture ARCH) [--confirm-scope]\n"
             "  query     (--codemap-id ID | --project DIR --architecture ARCH) [pattern] [--file F --line N]\n"
+            "  explore   same as query (unified contract card)\n"
             "  status    (--codemap-id ID | --project DIR --architecture ARCH)\n"
         )
         return 0
@@ -76,7 +77,7 @@ def main(argv: list[str] | None = None) -> int:
         from ascendc_codemap_mcp.cann_extract import main as extract_main
 
         return extract_main(rest)
-    if cmd in {"doctor", "index", "update", "query", "status", "discover"}:
+    if cmd in {"doctor", "index", "update", "query", "explore", "status", "discover"}:
         parser = argparse.ArgumentParser(prog=f"{PRODUCT_NAME} {cmd}")
         parser.add_argument("--project", default="")
         parser.add_argument("--architecture", default="")

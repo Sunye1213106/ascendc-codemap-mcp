@@ -331,6 +331,26 @@ def _branch_scan_files(root: Path, architecture: str) -> list[Path]:
     return out
 
 
+def _tiling_key_at_order(codemap: CodeMap, order: int) -> Entity | None:
+    """Declared TPL dim at ``decl_order``, for positional NTTP bind when names differ."""
+    ranked: list[tuple[int, str, Entity]] = []
+    for ent in codemap.by_kind(EntityKind.TILING_KEY):
+        if not ent.attrs.get("source_declared") and ent.attrs.get("decl_order") is None:
+            continue
+        try:
+            idx = int(ent.attrs.get("decl_order"))
+        except (TypeError, ValueError):
+            continue
+        ranked.append((idx, ent.name, ent))
+    ranked.sort()
+    if 0 <= order < len(ranked):
+        return ranked[order][2]
+    for idx, _name, ent in ranked:
+        if idx == order:
+            return ent
+    return None
+
+
 def _branch_ident_names(codemap: CodeMap) -> list[str]:
     names: set[str] = set()
     for kind in _BRANCH_NAME_KINDS:
@@ -665,42 +685,56 @@ def _rebuild_kernel_contract(
             )
             args = _TEMPLATE_PARAM_RE.findall(match.group("tpl") or "")
             for order, arg_name in enumerate(args):
-                arg = codemap.upsert(
-                    EntityKind.TEMPLATE_ARG,
-                    arg_name,
-                    eid=f"SRCKTPLARG::{file}::{name}::{order}::{arg_name}",
-                    attrs={
-                        "owner": name,
-                        "order": order,
-                        "provenance": "source_kernel_template_verified",
-                    },
-                    file=file,
-                    line=line,
-                    status="confirmed",
-                )
-                codemap.link(
-                    RelationKind.DECLARES,
-                    template.id,
-                    arg.id,
-                    attrs={"provenance": "source_kernel_template_verified"},
-                    status="confirmed",
-                )
-                for key in codemap.by_name(arg_name, kind=EntityKind.TILING_KEY):
-                    codemap.mint_candidate_relation(
-                        RelationKind.BINDS,
-                        key.id,
+                    arg = codemap.upsert(
+                        EntityKind.TEMPLATE_ARG,
+                        arg_name,
+                        eid=f"SRCKTPLARG::{file}::{name}::{order}::{arg_name}",
+                        attrs={
+                            "owner": name,
+                            "order": order,
+                            "provenance": "source_kernel_template_verified",
+                        },
+                        file=file,
+                        line=line,
+                        status="confirmed",
+                    )
+                    codemap.link(
+                        RelationKind.DECLARES,
+                        template.id,
                         arg.id,
-                        provenance="source_tpl_name_match_verified",
-                        extra={"file": file, "line": line},
+                        attrs={"provenance": "source_kernel_template_verified"},
+                        status="confirmed",
                     )
                     codemap.link(
                         RelationKind.CONTROLS,
                         arg.id,
                         kernel.id,
-                        attrs={"provenance": "source_kernel_template_param_verified", "file": file, "line": line},
+                        attrs={
+                            "provenance": "source_kernel_template_param_verified",
+                            "file": file,
+                            "line": line,
+                        },
                         status="confirmed",
                     )
-                    template_args += 1
+                    for key in codemap.by_name(arg_name, kind=EntityKind.TILING_KEY):
+                        codemap.mint_candidate_relation(
+                            RelationKind.BINDS,
+                            key.id,
+                            arg.id,
+                            provenance="source_tpl_name_match_verified",
+                            extra={"file": file, "line": line},
+                        )
+                        template_args += 1
+                    pos_key = _tiling_key_at_order(codemap, order)
+                    if pos_key is not None and pos_key.name != arg_name:
+                        codemap.mint_candidate_relation(
+                            RelationKind.BINDS,
+                            pos_key.id,
+                            arg.id,
+                            provenance="source_tpl_positional_bind",
+                            extra={"file": file, "line": line, "order": order},
+                        )
+                        template_args += 1
 
             params = [_param_name(x) for x in _split_args(match.group("params"))]
             params = [p for p in params if p]

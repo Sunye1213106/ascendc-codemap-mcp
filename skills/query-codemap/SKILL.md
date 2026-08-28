@@ -1,37 +1,26 @@
 ---
 name: query-codemap
-description: Query an existing AscendC operator CodeMap. Use when asking what is on the graph, who writes/reads a name, whether a Dim=V compiles, or what sits at file:line.
+description: Query an existing AscendC operator CodeMap. Use when asking who writes/reads a name, why a path is taken, or what a change affects.
 ---
 
 # Query CodeMap
 
-Use MCP `query_codemap` on server `ascendc-codemap-mcp`. Four input shapes only. Do not pass natural-language sentences.
-
-## Before querying
-
-If `codemap_status` says not indexed, stop and use skill `index-operator`. If indexed but sources changed (git pull), use skill `update-operator` before querying. Do not Glob/Grep for `.uo`.
-
-## Four shapes
-
-1. **No pattern** — index (launch / PIPE names).
-2. **Identifier** — name / definition / who writes who reads. One card includes `definition`, `host.writers`, `kernel.readers`, `flow`.
-3. **`Dim=<name>` or `Name=Value`** — legal set / whether a combo compiles. Read `sel_sites` / `dim_coverage`.
-4. **`file` + `line`** — statement window at a site copied from a previous card. Includes enclosing + `impact`.
-
-## Rules
-
-- Pick the shortest shape. Cards are evidence pointers (`file:line`). Quote a construct only after seeing its own line.
-- `count: 0` is not "does not exist". Follow `hint` / `canonical` / `text_hits`, then PARTIAL / UNKNOWN.
-- List conclusions need totals (`dim_coverage`, `matching_block_count`, `edges.*.count`). If `count` exceeds listed neighbors, PARTIAL.
-- Answer the layer asked. Host produced ≠ template admissible ≠ kernel consumed.
-- Do not write LLM patches into `.uo`.
-
-## Output
+Identity: `codemap_discover` then pass `codemap_id`. Missing map → `index-operator`. Stale/dirty → `update-operator`.
 
 ```text
-verdict: ANSWERED | PARTIAL | UNKNOWN
-layer: domain | template | host | kernel
-span: file:line
-coverage: dim_coverage=... / count=...
-missing: ...
+代码语义（谁写谁读 / 为什么走这条路 / 改了影响谁）  → codemap_explore
+已知文件 + 精确源码细节                            → targeted Read
+字面文本 / 正则 / 文档 / 配置                      → grep/read
+CodeMap 报 INCOMPLETE                              → 按它给的窗口做 targeted 源码兜底
 ```
+
+`codemap_explore` 参数：一个 ident、`Dim=V`、`file`+`line`、现象短语，或上一张卡的 `evidence_id`/`cursor`。
+
+CLI（无 MCP 的子 agent / 脚本）走同一引擎：
+
+```text
+ascendc-codemap-mcp query --codemap-id ID "<ident|Dim=V|现象>"
+ascendc-codemap-mcp query --codemap-id ID --file PATH --line N
+```
+
+`completeness=COMPLETE` 才可当答完。`INCOMPLETE` 时只用卡上的 `windows`，不要无边界 grep。

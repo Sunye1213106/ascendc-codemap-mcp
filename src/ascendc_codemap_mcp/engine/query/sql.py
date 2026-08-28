@@ -42,8 +42,6 @@ from ascendc_codemap_mcp.engine.query.evidence import (
 from ascendc_codemap_mcp.engine.query.hints import (
     attach_query_hints,
     identifier_tokens,
-    looks_like_nl_or_multi_token,
-    nl_or_multi_token_payload,
     search_needles,
 )
 from ascendc_codemap_mcp.engine.paths import CANN_MARKER, cann_root
@@ -106,6 +104,15 @@ _PROTECTED_PAYLOAD_KEYS = frozenset(
         "text_hits",
         "text_hits_total",
         "text_hits_complete",
+        "contract",
+        "completeness",
+        "proof",
+        "impact_sinks",
+        "entry",
+        "checks",
+        "unresolved_reason",
+        "unresolved_reasons",
+        "windows",
     }
 )
 PACKING_RHS_TRIM = 400
@@ -5065,15 +5072,26 @@ class UoSqlQuery:
         path = str(file or "").strip()
         line_n = int(line or 0)
         if path and line_n:
-            return self.query_around(path, line_n, line_end=int(line_end or line_n), limit=limit)
+            payload = self.query_around(path, line_n, line_end=int(line_end or line_n), limit=limit)
+            from ascendc_codemap_mcp.engine.query.explore import attach_explore_fields
+
+            return _fit_payload(attach_explore_fields(self, payload, pattern=f"{path}:{line_n}"))
         text = str(pattern or "").strip()
         if not text:
             return self.query_index(limit=limit)
-        if looks_like_nl_or_multi_token(text):
-            return _fit_payload(nl_or_multi_token_payload(text))
+        from ascendc_codemap_mcp.engine.query.explore import (
+            attach_explore_fields,
+            phenomenon_payload,
+            should_use_phenomenon,
+        )
+
+        if should_use_phenomenon(text):
+            return _fit_payload(phenomenon_payload(self, text, limit=limit))
         if "=" in text:
-            return self.query_cover(text, limit=limit)
-        return self.query_name_card(text, limit=limit)
+            payload = self.query_cover(text, limit=limit)
+            return _fit_payload(attach_explore_fields(self, payload, pattern=text))
+        payload = self.query_name_card(text, limit=limit)
+        return _fit_payload(attach_explore_fields(self, payload, pattern=text))
 
     def query_name_card(self, pattern: str, *, limit: int = 8) -> dict[str, Any]:
         needle = str(pattern or "").strip()

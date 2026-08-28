@@ -1,45 +1,26 @@
 ---
 name: query-codemap
-description: Query an existing AscendC operator CodeMap. Use when asking what is on the graph, who writes/reads a name, whether a Dim=V compiles, or what sits at an evidence site.
+description: Query an existing AscendC operator CodeMap. Use when asking who writes/reads a name, why a path is taken, or what a change affects.
 ---
 
 # Query CodeMap
 
-Use MCP server `ascendc-codemap-mcp`. Prefer typed tools. `query_codemap` is a compatibility facade.
-
-## Before querying
-
-1. `codemap_discover` with the operator `project` if you do not yet have a `codemap.id` (`p:<workspace>::op@arch`; `op@arch` is an alias).
-2. `codemap_status(codemap_id)`. Read `freshness`.
-3. `freshness=unknown` and `indexed=false` → skill `index-operator`. `stale` or `dirty` → skill `update-operator`. `building` → wait and status again.
-
-Do not Glob/Grep for `.uo`. Do not guess architecture.
-
-## Typed tools
-
-| Intent | Tool |
-| --- | --- |
-| What can this map answer | `codemap_overview` |
-| Identifier definition / writers / readers | `codemap_symbol` (`symbol` is one identifier) |
-| Dim legal set / Name=Value compiles | `codemap_selection` (`dim`, optional `value`) |
-| Continue from a card | `codemap_evidence` (`evidence_id` from `evidence[].id`, plus `expected_snapshot_id`) |
-
-If `coverage.truncated` and `next_cursor` is set, pass `next_cursor`. Nested neighbor samples may set `nested_truncated` without a cursor — do not invent a page. Do not pass a natural-language sentence as `symbol`.
-
-## Rules
-
-- Quote a construct only after seeing its own `file:line` or `evidence_id`.
-- `count: 0` is not "does not exist". Follow `hint` / `canonical` / `text_hits`, then PARTIAL / UNKNOWN.
-- List conclusions need totals. If `coverage.truncated` or `count` exceeds listed neighbors, PARTIAL.
-- Answer the layer asked. Host produced ≠ template admissible ≠ kernel consumed.
-- Keep `evidence_id` (`span:...`) and its `snapshot_id` across turns; pass `expected_snapshot_id` on `codemap_evidence`. Line numbers drift when sources move.
-
-## Output
+Identity: `codemap_discover` then pass `codemap_id`. Missing map → `index-operator`. Stale/dirty → `update-operator`.
 
 ```text
-verdict: ANSWERED | PARTIAL | UNKNOWN
-layer: domain | template | host | kernel
-span: file:line
-coverage: returned/total truncated=...
-missing: ...
+代码语义（谁写谁读 / 为什么走这条路 / 改了影响谁）  → codemap_explore
+已知文件 + 精确源码细节                            → targeted Read
+字面文本 / 正则 / 文档 / 配置                      → grep/read
+CodeMap 报 INCOMPLETE                              → 按它给的窗口做 targeted 源码兜底
 ```
+
+`codemap_explore` 参数：一个 ident、`Dim=V`、`file`+`line`、现象短语，或上一张卡的 `evidence_id`/`cursor`。
+
+CLI（无 MCP 的子 agent / 脚本）走同一引擎：
+
+```text
+ascendc-codemap-mcp query --codemap-id ID "<ident|Dim=V|现象>"
+ascendc-codemap-mcp query --codemap-id ID --file PATH --line N
+```
+
+`completeness=COMPLETE` 才可当答完。`INCOMPLETE` 时只用卡上的 `windows`，不要无边界 grep。

@@ -10,7 +10,7 @@ from typing import Any, Iterable
 from ascendc_codemap_mcp.engine.ids import named_id, slug
 from ascendc_codemap_mcp.engine.kb_model import CONTROLLABLE_ROOTS, STATUS_EXTRACTED, STATUS_PARTIAL
 from ascendc_codemap_mcp.engine.tpl_bind import BindingResult
-from ascendc_codemap_mcp.engine.tpl_dsl import TplSchema, expand_legal_instances, parse_file
+from ascendc_codemap_mcp.engine.tpl_dsl import TplSchema, expand_legal_instances, is_tiling_struct_sel, parse_file
 from ascendc_codemap_mcp.engine.variable_model import VariableModel
 
 KEY_REACHABLE = "reachable"
@@ -115,6 +115,8 @@ def build_template_blocks(schema: TplSchema) -> list[TemplateBlock]:
         domains: dict[str, list[str]] = {}
         product = 1
         for sel in group:
+            if is_tiling_struct_sel(sel):
+                continue
             name = str(sel["name"])
             domain = _sel_domain(sel)
             if not domain:
@@ -156,6 +158,8 @@ def expand_legal_with_groups(schema: TplSchema) -> list[tuple[int, dict[str, str
     for gi, group in enumerate(schema.selections):
         axes: list[tuple[str, list[str]]] = []
         for sel in group:
+            if is_tiling_struct_sel(sel):
+                continue
             axes.append((str(sel["name"]), _sel_domain(sel)))
         if not axes:
             continue
