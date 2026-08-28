@@ -809,9 +809,8 @@ def write_codemap(
     finally:
         conn.close()
 
-    # `shared_uo` keeps a process-wide read-only connection alive on purpose
-    # (re-mmapping a large .uo per query was the Windows freeze). That handle
-    # blocks unlink on Windows, so whoever replaces the product must release it
+    # Query connections are pooled per (path, thread). Those handles block
+    # unlink on Windows, so whoever replaces the product must release them
     # rather than relying on callers to remember.
     from ascendc_codemap_mcp.engine.store.reader import close_uo_connections
 

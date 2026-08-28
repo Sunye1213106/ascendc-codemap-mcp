@@ -9,7 +9,7 @@ from typing import Any
 from ascendc_codemap_mcp.service.identity import snapshot_id as make_snapshot_id
 
 
-def _stat_hash(root: Path, file: str) -> str:
+def _stat_fingerprint(root: Path, file: str) -> str:
     rel = str(file or "").replace("\\", "/").lstrip("./")
     if not rel:
         return ""
@@ -40,12 +40,13 @@ def mint(
     ev_id = f"span:{eid}" if eid else (
         "ev:" + hashlib.sha256(f"{path}|{line_n}".encode("utf-8")).hexdigest()[:16]
     )
+    fingerprint = _stat_fingerprint(op_root, path) if op_root is not None else ""
     return {
         "id": ev_id,
         "entity_id": eid,
         "file": path,
         "line": line_n,
-        "source_hash": _stat_hash(op_root, path) if op_root is not None else "",
+        "source_stat_fingerprint": fingerprint,
         "snapshot_id": snapshot,
     }
 

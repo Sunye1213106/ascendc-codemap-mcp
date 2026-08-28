@@ -4,7 +4,7 @@ from __future__ import annotations
 
 PRODUCT_NAME = "ascendc-codemap-mcp"
 SERVER_NAME = "ascendc-codemap-mcp"
-SERVER_VERSION = "0.3.0"
+SERVER_VERSION = "0.4.0"
 PROTOCOL = "2026-07-28"
 PRODUCT_DIR_NAME = ".ascendc-codemap"
 MCP_MARK_BEGIN = "# >>> ascendc-codemap-mcp >>>"

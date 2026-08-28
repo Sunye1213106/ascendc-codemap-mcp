@@ -15,7 +15,6 @@ locks = SnapshotLocks()
 _FLAG_LOCK = threading.Lock()
 _BUILDING: set[str] = set()
 _BLOCKED: set[str] = set()
-_CANCEL: dict[str, threading.Event] = {}
 
 
 def mark_building(codemap_id: str) -> None:
@@ -50,36 +49,15 @@ def is_blocked(codemap_id: str) -> bool:
         return codemap_id in _BLOCKED
 
 
-def cancel_event(codemap_id: str) -> threading.Event:
-    with _FLAG_LOCK:
-        ev = _CANCEL.get(codemap_id)
-        if ev is None:
-            ev = threading.Event()
-            _CANCEL[codemap_id] = ev
-        return ev
-
-
-def request_cancel(codemap_id: str) -> None:
-    cancel_event(codemap_id).set()
-
-
-def clear_cancel(codemap_id: str) -> None:
-    with _FLAG_LOCK:
-        ev = _CANCEL.pop(codemap_id, None)
-    if ev is not None:
-        ev.set()
-
-
 def cache_stats() -> dict[str, int]:
     return cache.stats()
 
 
 def shutdown() -> None:
     cache.close_all()
+    from ascendc_codemap_mcp.engine.store.reader import close_uo_connections
+
+    close_uo_connections()
     with _FLAG_LOCK:
         _BUILDING.clear()
         _BLOCKED.clear()
-        events = list(_CANCEL.values())
-        _CANCEL.clear()
-    for ev in events:
-        ev.set()

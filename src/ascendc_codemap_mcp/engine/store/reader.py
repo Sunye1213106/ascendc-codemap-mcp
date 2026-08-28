@@ -7,15 +7,18 @@ import json
 import os
 import sqlite3
 import threading
-from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Iterable
 
-_SHARED_LOCK = threading.Lock()
-_SHARED_CONN: OrderedDict[str, sqlite3.Connection] = OrderedDict()
-# Keep in step with service.cache.MAX_OPEN_CODEMAPS so a long-lived MCP
-# process can hold a few operators without reconnect thrash.
-_SHARED_CONN_MAX = 4
+_CONN_LOCK = threading.Lock()
+# (resolved path, thread ident) → connection. MCP SDK runs sync tools on a
+# worker pool; sqlite3 connections are not shareable across threads and must
+# not be used concurrently even with check_same_thread=False.
+_CONN: dict[tuple[str, int], sqlite3.Connection] = {}
+
+
+def _product_key(path: str | Path) -> str:
+    return str(Path(path).expanduser().resolve())
 
 
 def _configure_readonly(conn: sqlite3.Connection) -> sqlite3.Connection:
@@ -45,43 +48,55 @@ def _connect_readonly(path: str | Path) -> sqlite3.Connection:
 
 
 def shared_uo(path: str | Path) -> sqlite3.Connection:
-    """One live read-only connection per process (evict others).
+    """Thread-local read-only connection for one ``.uo`` path.
 
-    Opening a 80MB ``.uo`` per query was the Windows freeze: each connect
-    remapped the file and cover queries did that several times per hop.
+    Opening an 80MB ``.uo`` per query was the Windows freeze: each connect
+    remapped the file. Reuse per thread, never across threads.
     """
-    key = str(Path(path).expanduser().resolve())
-    with _SHARED_LOCK:
-        hit = _SHARED_CONN.get(key)
+    key = _product_key(path)
+    tid = threading.get_ident()
+    slot = (key, tid)
+    with _CONN_LOCK:
+        hit = _CONN.get(slot)
         if hit is not None:
-            _SHARED_CONN.move_to_end(key)
             return hit
-        while len(_SHARED_CONN) >= _SHARED_CONN_MAX:
-            _, old = _SHARED_CONN.popitem(last=False)
-            try:
-                old.close()
-            except sqlite3.Error:
-                pass
-        conn = _connect_readonly(key)
-        _SHARED_CONN[key] = conn
-        return conn
-
-
-def close_uo_connections(path: str | Path | None = None) -> None:
-    """Drop the shared query connection(s). Tests and eval harness call this."""
-    with _SHARED_LOCK:
-        if path is None:
-            keys = list(_SHARED_CONN)
-        else:
-            keys = [str(Path(path).expanduser().resolve())]
-        for key in keys:
-            conn = _SHARED_CONN.pop(key, None)
-            if conn is None:
-                continue
+    conn = _connect_readonly(key)
+    with _CONN_LOCK:
+        again = _CONN.get(slot)
+        if again is not None:
             try:
                 conn.close()
             except sqlite3.Error:
                 pass
+            return again
+        _CONN[slot] = conn
+        return conn
+
+
+def close_uo_connections(path: str | Path | None = None) -> None:
+    """Close pooled read connections so Windows can replace the ``.uo``."""
+    with _CONN_LOCK:
+        if path is None:
+            items = list(_CONN.items())
+            _CONN.clear()
+        else:
+            key = _product_key(path)
+            items = [(slot, conn) for slot, conn in list(_CONN.items()) if slot[0] == key]
+            for slot, _ in items:
+                _CONN.pop(slot, None)
+    for _, conn in items:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+
+
+def open_handle_count(path: str | Path | None = None) -> int:
+    with _CONN_LOCK:
+        if path is None:
+            return len(_CONN)
+        key = _product_key(path)
+        return sum(1 for slot in _CONN if slot[0] == key)
 
 from ascendc_codemap_mcp.engine.ir.codemap import CodeMap
 from ascendc_codemap_mcp.engine.ir.entity import Entity, EntityKind

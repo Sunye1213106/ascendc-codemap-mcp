@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-"""CodeMap identity: operator + architecture + snapshot, not a CLI path pair."""
+"""CodeMap identity: workspace + operator + architecture + snapshot."""
 from __future__ import annotations
 
 import hashlib
 import os
+import re
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +15,8 @@ from ascendc_codemap_mcp.engine.source_layout import is_product_architecture
 from ascendc_codemap_mcp.service.envelope import fail
 
 FORMAT = "codemap-uo"
+_TOKEN_RE = re.compile(r"^p:[0-9a-f]{6}$")
+_ID_SPLIT_RE = re.compile(r"^(?:(p:[0-9a-f]{6})/)?(.+)$")
 
 
 @dataclass
@@ -24,80 +27,129 @@ class CodemapRef:
     op_name: str
     product: Path | None
 
+    @property
+    def alias(self) -> str:
+        return make_id(self.op_name, self.architecture)
+
 
 class Registry:
-    """Process-local map of ``op@arch`` → operator directory.
+    """Process-local map of canonical ``p:<ws>/op@arch`` → operator directory.
 
-    Query tools take ``codemap_id``. Index/discover still take a filesystem
-    path so the first snapshot can be created. After that the id is enough
-    for the life of this MCP process (and for env-backed defaults).
+    ``op@arch`` is an alias. If two workspaces share an alias, resolving the
+    alias returns ``AMBIGUOUS_CODEMAP_ID`` instead of overwriting.
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._by_id: dict[str, CodemapRef] = {}
+        self._alias: dict[str, list[str]] = {}
 
     def put(self, ref: CodemapRef) -> CodemapRef:
         with self._lock:
             self._by_id[ref.id] = ref
-            alias = make_id(ref.project.name, ref.architecture)
-            if alias != ref.id:
-                self._by_id[alias] = ref
+            alias = ref.alias
+            ids = self._alias.setdefault(alias, [])
+            if ref.id not in ids:
+                ids.append(ref.id)
         return ref
 
-    def get(self, codemap_id: str) -> CodemapRef | None:
+    def lookup(self, codemap_id: str) -> CodemapRef | list[CodemapRef] | None:
+        key = str(codemap_id or "").strip()
         with self._lock:
-            return self._by_id.get(codemap_id)
+            hit = self._by_id.get(key)
+            if hit is not None:
+                return hit
+            ids = list(self._alias.get(key) or [])
+            refs = [self._by_id[i] for i in ids if i in self._by_id]
+        if not refs:
+            return None
+        if len(refs) == 1:
+            return refs[0]
+        return refs
+
+    def get(self, codemap_id: str) -> CodemapRef | None:
+        hit = self.lookup(codemap_id)
+        if isinstance(hit, list):
+            return None
+        return hit
 
     def all(self) -> list[CodemapRef]:
         with self._lock:
-            seen: set[str] = set()
-            out: list[CodemapRef] = []
-            for ref in self._by_id.values():
-                key = str(ref.product or ref.id)
-                if key in seen:
-                    continue
-                seen.add(key)
-                out.append(ref)
-            return out
+            return list(self._by_id.values())
 
     def clear(self) -> None:
         with self._lock:
             self._by_id.clear()
+            self._alias.clear()
 
 
-def make_id(op_name: str, architecture: str) -> str:
+def project_token(project: str | Path) -> str:
+    path = Path(project).expanduser().resolve()
+    text = path.as_posix()
+    if os.name == "nt":
+        text = text.casefold()
+    return "p:" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:6]
+
+
+def make_id(op_name: str, architecture: str, project: str | Path | None = None) -> str:
     name = str(op_name or "").strip()
     arch = str(architecture or "").strip()
     if not name or not arch:
         return ""
-    return f"{name}@{arch}"
+    alias = f"{name}@{arch}"
+    if project is None:
+        return alias
+    return f"{project_token(project)}/{alias}"
 
 
 def parse_id(text: str) -> tuple[str, str] | None:
     raw = str(text or "").strip()
     if not raw or "@" not in raw:
         return None
-    name, arch = raw.rsplit("@", 1)
+    match = _ID_SPLIT_RE.match(raw)
+    if match is None:
+        return None
+    token, rest = match.group(1), match.group(2)
+    if token is not None and not _TOKEN_RE.match(token):
+        return None
+    name, arch = rest.rsplit("@", 1)
     name = name.strip()
     arch = arch.strip()
-    if not name or not is_product_architecture(arch):
+    if not name or "/" in name or not is_product_architecture(arch):
         return None
     return name, arch
 
 
 def snapshot_id(product: Path, meta: dict[str, Any] | None = None) -> str:
-    """Cheap snapshot fingerprint. Not a full-file digest of an 80MB ``.uo``."""
-    path = Path(product)
-    try:
-        st = path.stat()
-        size = int(st.st_size)
-        mtime_ns = int(st.st_mtime_ns)
-    except OSError:
-        size = 0
-        mtime_ns = 0
-    rev = str((meta or {}).get("source_revision") or "")
-    blob = f"{path.resolve()}|{size}|{mtime_ns}|{rev}|{FORMAT}"
+    """Committed CodeMap identity, not a filesystem location token.
+
+    Prefers hashes written at commit (canonical digest / graph fingerprint).
+    Path and mtime are not part of the id: a copy of the same ``.uo`` keeps
+    the same snapshot; ``touch`` does not mint a new one.
+    """
+    meta = dict(meta or {})
+    schema = str(meta.get("schema") or FORMAT)
+    rev = str(meta.get("source_revision") or "")
+    digest = str(
+        meta.get("cm_canonical_graph_digest")
+        or meta.get("canonical_graph_digest")
+        or ""
+    ).strip()
+    fingerprint = str(
+        meta.get("cm_graph_fingerprint") or meta.get("graph_fingerprint") or ""
+    ).strip()
+    entities = str(meta.get("entity_count") or "")
+    relations = str(meta.get("relation_count") or "")
+    if digest:
+        blob = f"{schema}|{digest}|{rev}"
+    elif fingerprint:
+        blob = f"{schema}|{fingerprint}|{rev}"
+    else:
+        try:
+            size = int(Path(product).stat().st_size)
+        except OSError:
+            size = 0
+        blob = f"{schema}|{rev}|{size}|{entities}|{relations}"
     return "cm:" + hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
@@ -152,10 +204,11 @@ def ref_from_product(product: Path, *, project: Path | None = None) -> CodemapRe
             root = None
     if root is None:
         root = path.parent
+    root = Path(root).resolve()
     op_name = _op_name_from_product(path, op_name or root.name)
     return CodemapRef(
-        id=make_id(op_name, arch),
-        project=Path(root).resolve(),
+        id=make_id(op_name, arch, project=root),
+        project=root,
         architecture=arch,
         op_name=op_name,
         product=path,
@@ -198,13 +251,33 @@ def bind(
             return registry.put(ref)
     op_name = root.name if root.is_dir() else Path(str(project)).name
     ref = CodemapRef(
-        id=make_id(op_name, arch),
+        id=make_id(op_name, arch, project=root),
         project=root,
         architecture=arch,
         op_name=op_name,
         product=product if product is not None and product.is_file() else None,
     )
     return registry.put(ref)
+
+
+def _ambiguous(alias: str, refs: list[CodemapRef]) -> dict[str, Any]:
+    return fail(
+        f"codemap_id {alias} matches {len(refs)} workspaces; pass canonical "
+        "codemap.id (p:<workspace>/op@arch) or project=",
+        error_code="AMBIGUOUS_CODEMAP_ID",
+        extra={
+            "alias": alias,
+            "candidates": [
+                {
+                    "id": r.id,
+                    "alias": r.alias,
+                    "project": str(r.project),
+                    "architecture": r.architecture,
+                }
+                for r in refs
+            ],
+        },
+    )
 
 
 def resolve(
@@ -234,27 +307,44 @@ def resolve(
         parsed = parse_id(cid)
         if parsed is None:
             return fail(
-                "codemap_id must look like op_name@arch35",
+                "codemap_id must look like p:<workspace>/op_name@arch35 or op_name@arch35",
                 error_code="INVALID_CODEMAP_ID",
             )
         op_name, parsed_arch = parsed
-        hit = registry.get(cid)
+        hit = registry.lookup(cid)
+        if isinstance(hit, list):
+            if proj:
+                wanted = Path(proj).expanduser().resolve()
+                matched = [r for r in hit if r.project == wanted]
+                if len(matched) == 1:
+                    hit = matched[0]
+                elif not matched:
+                    hit = None
+                else:
+                    return _ambiguous(cid, matched)
+            else:
+                return _ambiguous(cid, hit)
         if hit is not None:
             if require_indexed and (hit.product is None or not hit.product.is_file()):
                 return fail(
                     f"no .uo for {cid}",
                     error_code="CODEMAP_NOT_INDEXED",
-                    extra={"codemap": {"id": cid, "architecture": parsed_arch}},
+                    extra={"codemap": {"id": hit.id, "alias": hit.alias, "architecture": parsed_arch}},
                 )
             return hit
         if proj:
             ref = bind(project=proj, architecture=parsed_arch, registry=registry)
-            if ref.id == cid or ref.op_name == op_name or Path(proj).name == op_name:
+            if (
+                ref.id == cid
+                or ref.alias == cid
+                or ref.op_name == op_name
+                or Path(proj).name == op_name
+            ):
                 if require_indexed and (ref.product is None or not Path(ref.product).is_file()):
                     return fail(
                         f"no .uo for {cid}; call codemap_index first",
                         error_code="CODEMAP_NOT_INDEXED",
-                        extra={"codemap": {"id": cid, "architecture": parsed_arch}},
+                        extra={"codemap": {"id": ref.id, "alias": ref.alias, "architecture": parsed_arch}},
                     )
                 return ref
         return fail(
@@ -279,7 +369,7 @@ def resolve(
             f"{PRODUCT_DIR_NAME}/{arch}/<op>.{arch}.uo. "
             "Run codemap_index first.",
             error_code="CODEMAP_NOT_INDEXED",
-            extra={"codemap": {"id": ref.id, "architecture": arch}},
+            extra={"codemap": {"id": ref.id, "alias": ref.alias, "architecture": arch}},
         )
     return ref
 
@@ -307,6 +397,7 @@ def public_handle(
             completeness = None
     return {
         "id": ref.id,
+        "alias": ref.alias,
         "snapshot_id": sid,
         "architecture": ref.architecture,
         "op_name": ref.op_name,

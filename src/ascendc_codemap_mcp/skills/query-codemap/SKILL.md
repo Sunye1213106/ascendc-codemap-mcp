@@ -9,7 +9,7 @@ Use MCP server `ascendc-codemap-mcp`. Prefer typed tools. `query_codemap` is a c
 
 ## Before querying
 
-1. `codemap_discover` with the operator `project` if you do not yet have a `codemap_id` (`name@arch35`).
+1. `codemap_discover` with the operator `project` if you do not yet have a `codemap.id` (`p:<workspace>/op@arch`; `op@arch` is an alias).
 2. `codemap_status(codemap_id)`. Read `freshness`.
 3. `freshness=unknown` and `indexed=false` → skill `index-operator`. `stale` or `dirty` → skill `update-operator`. `building` → wait and status again.
 
@@ -22,9 +22,9 @@ Do not Glob/Grep for `.uo`. Do not guess architecture.
 | What can this map answer | `codemap_overview` |
 | Identifier definition / writers / readers | `codemap_symbol` (`symbol` is one identifier) |
 | Dim legal set / Name=Value compiles | `codemap_selection` (`dim`, optional `value`) |
-| Continue from a card | `codemap_evidence` (`evidence_id` from `evidence[].id`; else `file`+`line`) |
+| Continue from a card | `codemap_evidence` (`evidence_id` from `evidence[].id`, plus `expected_snapshot_id`) |
 
-If `coverage.truncated`, pass `next_cursor`. Do not pass a natural-language sentence as `symbol`.
+If `coverage.truncated` and `next_cursor` is set, pass `next_cursor`. Nested neighbor samples may set `nested_truncated` without a cursor — do not invent a page. Do not pass a natural-language sentence as `symbol`.
 
 ## Rules
 
@@ -32,7 +32,7 @@ If `coverage.truncated`, pass `next_cursor`. Do not pass a natural-language sent
 - `count: 0` is not "does not exist". Follow `hint` / `canonical` / `text_hits`, then PARTIAL / UNKNOWN.
 - List conclusions need totals. If `coverage.truncated` or `count` exceeds listed neighbors, PARTIAL.
 - Answer the layer asked. Host produced ≠ template admissible ≠ kernel consumed.
-- Keep `evidence_id` (`span:...`) across turns; line numbers drift when sources move.
+- Keep `evidence_id` (`span:...`) and its `snapshot_id` across turns; pass `expected_snapshot_id` on `codemap_evidence`. Line numbers drift when sources move.
 
 ## Output
 

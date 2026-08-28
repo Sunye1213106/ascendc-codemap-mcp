@@ -2,6 +2,7 @@
 """Apply a planned update by re-running uo_init.pilot_engines actions."""
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,8 @@ def update_operator(
     reuse_artifacts: bool = True,
     cann_root: str | None = None,
     ops_root: str | None = None,
+    should_stop: Callable[[], bool] | None = None,
+    on_progress: Callable[[int, int, str], None] | None = None,
 ) -> dict[str, Any]:
     del run_gates
     repo_root = Path(repo_root).expanduser().resolve()
@@ -47,6 +50,25 @@ def update_operator(
 
     change_set: dict[str, Any] | None = None
     plan: dict[str, Any] | None = None
+    run_id = str(run_id or "").strip()
+
+    def cancelled(step: str) -> dict[str, Any]:
+        return {
+            "status": "cancelled",
+            "run_id": run_id,
+            "plan": plan or {},
+            "change_set": change_set or {},
+            "receipt": {"message": "cancelled"},
+            "failed_step": step,
+        }
+
+    def halted(step: str) -> bool:
+        return should_stop is not None and should_stop()
+
+    if halted("detect"):
+        return cancelled("detect")
+    if on_progress is not None:
+        on_progress(0, 4, "detect")
     if reuse_artifacts and base is None and head is None:
         change_set = load_change_set_if_fresh(uo_root, repo_root=repo_root)
         if change_set is not None:
@@ -60,6 +82,10 @@ def update_operator(
             write=True,
             architecture=architecture,
         )
+    if halted("plan"):
+        return cancelled("plan")
+    if on_progress is not None:
+        on_progress(1, 4, "plan")
     if plan is None:
         plan = plan_kb_update(
             repo_root,
@@ -69,7 +95,7 @@ def update_operator(
             architecture=architecture,
         )
 
-    run_id = str(run_id or "").strip() or _new_run_id()
+    run_id = run_id or _new_run_id()
     update_dir = uo_root / "runs" / run_id / "update"
     update_dir.mkdir(parents=True, exist_ok=True)
     write_yaml(update_dir / "change_set.yaml", change_set)
@@ -152,6 +178,10 @@ def update_operator(
             "receipt": receipt,
         }
 
+    if halted("rebuild"):
+        return cancelled("rebuild")
+    if on_progress is not None:
+        on_progress(2, 4, "rebuild")
     action_results = _run_rebuild_actions(
         repo_root,
         plan,
@@ -159,8 +189,12 @@ def update_operator(
         cann_root=cann_root,
         ops_root=ops_root,
         run_id=run_id,
+        should_stop=should_stop,
     )
     write_yaml(update_dir / "rebuild_actions.yaml", {"results": action_results})
+
+    if any(r.get("cancelled") for r in action_results):
+        return cancelled("rebuild")
 
     failed = [r for r in action_results if not r.get("ok")]
     if failed:
@@ -190,6 +224,10 @@ def update_operator(
             "action_results": action_results,
         }
 
+    if halted("commit"):
+        return cancelled("commit")
+    if on_progress is not None:
+        on_progress(3, 4, "commit")
     _bump_manifest(uo_root, change_set.get("head_revision"), run_id)
     export_diff_product(
         repo_root,
@@ -202,6 +240,8 @@ def update_operator(
     )
     receipt = _receipt(run_id, change_set, plan, status="pass", message="uo_init rebuild ok")
     write_yaml(update_dir / "receipt.yaml", receipt)
+    if on_progress is not None:
+        on_progress(4, 4, "done")
     return {
         "status": "pass",
         "run_id": run_id,
@@ -221,6 +261,7 @@ def _run_rebuild_actions(
     cann_root: str | None,
     ops_root: str | None,
     run_id: str,
+    should_stop: Callable[[], bool] | None = None,
 ) -> list[dict[str, Any]]:
     from ascendc_codemap_mcp.engine.pilot_engines import ENGINES
 
@@ -234,6 +275,11 @@ def _run_rebuild_actions(
     }
     results: list[dict[str, Any]] = []
     for action in plan.get("actions") or []:
+        if should_stop is not None and should_stop():
+            results.append(
+                {"action": action, "ok": False, "cancelled": True, "error": "cancelled"}
+            )
+            break
         fn = ENGINES.get(str(action))
         if fn is None:
             results.append({"action": action, "ok": False, "error": "unknown_action"})

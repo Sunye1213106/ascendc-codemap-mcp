@@ -24,17 +24,26 @@ class _Entry:
 
 
 class QueryCache:
+    """Service-level owner of query facades.
+
+    SQLite connections live in ``engine.store.reader`` (thread-local per path).
+    ``drop`` / ``close_all`` always close those handles so a later writer can
+    replace the ``.uo`` and the next query cannot see snapshot N.
+    """
+
     def __init__(self, max_open: int = MAX_OPEN_CODEMAPS) -> None:
         self.max_open = max(1, int(max_open))
         self._lock = threading.Lock()
         self._entries: OrderedDict[str, _Entry] = OrderedDict()
 
     def stats(self) -> dict[str, int]:
+        from ascendc_codemap_mcp.engine.store.reader import open_handle_count
+
         with self._lock:
             inuse = sum(1 for e in self._entries.values() if e.inuse)
             return {
                 "cache_size": len(self._entries),
-                "open_sqlite_handles": len(self._entries),
+                "open_sqlite_handles": open_handle_count(),
                 "inuse": inuse,
                 "max_open_codemaps": self.max_open,
             }
@@ -47,6 +56,7 @@ class QueryCache:
             entry = self._entries.pop(key, None)
         if entry is not None:
             self._close(entry)
+        self._close_sqlite(key)
 
     def close_all(self) -> None:
         with self._lock:
@@ -54,6 +64,12 @@ class QueryCache:
             self._entries.clear()
         for _, entry in items:
             self._close(entry)
+        self._close_sqlite(None)
+
+    def _close_sqlite(self, product: str | Path | None) -> None:
+        from ascendc_codemap_mcp.engine.store.reader import close_uo_connections
+
+        close_uo_connections(product)
 
     def _close(self, entry: _Entry) -> None:
         try:
@@ -77,8 +93,12 @@ class QueryCache:
             self._close(entry)
             if len(self._entries) < self.max_open:
                 return
-        while len(self._entries) >= HARD_MAX_OPEN:
-            key, entry = next(iter(self._entries.items()))
+        # Never close an in-use facade. Grow past HARD_MAX until queries finish.
+        for key, entry in list(self._entries.items()):
+            if len(self._entries) < HARD_MAX_OPEN:
+                return
+            if entry.inuse:
+                continue
             self._entries.pop(key, None)
             self._close(entry)
 
@@ -91,9 +111,11 @@ class QueryCache:
         with self._lock:
             entry = self._entries.get(key)
             if entry is not None and entry.mtime_ns != mtime:
+                if entry.inuse > 0:
+                    entry.inuse += 1
+                    return entry.query
                 self._entries.pop(key, None)
-                if entry.inuse <= 0:
-                    self._close(entry)
+                self._close(entry)
                 entry = None
             if entry is None:
                 self._evict_unlocked()

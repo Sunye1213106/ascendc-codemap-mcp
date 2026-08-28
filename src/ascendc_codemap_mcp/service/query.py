@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -165,20 +166,68 @@ def _infer_verdict(payload: dict[str, Any], *, truncated: bool) -> str:
     return VERDICT_ANSWERED
 
 
-def decode_cursor(cursor: str) -> int:
+class CursorError(ValueError):
+    error_code = "CURSOR_INVALID"
+
+
+def query_fingerprint(
+    *,
+    engine: str,
+    pattern: str = "",
+    file: str = "",
+    line: int = 0,
+    line_end: int = 0,
+) -> str:
+    blob = json.dumps(
+        {
+            "e": str(engine or ""),
+            "p": str(pattern or ""),
+            "f": str(file or ""),
+            "l": int(line or 0),
+            "le": int(line_end or 0),
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
+
+
+def decode_cursor(cursor: str) -> dict[str, Any]:
     raw = str(cursor or "").strip()
     if not raw:
-        return 0
+        return {"o": 0, "s": "", "q": "", "c": ""}
     try:
         padded = raw + ("=" * ((4 - len(raw) % 4) % 4))
         data = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
-        return max(0, int(data.get("o") or 0))
-    except Exception:  # noqa: BLE001
-        return 0
+        if not isinstance(data, dict):
+            raise CursorError("cursor is not an object")
+        return {
+            "o": max(0, int(data.get("o") or 0)),
+            "s": str(data.get("s") or ""),
+            "q": str(data.get("q") or ""),
+            "c": str(data.get("c") or ""),
+        }
+    except CursorError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise CursorError("invalid cursor") from exc
 
 
-def encode_cursor(offset: int) -> str:
-    blob = json.dumps({"o": int(offset)}, separators=(",", ":")).encode("ascii")
+def encode_cursor(
+    offset: int,
+    *,
+    snapshot: str,
+    query: str,
+    collection: str = "",
+) -> str:
+    payload: dict[str, Any] = {
+        "s": str(snapshot or ""),
+        "q": str(query or ""),
+        "o": int(offset),
+    }
+    if collection:
+        payload["c"] = str(collection)
+    blob = json.dumps(payload, separators=(",", ":")).encode("ascii")
     return base64.urlsafe_b64encode(blob).decode("ascii").rstrip("=")
 
 
@@ -194,42 +243,54 @@ def paginate(
     payload: dict[str, Any],
     *,
     limit: int,
-    cursor: str,
+    offset: int,
+    snapshot: str,
+    query: str,
 ) -> tuple[dict[str, Any], dict[str, Any], str | None]:
-    offset = decode_cursor(cursor)
     page = max(1, min(int(limit or 8), 32))
     key, rows = _primary_list(payload)
     total_hint = int(payload.get("count") or payload.get("total") or 0)
+    nested_trunc = _edges_truncated(payload)
     if key is None:
         total = total_hint
         returned = total if not payload.get("truncated") else min(page, total)
-        truncated = bool(payload.get("truncated") or _edges_truncated(payload))
+        primary_more = bool(payload.get("truncated"))
+        truncated = bool(primary_more or nested_trunc)
         coverage = {
             "returned": returned,
             "total": total,
             "truncated": truncated,
+            "nested_truncated": nested_trunc and not primary_more,
             "token_budget": 24_000,
         }
-        nxt = encode_cursor(offset + page) if truncated else None
+        # Nested edge samples are not a continuable collection.
+        nxt = (
+            encode_cursor(offset + page, snapshot=snapshot, query=query)
+            if primary_more
+            else None
+        )
         return payload, coverage, nxt
     total = max(total_hint, len(rows) + offset)
     window = rows[offset : offset + page] if offset else rows[:page]
     if offset or len(rows) > page:
         payload = dict(payload)
         payload[key] = window
-    truncated = bool(
-        payload.get("truncated")
-        or _edges_truncated(payload)
-        or (offset + len(window) < len(rows))
-        or (total_hint > offset + len(window))
+    primary_more = bool(
+        (offset + len(window) < len(rows)) or (total_hint > offset + len(window))
     )
+    truncated = bool(payload.get("truncated") or nested_trunc or primary_more)
     coverage = {
         "returned": len(window),
         "total": total,
         "truncated": truncated,
+        "nested_truncated": nested_trunc and not primary_more,
         "token_budget": 24_000,
     }
-    nxt = encode_cursor(offset + len(window)) if truncated and window else None
+    nxt = (
+        encode_cursor(offset + len(window), snapshot=snapshot, query=query)
+        if primary_more and window
+        else None
+    )
     return payload, coverage, nxt
 
 
@@ -265,8 +326,43 @@ def _run_query(
             blocked=runtime.is_blocked(ref.id),
         )
         handle = public_handle(ref, meta=meta, freshness_info=info)
+        snapshot = str(handle.get("snapshot_id") or "")
+        qfp = query_fingerprint(
+            engine=engine,
+            pattern=pattern,
+            file=file,
+            line=line,
+            line_end=line_end,
+        )
+        try:
+            decoded = decode_cursor(cursor)
+        except CursorError as exc:
+            return fail(str(exc), error_code="CURSOR_INVALID")
+        if str(cursor or "").strip():
+            if not decoded.get("s") or not decoded.get("q"):
+                return fail(
+                    "cursor is bound to snapshot_id and query; re-run without cursor",
+                    error_code="CURSOR_MISMATCH",
+                    extra={"codemap": handle},
+                )
+            if decoded["s"] != snapshot:
+                return fail(
+                    "cursor snapshot does not match the current CodeMap; re-query",
+                    error_code="SNAPSHOT_CHANGED",
+                    extra={
+                        "codemap": handle,
+                        "expected_snapshot_id": decoded["s"],
+                        "current_snapshot_id": snapshot,
+                    },
+                )
+            if decoded["q"] != qfp:
+                return fail(
+                    "cursor belongs to a different query",
+                    error_code="CURSOR_MISMATCH",
+                    extra={"codemap": handle},
+                )
         page = max(1, min(int(limit or 8), 32))
-        offset = decode_cursor(cursor)
+        offset = int(decoded.get("o") or 0)
         fetch_limit = page + offset
         with runtime.cache.open(product) as query:
             payload = query.agent_query(
@@ -276,9 +372,15 @@ def _run_query(
                 line_end=int(line_end or 0),
                 limit=fetch_limit,
             )
-        payload, coverage, nxt = paginate(payload, limit=page, cursor=cursor)
+        payload, coverage, nxt = paginate(
+            payload,
+            limit=page,
+            offset=offset,
+            snapshot=snapshot,
+            query=qfp,
+        )
         ev = evidence_mod.collect(
-            payload, op_root=ref.project, snapshot=handle.get("snapshot_id") or ""
+            payload, op_root=ref.project, snapshot=snapshot
         )
         truncated = bool(coverage.get("truncated"))
         verdict = _infer_verdict(payload, truncated=truncated)
@@ -388,10 +490,35 @@ def evidence(
     line_end: int = 0,
     limit: int = 8,
     cursor: str = "",
+    expected_snapshot_id: str = "",
 ) -> dict[str, Any]:
     ref = _need_ref(codemap_id=codemap_id, project=project, architecture=architecture)
     if not is_ref(ref):
         return ref  # type: ignore[return-value]
+    expected = str(expected_snapshot_id or "").strip()
+    if expected:
+        product = ref.product
+        meta = _meta(product) if product is not None and product.is_file() else {}
+        from ascendc_codemap_mcp.service.freshness import compute
+
+        info = compute(
+            ref.project,
+            meta=meta,
+            building=runtime.is_building(ref.id),
+            blocked=runtime.is_blocked(ref.id),
+        )
+        handle = public_handle(ref, meta=meta, freshness_info=info)
+        current = str(handle.get("snapshot_id") or "")
+        if current and expected != current:
+            return fail(
+                "evidence belongs to a previous CodeMap snapshot; re-resolve",
+                error_code="SNAPSHOT_CHANGED",
+                extra={
+                    "codemap": handle,
+                    "expected_snapshot_id": expected,
+                    "current_snapshot_id": current,
+                },
+            )
     path = str(file or "").strip()
     line_n = int(line or 0)
     ev_id = str(evidence_id or entity_id or "").strip()

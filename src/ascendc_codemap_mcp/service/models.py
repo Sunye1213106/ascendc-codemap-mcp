@@ -12,6 +12,7 @@ class Coverage(BaseModel):
     returned: int = 0
     total: int = 0
     truncated: bool = False
+    nested_truncated: bool = False
     token_budget: int = 24_000
 
 
@@ -21,13 +22,14 @@ class EvidenceItem(BaseModel):
     entity_id: str = ""
     file: str = ""
     line: int = 0
-    source_hash: str = ""
+    source_stat_fingerprint: str = ""
     snapshot_id: str = ""
 
 
 class CodemapHandle(BaseModel):
     model_config = ConfigDict(extra="allow")
     id: str = ""
+    alias: str = ""
     snapshot_id: str = ""
     architecture: str = ""
     op_name: str = ""

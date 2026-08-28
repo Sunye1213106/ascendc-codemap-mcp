@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ascendc-codemap-mcp"
-version = "0.3.0"
+version = "0.4.0"
 description = "AscendC operator CodeMap MCP — build and query Host/Tiling/Kernel graphs for coding agents"
 readme = "README.md"
 requires-python = ">=3.10"

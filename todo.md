@@ -1,13 +1,17 @@
-# 任务：CodeMap MCP SDK 补全
+# 任务：MCP runtime correctness
 
 ## 目标
-把官方 MCP Python SDK 在本产品里该用的能力接完：structured output、annotations、resources/prompts/completions、长任务进度与取消、stdio + streamable-http。不把 memory/ADR 塞进 CodeMap。
+不新增功能。修 P0/P1 生命周期：SQLite 线程所有权、旧 snapshot 关闭、workspace identity、request-scoped cancel、pagination/evidence 绑定 snapshot。
 
 ## 待办事项
-- [x] Envelope outputSchema + tool annotations
-- [x] resources / prompts / completions
-- [x] index/update：进度、协作取消、resource 变更通知
-- [x] CLI streamable-http + 单测
+- [x] P0-1 thread-local SQLite connections + 并发测试
+- [x] P0-2 QueryCache 真正关闭/失效底层 connection
+- [x] P0-3 project_id/op@arch identity + AMBIGUOUS
+- [x] P1 request-scoped cancel + update token 下沉
+- [x] P1 cursor 绑定 snapshot/query；nested 假 continuation
+- [x] P1 evidence snapshot epoch + SNAPSHOT_CHANGED
+- [x] P1 write lock 后 re-check freshness；cache 不淘汰 in-use
+- [x] 回归测试 + README 收紧
 
 ## 进度
-4/4
+8/8

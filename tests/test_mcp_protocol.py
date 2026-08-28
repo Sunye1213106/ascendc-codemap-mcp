@@ -117,7 +117,8 @@ def test_status_not_indexed(tmp_path: Path) -> None:
     payload = status(project=str(op), architecture="arch35")
     assert payload["ok"] is True
     assert payload["indexed"] is False
-    assert payload["codemap"]["id"] == "op@arch35"
+    assert payload["codemap"]["alias"] == "op@arch35"
+    assert payload["codemap"]["id"].endswith("/op@arch35")
 
 
 def test_inmemory_client_lists_tools() -> None:

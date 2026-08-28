@@ -31,8 +31,9 @@ The server uses the official Python MCP SDK and speaks **2026-07-28** (stateless
 After discover/index, pass a stable id instead of an absolute path on every call:
 
 ```text
-codemap_id   = <op_name>@<architecture>     # e.g. flash_attention_score_grad@arch35
-snapshot_id  = cm:<sha256 prefix>           # this committed .uo
+codemap_id   = p:<workspace>/op_name@arch     # canonical, e.g. p:a91f42/flash_attention_score_grad@arch35
+alias        = op_name@arch                   # unique in this process; AMBIGUOUS_CODEMAP_ID otherwise
+snapshot_id  = cm:<sha256 prefix>             # committed graph identity (digest/revision, not path/mtime)
 ```
 
 ## CLI
@@ -67,15 +68,17 @@ Query:
 - `codemap_overview` — launch / dim / tiling-data index
 - `codemap_symbol` — one identifier
 - `codemap_selection` — `dim` + optional `value`
-- `codemap_evidence` — `evidence_id` (`span:...`) or `file`+`line`
+- `codemap_evidence` — `evidence_id` (`span:...`) plus `expected_snapshot_id`, or `file`+`line`
 
 Compatibility facade: `query_codemap` (and `index_operator` / `update_operator` aliases).
 
 Read tools are marked `readOnlyHint`. Index/update are additive (`destructiveHint=false`, closed world). Query tools publish an `outputSchema` for the shared envelope (`ok`, `codemap`, `verdict`, `layer`, `data`, `evidence`, `coverage`, `next_cursor`) and return `structuredContent`.
 
-`codemap_index` / `codemap_update` run off the event loop, report progress per step, and honour MCP cancellation between `prepare` / `extract` / `analyze` / `commit` (Clang inside a step still runs to the end of that step).
+`codemap_index` is cancellable between `prepare` / `extract` / `analyze` / `commit`. `codemap_update` is cancellable between `detect` / `plan` / each rebuild layer / `commit`. Clang inside a step still runs to the end of that step. Cancellation is per request, not per CodeMap.
 
 Do not auto-index on MCP connect. Indexing an operator can take minutes. Queries against a map being rebuilt return `freshness=building` rather than a half-written file.
+
+`codemap_evidence` accepts `expected_snapshot_id` from a prior `evidence[].snapshot_id`. A mismatch returns `SNAPSHOT_CHANGED`. `next_cursor` is bound to that snapshot and query; nested edge samples set `coverage.nested_truncated` without a fake continuation.
 
 ## Resources and prompts
 

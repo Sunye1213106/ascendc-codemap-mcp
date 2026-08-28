@@ -2324,6 +2324,7 @@ class UoSqlQuery:
     def _connect(self) -> Iterator[sqlite3.Connection]:
         from ascendc_codemap_mcp.engine.store.reader import shared_uo
 
+        # Thread-local connection owned by reader.close_uo_connections / QueryCache.drop.
         yield shared_uo(self.product)
 
     def _accel_ready(self, conn: sqlite3.Connection) -> bool:

@@ -1,59 +1,36 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
-from ascendc_codemap_mcp.engine.store.schema import SCHEMA_SQL
+from ascendc_codemap_mcp.engine.store.reader import read_meta
 from ascendc_codemap_mcp.service.control import status
 from ascendc_codemap_mcp.service.identity import make_id, parse_id, snapshot_id
 from ascendc_codemap_mcp.service.query import evidence, query_codemap, symbol
 from ascendc_codemap_mcp.service import runtime
 
 
+from tests.conftest import write_uo_fixture
+
+
 def _write_fixture(op: Path, *, arch: str = "arch35") -> Path:
-    dest = op / ".ascendc-codemap" / arch / f"{op.name}.{arch}.uo"
-    dest.parent.mkdir(parents=True)
-    conn = sqlite3.connect(str(dest))
-    try:
-        conn.executescript(SCHEMA_SQL)
-        conn.execute("INSERT INTO meta(key, value) VALUES (?, ?)", ("architecture", arch))
-        conn.execute("INSERT INTO meta(key, value) VALUES (?, ?)", ("op_name", op.name))
-        conn.execute("INSERT INTO meta(key, value) VALUES (?, ?)", ("schema", "codemap-uo/v3"))
-        conn.execute("INSERT INTO meta(key, value) VALUES (?, ?)", ("source_revision", "abc123"))
-        conn.execute(
-            "INSERT INTO entity(id, kind, name, status, confidence, file, line_start, line_end, data) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                "e1",
-                "TILING_KEY",
-                "IsPse",
-                "verified",
-                1.0,
-                "op_host/tiling.cpp",
-                10,
-                12,
-                "{}",
-            ),
-        )
-        conn.execute(
-            "INSERT INTO source_span(id, entity_id, file, line_start, line_end, snippet) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            ("span:e1", "e1", "op_host/tiling.cpp", 10, 12, "IsPse"),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    return dest
+    return write_uo_fixture(op, arch=arch)
 
 
-def test_codemap_id_parse() -> None:
+def test_codemap_id_parse(tmp_path: Path) -> None:
     assert parse_id("flash_attention_score_grad@arch35") == (
+        "flash_attention_score_grad",
+        "arch35",
+    )
+    assert parse_id("p:a91f42/flash_attention_score_grad@arch35") == (
         "flash_attention_score_grad",
         "arch35",
     )
     assert parse_id("nope") is None
     assert make_id("toy_op", "arch35") == "toy_op@arch35"
+    canonical = make_id("toy_op", "arch35", project=tmp_path)
+    assert canonical.startswith("p:")
+    assert canonical.endswith("/toy_op@arch35")
 
 
 def test_status_reports_identity_and_freshness(tmp_path: Path, monkeypatch) -> None:
@@ -79,9 +56,11 @@ def test_status_reports_identity_and_freshness(tmp_path: Path, monkeypatch) -> N
     assert st["ok"] is True
     assert st["indexed"] is True
     assert st["freshness"] == "fresh"
-    assert st["codemap"]["id"] == "toy_op@arch35"
+    assert st["codemap"]["alias"] == "toy_op@arch35"
+    assert st["codemap"]["id"].endswith("/toy_op@arch35")
     assert st["codemap"]["snapshot_id"].startswith("cm:")
-    assert st["snapshot_id"] == snapshot_id(product, {"source_revision": "abc123"})
+    meta = read_meta(product)
+    assert st["snapshot_id"] == snapshot_id(product, meta)
 
 
 def test_status_stale_when_head_moved(tmp_path: Path, monkeypatch) -> None:
@@ -118,7 +97,7 @@ def test_query_name_card_from_fixture(tmp_path: Path) -> None:
     assert payload.get("ok") is True
     assert payload.get("shape") in {"name", "index"}
     assert int(payload.get("count") or 0) >= 1
-    assert payload.get("codemap", {}).get("id") == "toy_op@arch35"
+    assert payload.get("codemap", {}).get("alias") == "toy_op@arch35"
     assert payload.get("evidence")
     assert payload["evidence"][0]["id"].startswith("span:")
     assert "coverage" in payload
@@ -194,8 +173,8 @@ def test_query_during_write_is_building(tmp_path: Path) -> None:
     op = tmp_path / "toy_op"
     op.mkdir()
     _write_fixture(op)
-    status(project=str(op), architecture="arch35")
-    with runtime.locks.write("toy_op@arch35"):
+    st = status(project=str(op), architecture="arch35")
+    with runtime.locks.write(st["codemap"]["id"]):
         payload = query_codemap(codemap_id="toy_op@arch35", pattern="IsPse")
     assert payload.get("state") == "building"
     assert (payload.get("codemap") or {}).get("freshness") == "building"

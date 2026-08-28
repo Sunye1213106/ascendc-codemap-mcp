@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 import atexit
 import json
+import threading
 from collections.abc import Callable
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any
 
 from mcp.server import MCPServer
@@ -28,7 +28,6 @@ from ascendc_codemap_mcp.service.control import (
     status as status_impl,
     update_operator as update_impl,
 )
-from ascendc_codemap_mcp.service.identity import make_id, parse_id
 from ascendc_codemap_mcp.service.models import DoctorResult, Envelope
 from ascendc_codemap_mcp.service.query import (
     evidence as evidence_impl,
@@ -43,7 +42,7 @@ AscendC CodeMap is a semantic compiler graph for one operator + one architecture
 It answers what the code is, not what a previous agent thought.
 
 Workflow:
-1. codemap_discover (project= operator directory) → codemap_id like name@arch35
+1. codemap_discover (project= operator directory) → keep codemap.id (p:<workspace>/op@arch). op@arch is an alias; if it matches multiple workspaces, use the canonical id.
 2. Read resource codemap://map/{codemap_id} or call codemap_status
 3. If not indexed: codemap_doctor then codemap_index (minutes). Do not index on connect.
 4. If stale or dirty: codemap_update. If state=needs_confirmation, ask the user before confirm_scope=true.
@@ -51,7 +50,7 @@ Workflow:
 
 Rules:
 - Never guess architecture. Never pass a natural-language sentence as a symbol.
-- Follow evidence[].id (span:...). If coverage.truncated, pass next_cursor.
+- Follow evidence[].id (span:...) with evidence[].snapshot_id as expected_snapshot_id. If coverage.truncated and next_cursor is set, pass next_cursor; nested neighbor samples are not a page.
 - update ok=true is not "graph refreshed". Read state and updated.
 - Do not write patches into .uo. Do not use raw SQL/Cypher.
 """
@@ -114,19 +113,16 @@ def _progress(ctx: Context) -> Callable[[int, int, str], None]:
     return on_progress
 
 
-async def _run_cancellable(codemap_id: str, fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
-    stop = runtime.cancel_event(codemap_id)
-    stop.clear()
+async def _run_cancellable(fn: Callable[[threading.Event], dict[str, Any]]) -> dict[str, Any]:
+    stop = threading.Event()
     loop = asyncio.get_running_loop()
-    fut = loop.run_in_executor(None, fn)
+    fut = loop.run_in_executor(None, lambda: fn(stop))
     try:
         return await fut
     except asyncio.CancelledError:
         stop.set()
         await asyncio.shield(fut)
         raise
-    finally:
-        runtime.clear_cancel(codemap_id)
 
 
 async def _notify_maps(ctx: Context) -> None:
@@ -203,8 +199,9 @@ def codemap_evidence(
     line_end: int = 0,
     limit: int = 8,
     cursor: str = "",
+    expected_snapshot_id: str = "",
 ) -> Envelope:
-    """Resolve a prior evidence handle (span:... / entity id) or a file+line copied from a card. Prefer evidence_id."""
+    """Resolve a prior evidence handle (span:... / entity id) or a file+line copied from a card. Prefer evidence_id. Pass expected_snapshot_id from evidence[].snapshot_id."""
     return _envelope(
         evidence_impl(
             codemap_id=codemap_id,
@@ -215,6 +212,7 @@ def codemap_evidence(
             line_end=line_end,
             limit=limit,
             cursor=cursor,
+            expected_snapshot_id=expected_snapshot_id,
         )
     )
 
@@ -228,11 +226,9 @@ def codemap_doctor(project: str = "", architecture: str = "") -> DoctorResult:
 @mcp.tool(title="Index operator", annotations=WRITE_ADDITIVE, structured_output=True)
 async def codemap_index(project: str, architecture: str, ctx: Context) -> Envelope:
     """Cold-build a CodeMap (prepare → extract → analyze → commit). Minutes. Only when no .uo exists. Do not call on connect. Cancellable between steps."""
-    cid = make_id(Path(project).name, architecture)
-    stop = runtime.cancel_event(cid)
     on_progress = _progress(ctx)
 
-    def work() -> dict[str, Any]:
+    def work(stop: threading.Event) -> dict[str, Any]:
         return index_impl(
             project=project,
             architecture=architecture,
@@ -240,7 +236,7 @@ async def codemap_index(project: str, architecture: str, ctx: Context) -> Envelo
             on_progress=on_progress,
         )
 
-    payload = await _run_cancellable(cid, work)
+    payload = await _run_cancellable(work)
     await _notify_maps(ctx)
     return _envelope(payload)
 
@@ -253,12 +249,10 @@ async def codemap_update(
     architecture: str = "",
     confirm_scope: bool = False,
 ) -> Envelope:
-    """Incremental refresh after source changes. Prefer codemap_id. Read state and updated; do not treat ok as rebuild success."""
-    cid = str(codemap_id or "").strip() or make_id(Path(project).name, architecture)
-    stop = runtime.cancel_event(cid)
+    """Incremental refresh after source changes. Prefer codemap_id. Read state and updated; do not treat ok as rebuild success. Cancellable between detect/plan/layer/commit."""
     on_progress = _progress(ctx)
 
-    def work() -> dict[str, Any]:
+    def work(stop: threading.Event) -> dict[str, Any]:
         return update_impl(
             codemap_id=codemap_id,
             project=project,
@@ -268,7 +262,7 @@ async def codemap_update(
             on_progress=on_progress,
         )
 
-    payload = await _run_cancellable(cid, work)
+    payload = await _run_cancellable(work)
     await _notify_maps(ctx)
     return _envelope(payload)
 
@@ -384,10 +378,22 @@ def build_codemap(project: str, architecture: str) -> str:
 
 def _complete_ids(prefix: str) -> list[str]:
     needle = str(prefix or "").strip().lower()
+    refs = list(runtime.registry.all())
+    alias_hits: dict[str, int] = {}
+    for ref in refs:
+        alias_hits[ref.alias] = alias_hits.get(ref.alias, 0) + 1
     values: list[str] = []
-    for ref in runtime.registry.all():
-        if not needle or needle in ref.id.lower() or needle in ref.op_name.lower():
-            values.append(ref.id)
+    seen: set[str] = set()
+    for ref in refs:
+        items = [ref.id]
+        if alias_hits.get(ref.alias, 0) == 1:
+            items.append(ref.alias)
+        for item in items:
+            if item in seen:
+                continue
+            if not needle or needle in item.lower() or needle in ref.op_name.lower():
+                seen.add(item)
+                values.append(item)
     return values[:20]
 
 

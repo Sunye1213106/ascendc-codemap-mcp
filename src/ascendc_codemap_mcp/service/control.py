@@ -143,15 +143,27 @@ def status(
         return ref  # type: ignore[return-value]
     product = ref.product
     indexed = bool(product is not None and Path(product).is_file())
-    meta = _meta(product if indexed else None)
-    info = _freshness_for(ref, meta) if indexed else {
-        "freshness": "unknown",
-        "source_revision": "",
-        "indexed_revision": "",
-        "dirty": False,
-        "changed_files": 0,
-        "semantic_completeness": None,
-    }
+    building = runtime.is_building(ref.id)
+    if building:
+        meta: dict[str, Any] = {}
+        info = {
+            "freshness": "building",
+            "source_revision": "",
+            "indexed_revision": "",
+            "dirty": False,
+            "changed_files": 0,
+            "semantic_completeness": None,
+        }
+    else:
+        meta = _meta(product if indexed else None)
+        info = _freshness_for(ref, meta) if indexed else {
+            "freshness": "unknown",
+            "source_revision": "",
+            "indexed_revision": "",
+            "dirty": False,
+            "changed_files": 0,
+            "semantic_completeness": None,
+        }
     handle = public_handle(ref, meta=meta, freshness_info=info)
     mtime = 0
     if indexed and product is not None:
@@ -439,6 +451,11 @@ def update_operator(
     t0 = time.perf_counter()
     with runtime.locks.write(ref.id):
         runtime.mark_building(ref.id)
+        ref = bind(
+            project=ref.project,
+            architecture=ref.architecture,
+            registry=runtime.registry,
+        )
         if should_stop is not None and should_stop():
             runtime.clear_building(ref.id)
             return envelope(
@@ -452,6 +469,32 @@ def update_operator(
                     "elapsed_s": round(time.perf_counter() - t0, 3),
                 },
             )
+        meta_now = _meta(ref.product)
+        from ascendc_codemap_mcp.service.freshness import compute as compute_freshness
+
+        fresh_now = compute_freshness(
+            ref.project,
+            meta=meta_now,
+            building=False,
+            blocked=runtime.is_blocked(ref.id),
+        )
+        if str(fresh_now.get("freshness") or "") == "fresh":
+            runtime.clear_building(ref.id)
+            handle = public_handle(ref, meta=meta_now, freshness_info=fresh_now)
+            return envelope(
+                ok=True,
+                state=STATE_COMPLETED,
+                updated=False,
+                codemap=handle,
+                extra={
+                    "engine": "update_operator",
+                    "status": "pass",
+                    "mode": "noop",
+                    "path": str(ref.product or ""),
+                    "elapsed_s": round(time.perf_counter() - t0, 3),
+                    "error": None,
+                },
+            )
         if ref.product is not None:
             runtime.cache.drop(ref.product)
         if on_progress is not None:
@@ -463,6 +506,8 @@ def update_operator(
                 architecture=ref.architecture,
                 confirm_scope=bool(confirm_scope),
                 reuse_artifacts=True,
+                should_stop=should_stop,
+                on_progress=on_progress,
             )
         except Exception as exc:  # noqa: BLE001
             runtime.clear_building(ref.id)
@@ -484,6 +529,20 @@ def update_operator(
         change_set = (
             result.get("change_set") if isinstance(result.get("change_set"), dict) else {}
         )
+        if status_name == "cancelled":
+            return envelope(
+                ok=False,
+                state=STATE_IDLE,
+                updated=False,
+                error="cancelled",
+                error_code="CANCELLED",
+                extra={
+                    "engine": "update_operator",
+                    "failed_step": result.get("failed_step"),
+                    "run_id": result.get("run_id"),
+                    "elapsed_s": round(time.perf_counter() - t0, 3),
+                },
+            )
         if status_name == "blocked":
             runtime.mark_blocked(ref.id)
             meta = _meta(ref.product)
