@@ -13,7 +13,9 @@ from typing import Any, Iterable
 
 _SHARED_LOCK = threading.Lock()
 _SHARED_CONN: OrderedDict[str, sqlite3.Connection] = OrderedDict()
-_SHARED_CONN_MAX = 1
+# Keep in step with service.cache.MAX_OPEN_CODEMAPS so a long-lived MCP
+# process can hold a few operators without reconnect thrash.
+_SHARED_CONN_MAX = 4
 
 
 def _configure_readonly(conn: sqlite3.Connection) -> sqlite3.Connection:

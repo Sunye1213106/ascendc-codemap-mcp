@@ -5,23 +5,23 @@ description: Incrementally refresh an existing AscendC operator CodeMap after so
 
 # Update an operator CodeMap
 
-Use MCP server `ascendc-codemap-mcp`. Tool: `update_operator`.
+Use MCP server `ascendc-codemap-mcp`. Tool: `codemap_update`.
 
 ## When
 
-`codemap_status` says indexed, and sources changed. Git pull, branch switch, or local Host/Kernel edits.
+`codemap_status` says indexed, and `freshness` is `stale` or `dirty`. Git pull, branch switch, or local Host/Kernel edits.
 
-Do **not** call `index_operator` for a refresh. That is a cold rebuild (minutes). `update_operator` detects the delta and rebuilds only the affected layers.
+Do **not** call `codemap_index` for a refresh. That is a cold rebuild (minutes). `codemap_update` detects the delta and rebuilds only the affected layers.
 
 ## Steps
 
-1. Require `project` (operator directory, absolute) and `architecture`. Do not guess architecture.
+1. Prefer `codemap_id` from discover/status. Otherwise require `project` + `architecture`. Do not guess architecture.
 2. Call `codemap_status`. If not indexed, stop and use skill `index-operator`.
-3. Call `update_operator`. This can still take a minute when Host/Kernel layers rebuild.
-4. If `status` is `blocked` and `needs_scope_review` is true, tell the user, then retry with `confirm_scope: true` only after they confirm.
+3. Call `codemap_update`. Queries during the rebuild see `freshness=building`.
+4. Read `state` and `updated`, not only `ok`. `ok=true` with `state=needs_confirmation` means the snapshot did **not** advance — tell the user, then retry with `confirm_scope: true` only after they confirm.
 5. Call `codemap_status` again. Do not patch `.uo` by hand.
 
 ## Stop
 
-- `status: fail` — report `error` / failed rebuild action. Do not invent graph edges.
-- `status: pass` with `mode: noop` — graph already matches sources; query as-is.
+- `state: failed` — report `error` / failed rebuild action. Do not invent graph edges.
+- `state: completed` with `mode: noop` — graph already matches sources; query as-is.

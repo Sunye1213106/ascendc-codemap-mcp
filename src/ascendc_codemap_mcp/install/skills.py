@@ -15,9 +15,10 @@ _AGENTS_BODY = """# AscendC CodeMap MCP
 
 Use MCP server `ascendc-codemap-mcp` for AscendC operator structure.
 
-- Missing CodeMap: `codemap_doctor` then `index_operator` with `project` + `architecture`.
-- Existing CodeMap after source change: `update_operator`, not a full re-index.
-- Questions about the graph: `query_codemap` only. Four shapes: no pattern (index), identifier, `Dim=Name` / `Name=Value`, or `file`+`line` copied from a card.
+- Identity: `codemap_discover` then pass `codemap_id` (`name@arch35`). Do not keep pasting absolute paths.
+- Missing CodeMap: `codemap_doctor` then `codemap_index` with `project` + `architecture`.
+- Existing CodeMap after source change: `codemap_status` (read `freshness`) then `codemap_update`. `ok` is not the workflow state; read `state` and `updated`.
+- Questions about the graph: `codemap_overview` / `codemap_symbol` / `codemap_selection` / `codemap_evidence`. Follow `evidence[].id`. If `coverage.truncated`, pass `next_cursor`.
 - `count: 0` is not proof of absence. Follow `hint`.
 - Answer the layer asked (domain / template / host / kernel). Do not write LLM patches into `.uo`.
 """

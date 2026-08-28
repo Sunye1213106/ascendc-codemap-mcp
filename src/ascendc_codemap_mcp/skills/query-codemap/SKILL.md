@@ -1,30 +1,38 @@
 ---
 name: query-codemap
-description: Query an existing AscendC operator CodeMap. Use when asking what is on the graph, who writes/reads a name, whether a Dim=V compiles, or what sits at file:line.
+description: Query an existing AscendC operator CodeMap. Use when asking what is on the graph, who writes/reads a name, whether a Dim=V compiles, or what sits at an evidence site.
 ---
 
 # Query CodeMap
 
-Use MCP `query_codemap` on server `ascendc-codemap-mcp`. Four input shapes only. Do not pass natural-language sentences.
+Use MCP server `ascendc-codemap-mcp`. Prefer typed tools. `query_codemap` is a compatibility facade.
 
 ## Before querying
 
-If `codemap_status` says not indexed, stop and use skill `index-operator`. If indexed but sources changed (git pull), use skill `update-operator` before querying. Do not Glob/Grep for `.uo`.
+1. `codemap_discover` with the operator `project` if you do not yet have a `codemap_id` (`name@arch35`).
+2. `codemap_status(codemap_id)`. Read `freshness`.
+3. `freshness=unknown` and `indexed=false` → skill `index-operator`. `stale` or `dirty` → skill `update-operator`. `building` → wait and status again.
 
-## Four shapes
+Do not Glob/Grep for `.uo`. Do not guess architecture.
 
-1. **No pattern** — index (launch / PIPE names).
-2. **Identifier** — name / definition / who writes who reads. One card includes `definition`, `host.writers`, `kernel.readers`, `flow`.
-3. **`Dim=<name>` or `Name=Value`** — legal set / whether a combo compiles. Read `sel_sites` / `dim_coverage`.
-4. **`file` + `line`** — statement window at a site copied from a previous card. Includes enclosing + `impact`.
+## Typed tools
+
+| Intent | Tool |
+| --- | --- |
+| What can this map answer | `codemap_overview` |
+| Identifier definition / writers / readers | `codemap_symbol` (`symbol` is one identifier) |
+| Dim legal set / Name=Value compiles | `codemap_selection` (`dim`, optional `value`) |
+| Continue from a card | `codemap_evidence` (`evidence_id` from `evidence[].id`; else `file`+`line`) |
+
+If `coverage.truncated`, pass `next_cursor`. Do not pass a natural-language sentence as `symbol`.
 
 ## Rules
 
-- Pick the shortest shape. Cards are evidence pointers (`file:line`). Quote a construct only after seeing its own line.
+- Quote a construct only after seeing its own `file:line` or `evidence_id`.
 - `count: 0` is not "does not exist". Follow `hint` / `canonical` / `text_hits`, then PARTIAL / UNKNOWN.
-- List conclusions need totals (`dim_coverage`, `matching_block_count`, `edges.*.count`). If `count` exceeds listed neighbors, PARTIAL.
+- List conclusions need totals. If `coverage.truncated` or `count` exceeds listed neighbors, PARTIAL.
 - Answer the layer asked. Host produced ≠ template admissible ≠ kernel consumed.
-- Do not write LLM patches into `.uo`.
+- Keep `evidence_id` (`span:...`) across turns; line numbers drift when sources move.
 
 ## Output
 
@@ -32,6 +40,6 @@ If `codemap_status` says not indexed, stop and use skill `index-operator`. If in
 verdict: ANSWERED | PARTIAL | UNKNOWN
 layer: domain | template | host | kernel
 span: file:line
-coverage: dim_coverage=... / count=...
+coverage: returned/total truncated=...
 missing: ...
 ```

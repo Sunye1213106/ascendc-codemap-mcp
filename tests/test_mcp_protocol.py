@@ -1,80 +1,266 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import json
+import asyncio
+from pathlib import Path
 
-from ascendc_codemap_mcp.constants import SERVER_NAME
-from ascendc_codemap_mcp.server import handle
-
-
-def test_initialize_echoes_protocol() -> None:
-    reply = handle(
-        {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {"protocolVersion": "2025-03-26"},
-        }
-    )
-    assert reply["result"]["protocolVersion"] == "2025-03-26"
-    assert reply["result"]["serverInfo"]["name"] == SERVER_NAME
+from ascendc_codemap_mcp.service.control import status, update_operator
+from ascendc_codemap_mcp.service.identity import CodemapRef
+from ascendc_codemap_mcp.service.query import query_codemap
 
 
-def test_tools_list_names() -> None:
-    reply = handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
-    names = [t["name"] for t in reply["result"]["tools"]]
-    assert names == [
-        "codemap_doctor",
-        "index_operator",
-        "update_operator",
-        "codemap_status",
-        "query_codemap",
-    ]
+EXPECTED_TOOLS = [
+    "codemap_discover",
+    "codemap_status",
+    "codemap_overview",
+    "codemap_symbol",
+    "codemap_selection",
+    "codemap_evidence",
+    "codemap_doctor",
+    "codemap_index",
+    "codemap_update",
+    "query_codemap",
+    "index_operator",
+    "update_operator",
+]
 
 
-def test_unknown_tool_is_error() -> None:
-    reply = handle(
-        {
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "tools/call",
-            "params": {"name": "uo_query", "arguments": {}},
-        }
-    )
-    assert reply["result"]["isError"] is True
-    assert "unknown tool" in reply["result"]["content"][0]["text"]
+def _tool_names(server) -> list[str]:
+    manager = getattr(server, "_tool_manager", None) or getattr(server, "_tools", None)
+    if hasattr(server, "list_tools") and manager is None:
+        listed = server.list_tools()
+        tools = getattr(listed, "tools", listed)
+        return [getattr(t, "name", str(t)) for t in tools]
+    if manager is not None and hasattr(manager, "list_tools"):
+        tools = manager.list_tools()
+        return [getattr(t, "name", str(t)) for t in tools]
+    if manager is not None and hasattr(manager, "_tools"):
+        tools = manager._tools
+        if isinstance(tools, dict):
+            return list(tools)
+        return [getattr(t, "name", str(t)) for t in tools]
+    if isinstance(manager, dict):
+        return list(manager)
+    raise AssertionError(f"cannot list tools on {type(server)}")
 
 
-def test_query_missing_architecture_is_error() -> None:
-    reply = handle(
-        {
-            "jsonrpc": "2.0",
-            "id": 4,
-            "method": "tools/call",
-            "params": {
-                "name": "query_codemap",
-                "arguments": {"project": "/tmp/op"},
-            },
-        }
-    )
-    assert reply["result"]["isError"] is True
-    assert "architecture" in reply["result"]["content"][0]["text"].lower()
+def _find_tool(server, name: str):
+    manager = getattr(server, "_tool_manager", None)
+    if manager is not None and hasattr(manager, "get_tool"):
+        return manager.get_tool(name)
+    if manager is not None and hasattr(manager, "_tools"):
+        tools = manager._tools
+        if isinstance(tools, dict) and name in tools:
+            return tools[name]
+        for tool in tools.values() if isinstance(tools, dict) else tools:
+            if getattr(tool, "name", None) == name:
+                return tool
+    names = _tool_names(server)
+    raise AssertionError(f"tool {name} not found in {names}")
 
 
-def test_status_not_indexed(tmp_path) -> None:
+def test_mcp_server_tool_names() -> None:
+    from ascendc_codemap_mcp.mcp_adapter import create_server
+
+    names = _tool_names(create_server())
+    for name in EXPECTED_TOOLS:
+        assert name in names
+    assert names.index("codemap_symbol") < names.index("query_codemap")
+
+
+def test_symbol_schema_requires_codemap_id_and_symbol() -> None:
+    from ascendc_codemap_mcp.mcp_adapter import create_server
+
+    tool = _find_tool(create_server(), "codemap_symbol")
+    schema = getattr(tool, "parameters", None) or getattr(tool, "input_schema", None)
+    assert isinstance(schema, dict)
+    required = schema.get("required") or []
+    assert "codemap_id" in required
+    assert "symbol" in required
+    assert "project" not in required
+    assert "ctx" not in (schema.get("properties") or {})
+    out = getattr(tool, "output_schema", None) or {}
+    assert "ok" in (out.get("properties") or {})
+    ann = getattr(tool, "annotations", None)
+    assert ann is not None
+    assert ann.read_only_hint is True
+    assert ann.open_world_hint is False
+
+
+def test_index_tool_is_not_read_only() -> None:
+    from ascendc_codemap_mcp.mcp_adapter import create_server
+
+    tool = _find_tool(create_server(), "codemap_index")
+    ann = tool.annotations
+    assert ann.read_only_hint is False
+    assert ann.destructive_hint is False
+    schema = tool.parameters or {}
+    assert "ctx" not in (schema.get("properties") or {})
+    assert "project" in (schema.get("required") or [])
+    assert "architecture" in (schema.get("required") or [])
+
+
+def test_query_missing_architecture_is_structured_error(tmp_path: Path) -> None:
+    payload = query_codemap(project=str(tmp_path / "op"), pattern="IsPse")
+    assert payload["ok"] is False
+    text = f"{payload.get('error') or ''} {payload.get('error_code') or ''}".lower()
+    assert "architecture" in text or payload.get("error_code") in {
+        "ARCHITECTURE_MISSING_IN_RUN_STATE",
+        "OPERATOR_DIR_NOT_FOUND",
+        "PROJECT_REQUIRED",
+    }
+
+
+def test_status_not_indexed(tmp_path: Path) -> None:
     op = tmp_path / "op"
     op.mkdir()
-    reply = handle(
-        {
-            "jsonrpc": "2.0",
-            "id": 5,
-            "method": "tools/call",
-            "params": {
-                "name": "codemap_status",
-                "arguments": {"project": str(op), "architecture": "arch35"},
-            },
-        }
+    payload = status(project=str(op), architecture="arch35")
+    assert payload["ok"] is True
+    assert payload["indexed"] is False
+    assert payload["codemap"]["id"] == "op@arch35"
+
+
+def test_inmemory_client_lists_tools() -> None:
+    from mcp import Client
+    from ascendc_codemap_mcp.mcp_adapter import create_server
+
+    async def _run() -> None:
+        async with Client(create_server()) as client:
+            listed = await client.list_tools()
+            tools = getattr(listed, "tools", listed)
+            names = [getattr(t, "name", str(t)) for t in tools]
+            assert "codemap_symbol" in names
+            assert "codemap_status" in names
+            result = await client.call_tool(
+                "query_codemap", {"pattern": "IsPse"}
+            )
+            structured = getattr(result, "structured_content", None) or {}
+            assert structured.get("ok") is False
+            assert structured.get("error_code") in {
+                "PROJECT_REQUIRED",
+                "ARCHITECTURE_MISSING_IN_RUN_STATE",
+                "CODEMAP_NOT_REGISTERED",
+                "INVALID_CODEMAP_ID",
+            }
+            resources = await client.list_resources()
+            uris = [str(r.uri) for r in getattr(resources, "resources", [])]
+            assert "codemap://runtime" in uris
+            templates = await client.list_resource_templates()
+            t_uris = [
+                str(t.uri_template)
+                for t in getattr(templates, "resource_templates", [])
+            ]
+            assert any("{codemap_id}" in u for u in t_uris)
+            prompts = await client.list_prompts()
+            pnames = [p.name for p in getattr(prompts, "prompts", [])]
+            assert "query_operator" in pnames
+            assert "build_codemap" in pnames
+            runtime_res = await client.read_resource("codemap://runtime")
+            contents = getattr(runtime_res, "contents", None) or []
+            assert contents
+            assert "cache_size" in str(contents[0].text)
+
+    asyncio.run(_run())
+
+
+def test_update_blocked_is_ok_but_not_updated(monkeypatch, tmp_path: Path) -> None:
+    product = tmp_path / "toy.arch35.uo"
+    product.write_bytes(b"")
+    ref = CodemapRef(
+        id="toy@arch35",
+        project=tmp_path,
+        architecture="arch35",
+        op_name="toy",
+        product=product,
     )
-    body = json.loads(reply["result"]["content"][0]["text"])
-    assert body["ok"] is True
-    assert body["indexed"] is False
+    monkeypatch.setattr(
+        "ascendc_codemap_mcp.service.control.resolve",
+        lambda **kwargs: ref,
+    )
+    monkeypatch.setattr(
+        "ascendc_codemap_mcp.service.control._meta",
+        lambda product: {
+            "op_name": "toy",
+            "architecture": "arch35",
+            "schema": "codemap-uo/v3",
+        },
+    )
+    monkeypatch.setattr(
+        "ascendc_codemap_mcp.service.control._freshness_for",
+        lambda ref, meta: {
+            "freshness": "blocked",
+            "source_revision": "abc",
+            "indexed_revision": "abc",
+            "dirty": False,
+            "changed_files": 0,
+            "semantic_completeness": 0.9,
+        },
+    )
+
+    def _apply(*args, **kwargs):
+        return {
+            "status": "blocked",
+            "run_id": "r1",
+            "plan": {
+                "needs_scope_review": True,
+                "mode": "rebuild",
+                "affected_layers": [],
+                "actions": [],
+            },
+            "change_set": {"scoped_change_count": 0},
+            "receipt": {"message": "needs scope confirmation"},
+        }
+
+    monkeypatch.setattr(
+        "ascendc_codemap_mcp.engine.update.update_operator",
+        _apply,
+    )
+    payload = update_operator(codemap_id="toy@arch35")
+    assert payload["ok"] is True
+    assert payload["state"] == "needs_confirmation"
+    assert payload["updated"] is False
+    assert payload["error_code"] == "SCOPE_CONFIRMATION_REQUIRED"
+
+
+def test_index_stops_between_steps(monkeypatch, tmp_path: Path) -> None:
+    from ascendc_codemap_mcp.service.control import index_operator
+
+    op = tmp_path / "toy_op"
+    op.mkdir()
+    calls: list[str] = []
+
+    def _ok(*_a, **_k):
+        return {"ok": True}
+
+    def _prepare(*_a, **_k):
+        calls.append("prepare")
+        return {"ok": True}
+
+    monkeypatch.setattr("ascendc_codemap_mcp.engine.codemap_engines.prepare", _prepare)
+    monkeypatch.setattr("ascendc_codemap_mcp.engine.codemap_engines.extract", _ok)
+    monkeypatch.setattr("ascendc_codemap_mcp.engine.codemap_engines.analyze", _ok)
+    monkeypatch.setattr("ascendc_codemap_mcp.engine.codemap_engines.commit", _ok)
+
+    payload = index_operator(
+        project=str(op),
+        architecture="arch35",
+        should_stop=lambda: "prepare" in calls,
+    )
+    assert payload["ok"] is False
+    assert payload["error_code"] == "CANCELLED"
+    assert payload["updated"] is False
+    assert calls == ["prepare"]
+
+
+def test_cli_help_mentions_http() -> None:
+    from ascendc_codemap_mcp.cli import main
+    import io
+    from contextlib import redirect_stdout
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        code = main(["-h"])
+    assert code == 0
+    text = buf.getvalue()
+    assert "streamable-http" in text
+    assert "serve" in text

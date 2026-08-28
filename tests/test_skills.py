@@ -12,12 +12,15 @@ def test_bundled_skills_exist() -> None:
     assert (root / "update-operator" / "SKILL.md").is_file()
     assert (root / "query-codemap" / "SKILL.md").is_file()
     update = (root / "update-operator" / "SKILL.md").read_text(encoding="utf-8")
-    assert "update_operator" in update
+    assert "codemap_update" in update
     assert "/uo-update" not in update
     text = (root / "query-codemap" / "SKILL.md").read_text(encoding="utf-8")
     assert "pilot_cli" not in text
     assert "/uo-init" not in text
-    assert "query_codemap" in text
+    assert "codemap_symbol" in text
+    assert "codemap_id" in text
+    index = (root / "index-operator" / "SKILL.md").read_text(encoding="utf-8")
+    assert "codemap_index" in index
 
 
 def test_install_skills_under_fake_home(tmp_path: Path, monkeypatch) -> None:
@@ -26,4 +29,6 @@ def test_install_skills_under_fake_home(tmp_path: Path, monkeypatch) -> None:
     assert out["ok"] is True
     skill = tmp_path / ".cursor" / "skills" / "ascendc-codemap-query-codemap" / "SKILL.md"
     assert skill.is_file()
-    assert "query_codemap" in skill.read_text(encoding="utf-8")
+    body = skill.read_text(encoding="utf-8")
+    assert "codemap_symbol" in body
+    assert "query_codemap" in body
