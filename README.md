@@ -1,19 +1,25 @@
 # AscendC CodeMap MCP
 
+![AscendC CodeMap MCP：提取与查询框架](docs/codemap-framework.png)
+
 面向 AI coding agent 的 AscendC 算子语义图。把一个算子在指定 architecture 下的 **Host / TilingData / TilingKey / Template / Kernel / AscendC API** 编进持久化 `.uo` 图，再通过 MCP 做低延迟查询。
 
 这是**语义编译图**，不是通用代码记忆。`.uo` 只存代码*是什么*。Agent 的计划、review、ADR 留在会话或调用方（例如 AscendC-Pilot）。
 
 对 SFAG 算子的本地实测：
 
-| 操作 | 耗时 |
-| --- | --- |
-| 首次构建 CodeMap | 约 1 分钟 |
-| 单次查询 | 约 20 ms |
+
+| 操作           | 耗时      |
+| ------------ | ------- |
+| 首次构建 CodeMap | 约 1 分钟  |
+| 单次查询         | 约 20 ms |
+
 
 一次构建，之后反复查询，避免每次重新 grep 和通读源码。
 
 构建需要 CANN Toolkit 头文件和 LLVM clang。查询已有 `.uo` 不依赖 CANN。环境不会自动配好：先 `codemap_doctor`，按 `next_steps` 下载 `.run` 并用 `cann-extract` 解包。
+
+
 
 ## 它解决什么
 
@@ -36,17 +42,19 @@ CodeMap 把这些关系提前提取进图，让 agent 按标识符、Dim、证�
 
 Codebase Memory 与 CodeGraph 是通用代码图：多语言、通用导航。CodeMap 只做 **AscendC 算子领域语义**。
 
-| | Codebase Memory / CodeGraph | AscendC CodeMap |
-| --- | --- | --- |
-| 目标 | 通用代码理解 | AscendC 算子理解 |
-| 解析 | 主要 Tree-sitter | Clang + CANN 编译上下文 |
-| 语言 | 多语言 | C++ / AscendC |
-| Call graph | 有 | 有 |
-| Template 语义 | 通用 | 重点建模 |
-| TilingData / TilingKey | — | 有 |
-| Host → Kernel 数据流 | — | 有 |
-| Buffer / Queue / Pipe / Event | — | 有 |
-| Architecture / 编译条件 | 通用 | 按 arch 产品槽 |
+
+|                               | Codebase Memory / CodeGraph | AscendC CodeMap    |
+| ----------------------------- | --------------------------- | ------------------ |
+| 目标                            | 通用代码理解                      | AscendC 算子理解       |
+| 解析                            | 主要 Tree-sitter              | Clang + CANN 编译上下文 |
+| 语言                            | 多语言                         | C++ / AscendC      |
+| Call graph                    | 有                           | 有                  |
+| Template 语义                   | 通用                          | 重点建模               |
+| TilingData / TilingKey        | —                           | 有                  |
+| Host → Kernel 数据流             | —                           | 有                  |
+| Buffer / Queue / Pipe / Event | —                           | 有                  |
+| Architecture / 编译条件           | 通用                          | 按 arch 产品槽         |
+
 
 他们更擅长「代码在哪、谁调用谁」。CodeMap 更希望回答：**这个算子为什么走到这个 Kernel，以及这个值怎么从 Host 传下来。**
 
@@ -159,18 +167,20 @@ Get-ChildItem -Path "$HOME\Downloads","D:\Downloads","$HOME" -Filter "Ascend-can
 ls ~/Downloads/Ascend-cann-toolkit_*.run 2>/dev/null
 ```
 
-2. 没有文件时，打开昇腾社区下载中心（**需要华为账号登录**；社区包的直链通常带签名，**未登录 wget 会失败**）：
+1. 没有文件时，打开昇腾社区下载中心（**需要华为账号登录**；社区包的直链通常带签名，**未登录 wget 会失败**）：
 
-- 社区版 CANN：<https://www.hiascend.com/developer/download/community/result?module=cann>
-- 软件页：<https://www.hiascend.com/software/cann>
-- 入口：<https://www.hiascend.com/developer/download>
+- 社区版 CANN：[https://www.hiascend.com/developer/download/community/result?module=cann](https://www.hiascend.com/developer/download/community/result?module=cann)
+- 软件页：[https://www.hiascend.com/software/cann](https://www.hiascend.com/software/cann)
+- 入口：[https://www.hiascend.com/developer/download](https://www.hiascend.com/developer/download)
 
-3. 页面上选 **CANN Toolkit**，操作系统 **Linux**，架构：
+1. 页面上选 **CANN Toolkit**，操作系统 **Linux**，架构：
 
-| 本机 | 下载哪个 `.run` |
-| --- | --- |
-| Windows / Linux x86_64 | `Ascend-cann-toolkit_<version>_linux-x86_64.run` |
-| Linux aarch64 | `Ascend-cann-toolkit_<version>_linux-aarch64.run` |
+
+| 本机                     | 下载哪个 `.run`                                       |
+| ---------------------- | ------------------------------------------------- |
+| Windows / Linux x86_64 | `Ascend-cann-toolkit_<version>_linux-x86_64.run`  |
+| Linux aarch64          | `Ascend-cann-toolkit_<version>_linux-aarch64.run` |
+
 
 Windows 也下 **linux-x86_64** 包：`cann-extract` 只解出文件树，**不会执行** installer。
 
@@ -283,17 +293,19 @@ ascendc-codemap-mcp query --codemap-id <id> IsPse
 
 Agent 用 typed 工具（`symbol` 必须是一个标识符，不要塞自然语言句子）：
 
-| 意图 | 工具 |
-| --- | --- |
-| 扫目录、拿到 `codemap.id` | `codemap_discover` |
-| 新鲜度 | `codemap_status` |
-| 这张图能回答什么 | `codemap_overview` |
-| 标识符定义 / writers / readers | `codemap_symbol` |
-| Dim 合法集 / `Name=Value` | `codemap_selection` |
-| 从卡片继续 | `codemap_evidence`（`evidence_id` + `expected_snapshot_id`） |
-| 构建前检查 | `codemap_doctor` |
-| 冷构建 | `codemap_index` |
-| 增量刷新 | `codemap_update` |
+
+| 意图                        | 工具                                                         |
+| ------------------------- | ---------------------------------------------------------- |
+| 扫目录、拿到 `codemap.id`       | `codemap_discover`                                         |
+| 新鲜度                       | `codemap_status`                                           |
+| 这张图能回答什么                  | `codemap_overview`                                         |
+| 标识符定义 / writers / readers | `codemap_symbol`                                           |
+| Dim 合法集 / `Name=Value`    | `codemap_selection`                                        |
+| 从卡片继续                     | `codemap_evidence`（`evidence_id` + `expected_snapshot_id`） |
+| 构建前检查                     | `codemap_doctor`                                           |
+| 冷构建                       | `codemap_index`                                            |
+| 增量刷新                      | `codemap_update`                                           |
+
 
 兼容别名：`query_codemap`、`index_operator`、`update_operator`。只读工具带 `readOnlyHint`。查询结果走统一 envelope（`ok`、`codemap`、`verdict`、`layer`、`data`、`evidence`、`coverage`、`next_cursor`）和 `structuredContent`。
 
@@ -303,12 +315,14 @@ Agent 用 typed 工具（`symbol` 必须是一个标识符，不要塞自然语�
 
 ## 资源与传输
 
-| 类型 | 名称 | URI / 参数 |
-| --- | --- | --- |
-| Resource | runtime | `codemap://runtime` |
-| Resource template | 一张图的身份与新鲜度 | `codemap://map/{codemap_id}` |
-| Prompt | `query_operator` | `codemap_id`，可选 `focus` |
-| Prompt | `build_codemap` | `project`、`architecture` |
+
+| 类型                | 名称               | URI / 参数                     |
+| ----------------- | ---------------- | ---------------------------- |
+| Resource          | runtime          | `codemap://runtime`          |
+| Resource template | 一张图的身份与新鲜度       | `codemap://map/{codemap_id}` |
+| Prompt            | `query_operator` | `codemap_id`，可选 `focus`      |
+| Prompt            | `build_codemap`  | `project`、`architecture`     |
+
 
 `codemap_id` / `architecture` 的补全来自本进程 registry 和常见 arch 名。
 
@@ -322,13 +336,15 @@ ascendc-codemap-mcp serve --transport streamable-http --host 127.0.0.1 --port 87
 
 ## 环境变量
 
-| 变量 | 作用 |
-| --- | --- |
-| `ASCENDC_CODEMAP_CANN_ROOT` | 解包后的 CANN 根（还可回退 `ASCEND_CANN_PACKAGE_PATH`、`ASCEND_HOME_PATH`、`CANN_ROOT`）。解到 `<checkout>/_cann/pkg` 时不必设 |
-| `CLANG_EXE` / `UO_CLANG` / `LLVM_HOME` | clang 可执行文件；仅 pip `libclang` 不够 |
-| `ASCENDC_CODEMAP_CACHE_DIR` | 缓存目录，默认 `~/.cache/ascendc-codemap-mcp` |
-| `ASCENDC_CODEMAP_PROJECT` / `ASCENDC_CODEMAP_ARCHITECTURE` | 本进程 discover 之后的默认身份；也作 CLI 默认 |
-| `ASCENDC_CODEMAP_MAX_OPEN` | 打开的查询句柄 LRU 上限，默认 4 |
+
+| 变量                                                         | 作用                                                                                                         |
+| ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `ASCENDC_CODEMAP_CANN_ROOT`                                | 解包后的 CANN 根（还可回退 `ASCEND_CANN_PACKAGE_PATH`、`ASCEND_HOME_PATH`、`CANN_ROOT`）。解到 `<checkout>/_cann/pkg` 时不必设 |
+| `CLANG_EXE` / `UO_CLANG` / `LLVM_HOME`                     | clang 可执行文件；仅 pip `libclang` 不够                                                                            |
+| `ASCENDC_CODEMAP_CACHE_DIR`                                | 缓存目录，默认 `~/.cache/ascendc-codemap-mcp`                                                                     |
+| `ASCENDC_CODEMAP_PROJECT` / `ASCENDC_CODEMAP_ARCHITECTURE` | 本进程 discover 之后的默认身份；也作 CLI 默认                                                                             |
+| `ASCENDC_CODEMAP_MAX_OPEN`                                 | 打开的查询句柄 LRU 上限，默认 4                                                                                        |
+
 
 Codex 子进程只转发 `env_vars` 里列出的名字；`install` 会带上 CANN / cache 相关变量。
 
