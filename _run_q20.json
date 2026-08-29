@@ -1,0 +1,2562 @@
+{
+  "Q1": {
+    "start": [
+      "numel=0",
+      "empty",
+      "IsEmptyTensor",
+      "tiling 入口"
+    ],
+    "fts": [
+      {
+        "q": "IsEmptyTensor",
+        "total": 104,
+        "hits": [
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h",
+            "line": 51,
+            "text": "                      ASCENDC_TPL_BOOL_DECL(IsEmptyTensor, 0, 1),"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h",
+            "line": 131,
+            "text": "    ASCENDC_TPL_ARGS_SEL(ASCENDC_TPL_BOOL_SEL(IsEmptyTensor, 0),"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h",
+            "line": 144,
+            "text": "    ASCENDC_TPL_ARGS_SEL(ASCENDC_TPL_BOOL_SEL(IsEmptyTensor, 0),"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h",
+            "line": 157,
+            "text": "    ASCENDC_TPL_ARGS_SEL(ASCENDC_TPL_BOOL_SEL(IsEmptyTensor, 0),"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h",
+            "line": 170,
+            "text": "    ASCENDC_TPL_ARGS_SEL(ASCENDC_TPL_BOOL_SEL(IsEmptyTensor, 0),"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h",
+            "line": 183,
+            "text": "    ASCENDC_TPL_ARGS_SEL(ASCENDC_TPL_BOOL_SEL(IsEmptyTensor, 0),"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h",
+            "line": 196,
+            "text": "    ASCENDC_TPL_ARGS_SEL(ASCENDC_TPL_BOOL_SEL(IsEmptyTensor, 0),"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h",
+            "line": 209,
+            "text": "    ASCENDC_TPL_ARGS_SEL(ASCENDC_TPL_BOOL_SEL(IsEmptyTensor, 0),"
+          }
+        ],
+        "windows": [
+          {
+            "at": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:51",
+            "window": [
+              "44|     optiling::fag::FlashAttentionScoreGradTilingDataUs1s2Bbn2gs1s2Regbase<true, true, true, false>;",
+              "45| using FagTilingWithTemplateTTTT =",
+              "46|     optiling::fag::FlashAttentionScoreGradTilingDataUs1s2Bbn2gs1s2Regbase<true, true, true, true>;",
+              "48| // 可表示的tilingkey范围为64bit，注意不能超过限制",
+              "49| ASCENDC_TPL_ARGS_DECL(FlashAttentionScoreGrad, // 算子唯一标识，可以opType保持一致",
+              "50|                                                // bit: 0 IsRegbasePlatformValue",
+              "51|                       ASCENDC_TPL_BOOL_DECL(IsEmptyTensor, 0, 1),",
+              "52|                       // bit: 3-1 SplitAxis",
+              "53|                       //      0: BN2GS1S2",
+              "54|                       //      1: BN2",
+              "55|                       //      5: BN2S2",
+              "56|                       ASCENDC_TPL_UINT_DECL(SplitAxis, ASCENDC_TPL_3_BW, ASCENDC_TPL_UI_LIST, 0, 1, 5),",
+              "57|                       // bit: 6-4 InputDType",
+              "58|                       //      1: FLOAT32"
+            ]
+          },
+          {
+            "at": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:131",
+            "window": [
+              "124|                       // bit: 54 IsRegbasePlatformValue",
+              "125|                       ASCENDC_TPL_BOOL_DECL(IsRegbase, 0, 1), );",
+              "127| ASCENDC_TPL_SEL(",
+              "129| #if (ORIG_DTYPE_QUERY == -1) || (ORIG_DTYPE_QUERY == DT_FLOAT16)",
+              "130|     // FP16",
+              "131|     ASCENDC_TPL_ARGS_SEL(ASCENDC_TPL_BOOL_SEL(IsEmptyTensor, 0),",
+              "132|                          ASCENDC_TPL_UINT_SEL(SplitAxis, ASCENDC_TPL_UI_LIST, 0),",
+              "133|                          ASCENDC_TPL_UINT_SEL(InputDType, ASCENDC_TPL_UI_LIST, 3), ASCENDC_TPL_BOOL_SEL(IsTnd, 0),",
+              "134|                          ASCENDC_TPL_BOOL_SEL(IsDrop, 0, 1), ASCENDC_TPL_BOOL_SEL(IsPse, 0, 1),",
+              "135|                          ASCENDC_TPL_BOOL_SEL(IsAttenMask, 0, 1),",
+              "136|                          ASCENDC_TPL_UINT_SEL(S1TemplateNum, ASCENDC_TPL_UI_LIST, 128),",
+              "137|                          ASCENDC_TPL_UINT_SEL(S2TemplateNum, ASCENDC_TPL_UI_LIST, 128),",
+              "138|                          ASCENDC_TPL_UINT_SEL(DTemplateNum, ASCENDC_TPL_UI_LIST, 64, 192, 256, 768),"
+            ]
+          }
+        ]
+      },
+      {
+        "q": "emptyTensor",
+        "total": 183,
+        "hits": [
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_empty_tensor_regbase.h",
+            "line": 28,
+            "text": "template <typename T> class FlashAttentionScoreGradEmptyTensorRegbase {"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_empty_tensor_regbase.h",
+            "line": 30,
+            "text": "    __aicore__ inline FlashAttentionScoreGradEmptyTensorRegbase(){};"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_empty_tensor_regbase.h",
+            "line": 33,
+            "text": "                                const FlashAttentionScoreGradEmptyTensorTilingDataRegbase *__restrict tilingData);"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_empty_tensor_regbase.h",
+            "line": 39,
+            "text": "    const FlashAttentionScoreGradEmptyTensorTilingDataRegbase *__restrict m_tilingData;"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_empty_tensor_regbase.h",
+            "line": 44,
+            "text": "FlashAttentionScoreGradEmptyTensorRegbase<T>::Init(__gm__ uint8_t *dq, __gm__ uint8_t *dk, __gm__ uint8_t *dv,"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_empty_tensor_regbase.h",
+            "line": 46,
+            "text": "                                      const FlashAttentionScoreGradEmptyTensorTilingDataRegbase *__restrict tilingData)"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_empty_tensor_regbase.h",
+            "line": 60,
+            "text": "template <typename T> __aicore__ inline void FlashAttentionScoreGradEmptyTensorRegbase<T>::Process()"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h",
+            "line": 51,
+            "text": "                      ASCENDC_TPL_BOOL_DECL(IsEmptyTensor, 0, 1),"
+          }
+        ],
+        "windows": [
+          {
+            "at": "op_kernel/arch35/flash_attention_score_grad_empty_tensor_regbase.h:28",
+            "window": [
+              "21| #else",
+              "22| #include \"kernel_operator.h\"",
+              "23| #endif",
+              "24| #include \"kernel_tiling/kernel_tiling.h\"",
+              "26| using AscendC::InitOutput;",
+              "28| template <typename T> class FlashAttentionScoreGradEmptyTensorRegbase {",
+              "29| public:",
+              "30|     __aicore__ inline FlashAttentionScoreGradEmptyTensorRegbase(){};",
+              "31|     __aicore__ inline void Init(__gm__ uint8_t *dq, __gm__ uint8_t *dk, __gm__ uint8_t *dv, __gm__ uint8_t *dpse,",
+              "32|                                 __gm__ uint8_t *dqRope, __gm__ uint8_t *dkRope,",
+              "33|                                 const FlashAttentionScoreGradEmptyTensorTilingDataRegbase *__restrict tilingData);",
+              "34|     __aicore__ inline void Process();"
+            ]
+          },
+          {
+            "at": "op_kernel/arch35/flash_attention_score_grad_empty_tensor_regbase.h:30",
+            "window": [
+              "23| #endif",
+              "24| #include \"kernel_tiling/kernel_tiling.h\"",
+              "26| using AscendC::InitOutput;",
+              "28| template <typename T> class FlashAttentionScoreGradEmptyTensorRegbase {",
+              "29| public:",
+              "30|     __aicore__ inline FlashAttentionScoreGradEmptyTensorRegbase(){};",
+              "31|     __aicore__ inline void Init(__gm__ uint8_t *dq, __gm__ uint8_t *dk, __gm__ uint8_t *dv, __gm__ uint8_t *dpse,",
+              "32|                                 __gm__ uint8_t *dqRope, __gm__ uint8_t *dkRope,",
+              "33|                                 const FlashAttentionScoreGradEmptyTensorTilingDataRegbase *__restrict tilingData);",
+              "34|     __aicore__ inline void Process();",
+              "36| protected:",
+              "37|     uint64_t m_blockIdx;"
+            ]
+          }
+        ]
+      },
+      {
+        "q": "EmptyTensor",
+        "total": 183,
+        "hits": [
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_empty_tensor_regbase.h",
+            "line": 28,
+            "text": "template <typename T> class FlashAttentionScoreGradEmptyTensorRegbase {"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_empty_tensor_regbase.h",
+            "line": 30,
+            "text": "    __aicore__ inline FlashAttentionScoreGradEmptyTensorRegbase(){};"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_empty_tensor_regbase.h",
+            "line": 33,
+            "text": "                                const FlashAttentionScoreGradEmptyTensorTilingDataRegbase *__restrict tilingData);"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_empty_tensor_regbase.h",
+            "line": 39,
+            "text": "    const FlashAttentionScoreGradEmptyTensorTilingDataRegbase *__restrict m_tilingData;"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_empty_tensor_regbase.h",
+            "line": 44,
+            "text": "FlashAttentionScoreGradEmptyTensorRegbase<T>::Init(__gm__ uint8_t *dq, __gm__ uint8_t *dk, __gm__ uint8_t *dv,"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_empty_tensor_regbase.h",
+            "line": 46,
+            "text": "                                      const FlashAttentionScoreGradEmptyTensorTilingDataRegbase *__restrict tilingData)"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_empty_tensor_regbase.h",
+            "line": 60,
+            "text": "template <typename T> __aicore__ inline void FlashAttentionScoreGradEmptyTensorRegbase<T>::Process()"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h",
+            "line": 51,
+            "text": "                      ASCENDC_TPL_BOOL_DECL(IsEmptyTensor, 0, 1),"
+          }
+        ],
+        "windows": [
+          {
+            "at": "op_kernel/arch35/flash_attention_score_grad_empty_tensor_regbase.h:28",
+            "window": [
+              "21| #else",
+              "22| #include \"kernel_operator.h\"",
+              "23| #endif",
+              "24| #include \"kernel_tiling/kernel_tiling.h\"",
+              "26| using AscendC::InitOutput;",
+              "28| template <typename T> class FlashAttentionScoreGradEmptyTensorRegbase {",
+              "29| public:",
+              "30|     __aicore__ inline FlashAttentionScoreGradEmptyTensorRegbase(){};",
+              "31|     __aicore__ inline void Init(__gm__ uint8_t *dq, __gm__ uint8_t *dk, __gm__ uint8_t *dv, __gm__ uint8_t *dpse,",
+              "32|                                 __gm__ uint8_t *dqRope, __gm__ uint8_t *dkRope,",
+              "33|                                 const FlashAttentionScoreGradEmptyTensorTilingDataRegbase *__restrict tilingData);",
+              "34|     __aicore__ inline void Process();"
+            ]
+          },
+          {
+            "at": "op_kernel/arch35/flash_attention_score_grad_empty_tensor_regbase.h:30",
+            "window": [
+              "23| #endif",
+              "24| #include \"kernel_tiling/kernel_tiling.h\"",
+              "26| using AscendC::InitOutput;",
+              "28| template <typename T> class FlashAttentionScoreGradEmptyTensorRegbase {",
+              "29| public:",
+              "30|     __aicore__ inline FlashAttentionScoreGradEmptyTensorRegbase(){};",
+              "31|     __aicore__ inline void Init(__gm__ uint8_t *dq, __gm__ uint8_t *dk, __gm__ uint8_t *dv, __gm__ uint8_t *dpse,",
+              "32|                                 __gm__ uint8_t *dqRope, __gm__ uint8_t *dkRope,",
+              "33|                                 const FlashAttentionScoreGradEmptyTensorTilingDataRegbase *__restrict tilingData);",
+              "34|     __aicore__ inline void Process();",
+              "36| protected:",
+              "37|     uint64_t m_blockIdx;"
+            ]
+          }
+        ]
+      },
+      {
+        "q": "numel",
+        "total": 1,
+        "hits": [
+          {
+            "file": "../common/op_kernel/aicpu_common.h",
+            "line": 112,
+            "text": "    int64_t size = tensor->NumElements();"
+          }
+        ],
+        "windows": [
+          {
+            "at": "../common/op_kernel/aicpu_common.h:112",
+            "window": [
+              "105| {",
+              "106|     std::vector<int64_t> result {};",
+              "108|     if (!IsTensorExists(tensor)) {",
+              "109|         return result;",
+              "110|     }",
+              "112|     int64_t size = tensor->NumElements();",
+              "113|     result.resize(size);",
+              "115|     void *data = tensor->GetData();",
+              "116|     switch (tensor->GetDataType()) {",
+              "117|         case DT_INT32:",
+              "118|             std::transform(static_cast<int32_t *>(data), static_cast<int32_t *>(data) + size, result.begin(),",
+              "119|                            [](int32_t v) { return static_cast<int64_t>(v); });"
+            ]
+          }
+        ]
+      }
+    ],
+    "tiling_cpp_1_180": [
+      "1| /**",
+      "1| /**",
+      "2|  * Copyright (c) 2025 Huawei Technologies Co., Ltd.",
+      "2|  * Copyright (c) 2025 Huawei Technologies Co., Ltd.",
+      "3|  * This program is free software, you can redistribute it and/or modify it under the terms and conditions of",
+      "3|  * This program is free software, you can redistribute it and/or modify it under the terms and conditions of",
+      "4|  * CANN Open Software License Agreement Version 2.0 (the \"License\").",
+      "4|  * CANN Open Software License Agreement Version 2.0 (the \"License\").",
+      "5|  * Please refer to the License for details. You may not use this file except in compliance with the License.",
+      "5|  * Please refer to the License for details. You may not use this file except in compliance with the License.",
+      "6|  * THIS SOFTWARE IS PROVIDED ON AN \"AS IS\" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,",
+      "6|  * THIS SOFTWARE IS PROVIDED ON AN \"AS IS\" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,",
+      "7|  * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.",
+      "7|  * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.",
+      "8|  * See LICENSE in the root of the software repository for the full text of the License.",
+      "8|  * See LICENSE in the root of the software repository for the full text of the License.",
+      "9|  */",
+      "9|  */",
+      "10| #include <iostream>",
+      "11| /*!",
+      "11| #include <gtest/gtest.h>",
+      "12|  * \\file flash_attention_score_grad_tiling.cpp",
+      "12| #include \"tiling/platform/platform_ascendc.h\"",
+      "13|  * \\brief",
+      "13| #include \"../../../../common/include/op_host/tiling_base.h\"",
+      "14|  */",
+      "14| #include \"tiling_context_faker.h\"",
+      "15| #include \"tiling_case_executor.h\"",
+      "16| #include \"../op_kernel/arch22/flash_attention_score_grad_tiling.h\"",
+      "17| #include <register/op_impl_registry.h>",
+      "17| using namespace std;",
+      "18| #include \"log/log.h\"",
+      "19| #include \"op_host/data_copy_transpose_tiling.h\"",
+      "19| std::string A5SocInfo = \"{\\n\"",
+      "20| #include \"op_host/tiling_templates_registry.h\"",
+      "20|                         \"  \\\"hardware_info\\\": {\\n\"",
+      "21| #include \"../op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h\"",
+      "21|                         \"    \\\"BT_SIZE\\\": 0,\\n\"",
+      "22| #include \"../op_kernel/arch35/flash_attention_score_grad_tiling_data_regbase.h\"",
+      "22|                         \"    \\\"load3d_constraints\\\": \\\"1\\\",\\n\"",
+      "23|                         \"    \\\"Intrinsic_fix_pipe_l0c2out\\\": false,\\n\"",
+      "24| using namespace ge;",
+      "24|                         \"    \\\"Intrinsic_data_move_l12ub\\\": true,\\n\"",
+      "25| using namespace AscendC;",
+      "25|                         \"    \\\"Intrinsic_data_move_l0c2ub\\\": true,\\n\"",
+      "26| using namespace Ops::Transformer::OpTiling;",
+      "26|                         \"    \\\"Intrinsic_data_move_out2l1_nd2nz\\\": false,\\n\"",
+      "27|                         \"    \\\"UB_SIZE\\\": 262144,\\n\"",
+      "28| namespace optiling {",
+      "28|                         \"    \\\"L2_SIZE\\\": 134217728,\\n\"",
+      "29| constexpr uint32_t OUTPUT_IDX_DQ = 0;",
+      "29|                         \"    \\\"L1_SIZE\\\": 524288,\\n\"",
+      "30| constexpr uint32_t OUTPUT_IDX_DK = 1;",
+      "30|                         \"    \\\"L0A_SIZE\\\": 65536,\\n\"",
+      "31| constexpr uint32_t OUTPUT_IDX_DV = 2;",
+      "31|                         \"    \\\"L0B_SIZE\\\": 65536,\\n\"",
+      "32| constexpr uint32_t OUTPUT_IDX_DPSE = 3;",
+      "32|                         \"    \\\"L0C_SIZE\\\": 262144,\\n\"",
+      "33| constexpr uint32_t OUTPUT_IDX_DQ_ROPE = 4;",
+      "33|                         \"    \\\"CORE_NUM\\\": 32,\\n\"",
+      "34| constexpr uint32_t OUTPUT_IDX_DK_ROPE = 5;",
+      "34|                         \"    \\\"socVersion\\\": \\\"Ascend950\\\"\\n\"",
+      "35|                         \"  }\\n\"",
+      "36| constexpr uint32_t QUERY_INPUT_INDEX = 0;",
+      "36|                         \"}\";",
+      "37| constexpr uint32_t KEY_INPUT_INDEX = 1;",
+      "38| constexpr uint32_t VALUE_INPUT_INDEX = 2;",
+      "38| class FlashAttentionScoreGradTiling : public testing::Test {",
+      "39| constexpr uint32_t DY_INPUT_INDEX = 3;",
+      "39| protected:",
+      "40| constexpr uint32_t SOFTMAX_MAX = 8;",
+      "40|     static void SetUpTestCase() { std::cout << \"FlashAttentionScoreGradTiling SetUp\" << std::endl; }",
+      "41| constexpr uint32_t SOFTMAX_SUM = 9;",
+      "42| constexpr uint32_t ATTENTION_IN = 11;",
+      "42|     static void TearDownTestCase() { std::cout << \"FlashAttentionScoreGradTiling TearDown\" << std::endl; }",
+      "43| constexpr uint32_t PSE_SHIFT_INPUT_INDEX = 4;",
+      "43| };",
+      "44| constexpr uint32_t PREFIX_INPUT_INDEX = 12;",
+      "45| constexpr uint32_t ACTUAL_SEQ_Q_LEN_INPUT_INDEX = 13;",
+      "45| TEST_F(FlashAttentionScoreGradTiling, FlashAttentionScoreGrad_950_tiling_0)",
+      "46| constexpr uint32_t ACTUAL_SEQ_KV_LEN_INPUT_INDEX = 14;",
+      "46| {",
+      "47| constexpr uint32_t QUERY_ROPE_INPUT_INDEX = 22;",
+      "47|     Ops::Transformer::OpTiling::FlashAttentionScoreGradCompileInfo compileInfo = {",
+      "48| constexpr uint32_t KEY_ROPE_INPUT_INDEX = 23;",
+      "48|         64,                                     // aivNum",
+      "49|         32,                                     // aicNum",
+      "50| constexpr uint32_t HEAD_NUM_IDX = 4;",
+      "50|         196608,                                 // ubSize",
+      "51| constexpr uint32_t LAYOUT_ATTR_IDX = 5;",
+      "51|         524288,                                 // l1Size",
+      "52|         65536,                                  // l0aSize",
+      "53| constexpr int64_t T_MAX_LIMIT = 1000000;",
+      "53|         65536,                                  // l0bSize",
+      "54| constexpr int64_t N_MAX_LIMIT = 256;",
+      "54|         131072,                                 // l0cSize",
+      "55| constexpr int64_t D_MAX_LIMIT = 768;",
+      "55|         33554432,                               // l2CacheSize",
+      "56| constexpr int64_t ACTUAL_SEQ_Q_LEN_MAX_LIMIT = 2048;",
+      "56|         32,                                     // coreNum",
+      "57| constexpr int64_t ACTUAL_SEQ_Q_LEN_PREFIX_MAX_LIMIT = 1000;",
+      "57|         platform_ascendc::SocVersion::ASCEND950 // socVersion",
+      "58|     };",
+      "59| constexpr uint32_t FAG_EMPTY_TILING_KEY = 0;",
+      "59|     gert::TilingContextPara tilingContextPara(",
+      "60| constexpr uint32_t TILING_KEY_1 = 1U;",
+      "60|         \"FlashAttentionScoreGrad\",",
+      "61| constexpr size_t WORKSPACE_SIZE = 100 * 1024 * 1024;",
+      "61|         {",
+      "62| constexpr uint64_t SMLEST_ROPE_SIZE = 64;",
+      "62|             // q: S1=256, B=1, H1=128",
+      "63|             {{{256, 1, 128}, {256, 1, 128}}, ge::DT_FLOAT, ge::FORMAT_ND},",
+      "64| static uint32_t CalculateTschBlockDim(uint32_t sliceNum, uint32_t aicCoreNum, uint32_t aivCoreNum)",
+      "64|             // k: S2=256, B=1, H2=128",
+      "65| {",
+      "65|             {{{256, 1, 128}, {256, 1, 128}}, ge::DT_FLOAT, ge::FORMAT_ND},",
+      "66|     uint32_t ration;",
+      "66|             // v: S2=256, B=1, H2=128",
+      "67|     if (aicCoreNum == 0U || aivCoreNum == 0U || aicCoreNum > aivCoreNum) {",
+      "67|             {{{256, 1, 128}, {256, 1, 128}}, ge::DT_FLOAT, ge::FORMAT_ND},",
+      "68|         return sliceNum;",
+      "68|             // dy",
+      "69|     }",
+      "69|             {{{256, 1, 128}, {256, 1, 128}}, ge::DT_FLOAT, ge::FORMAT_ND},",
+      "70|     ration = aivCoreNum / aicCoreNum;",
+      "70|             // pse_shift",
+      "71|     return (sliceNum + (ration - 1)) / ration;",
+      "71|             {{{}, {}}, ge::DT_FLOAT, ge::FORMAT_ND},",
+      "72| }",
+      "72|             // drop_mask",
+      "73|             {{{}, {}}, ge::DT_FLOAT, ge::FORMAT_ND},",
+      "74| // tiling func + tiling prepare",
+      "74|             // padding_mask",
+      "75| class FlashAttentionScoreGradTiling {",
+      "75|             {{{}, {}}, ge::DT_INT32, ge::FORMAT_ND},",
+      "76| public:",
+      "76|             // atten_mask: S1=256, S2=256",
+      "77|             {{{256, 256}, {256, 256}}, ge::DT_UINT8, ge::FORMAT_ND},",
+      "78|     ge::graphStatus RunEmptyTiling(gert::TilingContext *context)",
+      "78|             // softmax_max",
+      "79|     {",
+      "79|             {{{1, 1, 256, 8}, {1, 1, 256, 8}}, ge::DT_FLOAT, ge::FORMAT_ND},",
+      "80|         FlashAttentionScoreGradTilingData *tilingData = context->GetTilingData<FlashAttentionScoreGradTilingData>();",
+      "80|             // softmax_sum",
+      "81|         uint64_t aicNum = 40; // 40: B3 default aicNum",
+      "81|             {{{1, 1, 256, 8}, {1, 1, 256, 8}}, ge::DT_FLOAT, ge::FORMAT_ND},",
+      "82|         uint64_t aivNum = 20; // 20: B3 default aivNum",
+      "82|             // softmax_in",
+      "83|         auto platformInfoPtr = context->GetPlatformInfo();",
+      "83|             {{{}, {}}, ge::DT_FLOAT, ge::FORMAT_ND},",
+      "84|         if (platformInfoPtr == nullptr) {",
+      "84|             // attention_in",
+      "85|             auto compilePtr = reinterpret_cast<const FlashAttentionScoreGradCompileInfo *>(context->GetCompileInfo());",
+      "85|             {{{256, 1, 128}, {256, 1, 128}}, ge::DT_FLOAT, ge::FORMAT_ND},",
+      "86|             OP_CHECK_IF(compilePtr == nullptr, OP_LOGE(context, \"The op [FlashAttentionScoreGrad] received bad params, the reason is: [compile_info is null]\"),",
+      "86|             // prefix",
+      "87|                        return ge::GRAPH_FAILED);",
+      "87|             {{{}, {}}, ge::DT_INT64, ge::FORMAT_ND},",
+      "88|             aivNum = compilePtr->aivNum;",
+      "88|             // actual_seq_qlen",
+      "89|             aicNum = compilePtr->aicNum;",
+      "89|             {{{}, {}}, ge::DT_INT64, ge::FORMAT_ND},",
+      "90|         } else {",
+      "90|             // actual_seq_kvlen",
+      "91|             auto ascendcPlatform = platform_ascendc::PlatformAscendC(platformInfoPtr);",
+      "91|             {{{}, {}}, ge::DT_INT64, ge::FORMAT_ND},",
+      "92|             aicNum = ascendcPlatform.GetCoreNumAic();",
+      "92|             // q_start_idx",
+      "93|             aivNum = ascendcPlatform.GetCoreNumAiv();",
+      "93|             {{{}, {}}, ge::DT_INT64, ge::FORMAT_ND},",
+      "94|         }",
+      "94|             // kv_start_idx",
+      "95|         OP_CHECK_IF(aivNum == 0, OP_LOGE(context, \"The op [FlashAttentionScoreGrad] received bad params, the reason is: [num of aiv is 0]\"),",
+      "95|             {{{}, {}}, ge::DT_INT64, ge::FORMAT_ND},",
+      "96|                    return GRAPH_FAILED);",
+      "96|             // dScaleQ",
+      "97|         uint64_t dqNum = static_cast<uint64_t>(context->GetOutputShape(OUTPUT_IDX_DQ)->GetStorageShape().GetShapeSize());",
+      "97|             {{{}, {}}, ge::DT_FLOAT, ge::FORMAT_ND},",
+      "98|         if (dqNum % aivNum == 0ULL) {",
+      "98|             // dScaleK",
+      "99|             tilingData->emptyTensorTilingData.set_formerDqNum(aivNum);",
+      "99|             {{{}, {}}, ge::DT_FLOAT, ge::FORMAT_ND},",
+      "100|             tilingData->emptyTensorTilingData.set_singleCoreDqNum(dqNum / aivNum);",
+      "100|             // dScaleV",
+      "101|             tilingData->emptyTensorTilingData.set_tailCoreDqNum(0);",
+      "101|             {{{}, {}}, ge::DT_FLOAT, ge::FORMAT_ND},",
+      "102|         } else {",
+      "102|             // dScaledy",
+      "103|             tilingData->emptyTensorTilingData.set_formerDqNum(dqNum % aivNum);",
+      "103|             {{{}, {}}, ge::DT_FLOAT, ge::FORMAT_ND},",
+      "104|             tilingData->emptyTensorTilingData.set_singleCoreDqNum(dqNum / aivNum + 1);",
+      "104|             // dScaleo",
+      "105|             tilingData->emptyTensorTilingData.set_tailCoreDqNum(dqNum / aivNum);",
+      "105|             {{{}, {}}, ge::DT_FLOAT, ge::FORMAT_ND},",
+      "106|         }",
+      "106|             // queryRope",
+      "107|         uint64_t dkNum = static_cast<uint64_t>(context->GetOutputShape(OUTPUT_IDX_DK)->GetStorageShape().GetShapeSize());",
+      "107|             {{{}, {}}, ge::DT_FLOAT, ge::FORMAT_ND},",
+      "108|         if (dkNum % aivNum == 0ULL) {",
+      "108|             // keyRope",
+      "109|             tilingData->emptyTensorTilingData.set_formerDkNum(aivNum);",
+      "109|             {{{}, {}}, ge::DT_FLOAT, ge::FORMAT_ND},",
+      "110|             tilingData->emptyTensorTilingData.set_singleCoreDkNum(dkNum / aivNum);",
+      "110|         },",
+      "111|             tilingData->emptyTensorTilingData.set_tailCoreDkNum(0);",
+      "111|         {",
+      "112|         } else {",
+      "112|             // 输出Tensor",
+      "113|             tilingData->emptyTensorTilingData.set_formerDkNum(dkNum % aivNum);",
+      "113|             // dq",
+      "114|             tilingData->emptyTensorTilingData.set_singleCoreDkNum(dkNum / aivNum + 1);",
+      "114|             {{{256, 1, 128}, {256, 1, 128}}, ge::DT_FLOAT, ge::FORMAT_ND},",
+      "115|             tilingData->emptyTensorTilingData.set_tailCoreDkNum(dkNum / aivNum);",
+      "115|             // dk",
+      "116|         }",
+      "116|             {{{256, 1, 128}, {256, 1, 128}}, ge::DT_FLOAT, ge::FORMAT_ND},",
+      "117|         uint64_t dvNum = static_cast<uint64_t>(context->GetOutputShape(OUTPUT_IDX_DV)->GetStorageShape().GetShapeSize());",
+      "117|             // dv",
+      "118|         if (dvNum % aivNum == 0ULL) {",
+      "118|             {{{256, 1, 128}, {256, 1, 128}}, ge::DT_FLOAT, ge::FORMAT_ND},",
+      "119|             tilingData->emptyTensorTilingData.set_formerDvNum(aivNum);",
+      "119|             // dpse",
+      "120|             tilingData->emptyTensorTilingData.set_singleCoreDvNum(dvNum / aivNum);",
+      "120|             {{{}, {}}, ge::DT_FLOAT, ge::FORMAT_ND},",
+      "121|             tilingData->emptyTensorTilingData.set_tailCoreDvNum(0);",
+      "121|             // dq_rope",
+      "122|         } else {",
+      "122|             {{{}, {}}, ge::DT_FLOAT, ge::FORMAT_ND},",
+      "123|             tilingData->emptyTensorTilingData.set_formerDvNum(dvNum % aivNum);",
+      "123|             // dk_rope",
+      "124|             tilingData->emptyTensorTilingData.set_singleCoreDvNum(dvNum / aivNum + 1);",
+      "124|             {{{}, {}}, ge::DT_FLOAT, ge::FORMAT_ND},",
+      "125|             tilingData->emptyTensorTilingData.set_tailCoreDvNum(dvNum / aivNum);",
+      "125|         },",
+      "126|         }",
+      "126|         {{\"scale_value\", Ops::Transformer::AnyValue::CreateFrom<float>(0.088388f)},",
+      "127|         const gert::StorageShape *dpseShape = context->GetOutputShape(OUTPUT_IDX_DPSE);",
+      "127|          {\"keep_prob\", Ops::Transformer::AnyValue::CreateFrom<float>(1.0f)},",
+      "128|         uint64_t dpseNum = (dpseShape == nullptr) ? 0 : static_cast<uint64_t>(dpseShape->GetStorageShape().GetShapeSize());",
+      "128|          {\"pre_tockens\", Ops::Transformer::AnyValue::CreateFrom<int64_t>(65536)},",
+      "129|         if (dpseNum % aivNum == 0ULL) {",
+      "129|          {\"next_tockens\", Ops::Transformer::AnyValue::CreateFrom<int64_t>(65536)},",
+      "130|             tilingData->emptyTensorTilingData.set_formerDpseNum(aivNum);",
+      "130|          {\"head_num\", Ops::Transformer::AnyValue::CreateFrom<int64_t>(1)},",
+      "131|             tilingData->emptyTensorTilingData.set_singleCoreDpseNum(dpseNum / aivNum);",
+      "131|          {\"input_layout\", Ops::Transformer::AnyValue::CreateFrom<std::string>(\"SBH\")},",
+      "132|             tilingData->emptyTensorTilingData.set_tailCoreDpseNum(0);",
+      "132|          {\"inner_precise\", Ops::Transformer::AnyValue::CreateFrom<int64_t>(0)},",
+      "133|         } else {",
+      "133|          {\"sparse_mode\", Ops::Transformer::AnyValue::CreateFrom<int64_t>(0)},",
+      "134|             tilingData->emptyTensorTilingData.set_formerDpseNum(dpseNum % aivNum);",
+      "134|          {\"pse_type\", Ops::Transformer::AnyValue::CreateFrom<int64_t>(1)},",
+      "135|             tilingData->emptyTensorTilingData.set_singleCoreDpseNum(dpseNum / aivNum + 1);",
+      "135|          {\"seed\", Ops::Transformer::AnyValue::CreateFrom<int64_t>(0)},",
+      "136|             tilingData->emptyTensorTilingData.set_tailCoreDpseNum(dpseNum / aivNum);",
+      "136|          {\"offset\", Ops::Transformer::AnyValue::CreateFrom<int64_t>(0)},",
+      "137|         }",
+      "137|          {\"out_dtype\", Ops::Transformer::AnyValue::CreateFrom<int64_t>(0)},",
+      "138|          {\"softmax_in_layout\", Ops::Transformer::AnyValue::CreateFrom<std::string>(\"\")}},",
+      "139|         context->SetTilingKey(FAG_EMPTY_TILING_KEY);",
+      "139|         &compileInfo, \"Ascend950\", A5SocInfo, 4096);",
+      "140|         auto sliceNum =",
+      "140|     int64_t expectTilingKey = 18577349537174544;",
+      "141|             (dqNum < aivNum && dkNum < aivNum && dpseNum < aivNum) ? std::max(std::max(dqNum, dkNum), dpseNum) : aivNum;",
+      "141|     std::string expectTilingData =",
+      "142|         context->SetBlockDim(CalculateTschBlockDim(sliceNum, aicNum, aivNum));",
+      "142|         \"32 1 1 1 256 256 128 128 4575657222443697349 255 65536 65536 0 0 0 2 1 0 0 2 1099511627776 0 0 0 0 2 \"",
+      "143|         size_t *workspaces = context->GetWorkspaceSizes(1);",
+      "143|         \"549755813952 549755813952 2 549755814016 4294967300 0 0 1 2 3 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 \"",
+      "144|         workspaces[0] = WORKSPACE_SIZE;",
+      "144|         \"0 0 0 0 0 0 0 0 1 2 3 4 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 16384 8192 4 8192 \"",
+      "145|         return ge::GRAPH_SUCCESS;",
+      "145|         \"8192 4 8192 8192 4 8192 0 0 0 4 61440 30720 114688 30720 1 16384 1 16384 1 0 0 0 0 0 0 0 0 0 0 1 32768 16384 \"",
+      "146|     }",
+      "146|         \"16384 1 32768 16384 16384 1 32768 16384 16384 0 0 0 0 0 0 0 0 0 0 0 0 0 0 \";",
+      "147|     std::vector<size_t> expectWorkspaces = {21037056};",
+      "148|     ge::graphStatus RunEmptyTilingRegbase(gert::TilingContext *context)",
+      "148|     ExecuteTestCase(tilingContextPara, ge::GRAPH_SUCCESS, expectTilingKey, expectTilingData, expectWorkspaces);",
+      "149|     {",
+      "149| }",
+      "150|         fag::FlashAttentionScoreGradEmptyTensorTilingDataRegbase* emptyTensorTilingDataRegbase = context->GetTilingData<fag::FlashAttentionScoreGradEmptyTensorTilingDataRegbase>();",
+      "151|         uint64_t aicNum = 32; // 32: A5 default aicNum",
+      "151| TEST_F(FlashAttentionScoreGradTiling, FlashAttentionScoreGrad_950_tiling_1)",
+      "152|         uint64_t aivNum = 64; // 64: A5 default aivNum",
+      "152| {",
+      "153|         auto platformInfoPtr = context->GetPlatformInfo();",
+      "153|     int64_t actual_seq_qlist[4] = {128, 384, 768, 974};",
+      "154|         if (platformInfoPtr == nullptr) {",
+      "154|     int64_t actual_seq_kvlist[4] = {128, 384, 768, 974};",
+      "155|             auto compilePtr = reinterpret_cast<const FlashAttentionScoreGradCompileInfo *>(context->GetCompileInfo());",
+      "155|     Ops::Transformer::OpTiling::FlashAttentionScoreGradCompileInfo compileInfo = {",
+      "156|             OP_CHECK_IF(compilePtr == nullptr, OP_LOGE(context, \"The op [FlashAttentionScoreGrad] received bad params, the reason is: [compile_info is null]\"),",
+      "156|         64,                                     // aivNum",
+      "157|                        return ge::GRAPH_FAILED);",
+      "157|         32,                                     // aicNum",
+      "158|             aivNum = compilePtr->aivNum;",
+      "158|         196608,                                 // ubSize",
+      "159|             aicNum = compilePtr->aicNum;",
+      "159|         524288,                                 // l1Size",
+      "160|         } else {",
+      "160|         65536,                                  // l0aSize"
+    ],
+    "apt_empty_lines": [
+      "op_kernel/flash_attention_score_grad_apt.cpp:35| template <uint8_t IsEmptyTensor, uint8_t SplitAxis, uint8_t InputDType, bool IsTnd, bool IsDrop, bool IsPse,",
+      "op_kernel/flash_attention_score_grad_apt.cpp:55|     if constexpr (IsEmptyTensor) {",
+      "op_kernel/flash_attention_score_grad_apt.cpp:57|         REGISTER_TILING_FOR_TILINGKEY(\"(TILING_KEY_VAR & 0x1)\", optiling::fag::FlashAttentionScoreGradEmptyTensorTilingDataRegbase);",
+      "op_kernel/flash_attention_score_grad_apt.cpp:58|         GET_TILING_DATA_WITH_STRUCT(FlashAttentionScoreGradEmptyTensorTilingDataRegbase, tiling_data_in, tiling_data);",
+      "op_kernel/flash_attention_score_grad_apt.cpp:59|         const FlashAttentionScoreGradEmptyTensorTilingDataRegbase *__restrict empty_tensor_tiling_data = &tiling_data_in;",
+      "op_kernel/flash_attention_score_grad_apt.cpp:61|             FlashAttentionScoreGradEmptyTensorRegbase<half> op;",
+      "op_kernel/flash_attention_score_grad_apt.cpp:66|             FlashAttentionScoreGradEmptyTensorRegbase<float> op;",
+      "op_kernel/flash_attention_score_grad_apt.cpp:71|             FlashAttentionScoreGradEmptyTensorRegbase<bfloat16_t> op;"
+    ],
+    "names": {
+      "IsEmptyTensor": [
+        {
+          "kind": "BRANCH",
+          "name": "IsEmptyTensor",
+          "file": "op_kernel/flash_attention_score_grad_apt.cpp",
+          "line": 55
+        },
+        {
+          "kind": "BRANCH",
+          "name": "IsEmptyTensor",
+          "file": "op_kernel/flash_attention_score_grad_apt.cpp",
+          "line": 55
+        },
+        {
+          "kind": "BRANCH",
+          "name": "IsEmptyTensor",
+          "file": "op_kernel/flash_attention_score_grad_apt.cpp",
+          "line": 55
+        },
+        {
+          "kind": "BRANCH",
+          "name": "IsEmptyTensor",
+          "file": "op_kernel/flash_attention_score_grad_apt.cpp",
+          "line": 55
+        },
+        {
+          "kind": "BRANCH",
+          "name": "IsEmptyTensor",
+          "file": "op_kernel/flash_attention_score_grad_apt.cpp",
+          "line": 55
+        },
+        {
+          "kind": "BRANCH",
+          "name": "IsEmptyTensor",
+          "file": "op_kernel/flash_attention_score_grad_apt.cpp",
+          "line": 55
+        },
+        {
+          "kind": "BRANCH",
+          "name": "IsEmptyTensor",
+          "file": "op_kernel/flash_attention_score_grad_apt.cpp",
+          "line": 55
+        },
+        {
+          "kind": "BRANCH",
+          "name": "IsEmptyTensor",
+          "file": "op_kernel/flash_attention_score_grad_apt.cpp",
+          "line": 55
+        },
+        {
+          "kind": "CONTRACT",
+          "name": "IsEmptyTensor",
+          "file": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h",
+          "line": 51
+        },
+        {
+          "kind": "CONTRACT",
+          "name": "IsEmptyTensor",
+          "file": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h",
+          "line": 51
+        },
+        {
+          "kind": "CONTRACT",
+          "name": "IsEmptyTensor",
+          "file": "op_kernel/flash_attention_score_grad_apt.cpp",
+          "line": 35
+        },
+        {
+          "kind": "TEMPLATE_ARG",
+          "name": "IsEmptyTensor",
+          "file": "op_kernel/flash_attention_score_grad_apt.cpp",
+          "line": 35
+        }
+      ],
+      "EMPTY_TENSOR": [
+        {
+          "kind": "COMPILE_VAR",
+          "name": "EMPTY_TENSOR",
+          "file": "op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp",
+          "line": 1272
+        },
+        {
+          "kind": "COMPILE_VAR",
+          "name": "EMPTY_TENSOR",
+          "file": "op_host/arch35/flash_attention_score_grad_tiling_common_regbase.h",
+          "line": 43
+        },
+        {
+          "kind": "CONTRACT",
+          "name": "EMPTY_TENSOR",
+          "file": "op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp",
+          "line": 1272
+        },
+        {
+          "kind": "CONTRACT",
+          "name": "EMPTY_TENSOR",
+          "file": "op_host/arch35/flash_attention_score_grad_tiling_common_regbase.h",
+          "line": 43
+        },
+        {
+          "kind": "PREDICATE",
+          "name": "EMPTY_TENSOR",
+          "file": "op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp",
+          "line": 1272
+        },
+        {
+          "kind": "PREDICATE",
+          "name": "EMPTY_TENSOR",
+          "file": "op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp",
+          "line": 1527
+        },
+        {
+          "kind": "BRANCH",
+          "name": "fBaseParams.attenMaskOptional != EMPTY_TENSOR",
+          "file": "op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp",
+          "line": 1200
+        },
+        {
+          "kind": "BRANCH",
+          "name": "fBaseParams.attenMaskOptional != EMPTY_TENSOR",
+          "file": "op_host/arch35/flash_attention_score_grad_tiling_varlen_regbase.cpp",
+          "line": 1156
+        }
+      ]
+    },
+    "edges": [
+      {
+        "rel": "BINDS",
+        "src": "TILING_KEY IsEmptyTensor op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:51",
+        "dst": "MACRO ASCENDC_TPL_ARGS_DECL op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:49"
+      },
+      {
+        "rel": "BINDS",
+        "src": "TILING_KEY IsEmptyTensor op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:51",
+        "dst": "MACRO ASCENDC_TPL_ARGS_SEL op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:131"
+      },
+      {
+        "rel": "BINDS",
+        "src": "TILING_KEY IsEmptyTensor op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:51",
+        "dst": "MACRO ASCENDC_TPL_SEL op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:127"
+      },
+      {
+        "rel": "BINDS",
+        "src": "TILING_KEY IsEmptyTensor op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:51",
+        "dst": "MACRO ASCENDC_TPL_BOOL_DECL op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:51"
+      },
+      {
+        "rel": "BINDS",
+        "src": "TILING_KEY IsEmptyTensor op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:51",
+        "dst": "MACRO ASCENDC_TPL_BOOL_SEL op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:131"
+      },
+      {
+        "rel": "BINDS",
+        "src": "TEMPLATE ARGS_SEL_0 op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:131",
+        "dst": "TILING_KEY IsEmptyTensor op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:51"
+      },
+      {
+        "rel": "BINDS",
+        "src": "TEMPLATE ARGS_SEL_1 op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:144",
+        "dst": "TILING_KEY IsEmptyTensor op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:51"
+      },
+      {
+        "rel": "BINDS",
+        "src": "TEMPLATE ARGS_SEL_2 op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:157",
+        "dst": "TILING_KEY IsEmptyTensor op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:51"
+      },
+      {
+        "rel": "BINDS",
+        "src": "TEMPLATE ARGS_SEL_3 op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:170",
+        "dst": "TILING_KEY IsEmptyTensor op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:51"
+      },
+      {
+        "rel": "BINDS",
+        "src": "TEMPLATE ARGS_SEL_4 op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:183",
+        "dst": "TILING_KEY IsEmptyTensor op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:51"
+      },
+      {
+        "rel": "BINDS",
+        "src": "TEMPLATE ARGS_SEL_5 op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:196",
+        "dst": "TILING_KEY IsEmptyTensor op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:51"
+      },
+      {
+        "rel": "BINDS",
+        "src": "TEMPLATE ARGS_SEL_6 op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:209",
+        "dst": "TILING_KEY IsEmptyTensor op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:51"
+      }
+    ],
+    "legal": {
+      "IsEmptyTensor=1": 1,
+      "IsEmptyTensor=0": 4616
+    }
+  },
+  "Q2": {
+    "start": [
+      "TND",
+      "actual_seq_qlen",
+      "actual_seq_kvlen",
+      "全 0",
+      "empty tensor"
+    ],
+    "fts": [
+      {
+        "q": "isSeqExistZero",
+        "total": 5,
+        "hits": [
+          {
+            "file": "op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp",
+            "line": 1665,
+            "text": "                        (fBaseParams.tailZeroCount == 0 && !tndBaseInfo.isSeqExistZero);"
+          },
+          {
+            "file": "op_host/arch35/flash_attention_score_grad_tiling_common_regbase.h",
+            "line": 365,
+            "text": "    bool isSeqExistZero = false;"
+          },
+          {
+            "file": "op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp",
+            "line": 627,
+            "text": "                    tndBaseInfo.isSeqExistZero = true;"
+          },
+          {
+            "file": "op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp",
+            "line": 641,
+            "text": "                tndBaseInfo.isSeqExistZero = (tndBaseInfo.isSeqExistZero || (qLen == 0 || kvLen == 0));"
+          },
+          {
+            "file": "op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp",
+            "line": 854,
+            "text": "                               !tndBaseInfo.isSeqExistZero && fBaseParams.tailZeroCount == 0;"
+          }
+        ],
+        "windows": [
+          {
+            "at": "op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp:1665",
+            "window": [
+              "1658|                   const TndBaseInfo &tndBaseInfo)",
+              "1659| {",
+              "1660|     fBaseParams.isBn2 = (fBaseParams.s1 <= BN2_MAX_S && fBaseParams.s2 <= BN2_MAX_S) &&",
+              "1661|                         (fBaseParams.n1 == fBaseParams.n2) && (fBaseParams.d <= BN2_MAX_D) &&",
+              "1662|                         (fBaseParams.queryType != ge::DT_FLOAT) &&",
+              "1663|                         !(fBaseParams.queryType == ge::DT_FLOAT8_E5M2 ||",
+              "1664|                           fBaseParams.queryType == ge::DT_FLOAT8_E4M3FN || fBaseParams.queryType == ge::DT_HIFLOAT8) &&",
+              "1665|                         (fBaseParams.tailZeroCount == 0 && !tndBaseInfo.isSeqExistZero);",
+              "1667|     bool bnLimit = ((fBaseParams.b * fBaseParams.n1) >= BN2_MULTIBLK_BN_256) ||",
+              "1668|                    ((fBaseParams.b * fBaseParams.n1) >= BN2_MULTIBLK_BN_128 && (fBaseParams.s1 % ALIGN128 == 0) &&",
+              "1669|                     (fBaseParams.s2 % ALIGN128 == 0));",
+              "1670|     bool bnSparseLimit = bnLimit && (fBaseParams.layoutType != INPUT_FORMAT_TND) &&",
+              "1671|                          (fBaseParams.sparseMode != static_cast<uint32_t>(SparseMode::PREFIX)) &&",
+              "1672|                          (fBaseParams.sparseMode != static_cast<uint32_t>(SparseMode::PREFIX_COMPRESS));"
+            ]
+          },
+          {
+            "at": "op_host/arch35/flash_attention_score_grad_tiling_common_regbase.h:365",
+            "window": [
+              "358|     uint64_t tndS1S2PrefixSum[CORE_LIST_NUM] = {0};",
+              "359|     uint64_t tndS1S2AlignPrefixSum[CORE_LIST_NUM] = {0};",
+              "360|     uint64_t tndPrefixSum[CORE_LIST_NUM] = {0};",
+              "361|     uint64_t tndPrefixValidSum[CORE_LIST_NUM] = {0};",
+              "363|     bool isS1GreaterThanS2 = true;",
+              "364|     bool isS1LessThanS2 = true;",
+              "365|     bool isSeqExistZero = false;",
+              "366| };",
+              "368| struct FuzzyBaseInfoParamsRegbase { // 频繁使用的基础参数",
+              "369|     uint64_t coreNum;",
+              "370|     uint64_t aicNum;",
+              "371|     uint64_t ubSize;",
+              "372|     uint64_t l1Size;"
+            ]
+          }
+        ]
+      },
+      {
+        "q": "actual_seq_qlen",
+        "total": 65,
+        "hits": [
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_entry_regbase.h",
+            "line": 50,
+            "text": "                opPre.Init(dq, dk, dv, dy, attention_in, deqScaleDy, actual_seq_qlen, user, tilingData, &pipeIn);      \\"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_entry_regbase.h",
+            "line": 88,
+            "text": "                prefix, actual_seq_qlen, actual_seq_kvlen, deqScaleQ, deqScaleK, deqScaleV, deqScaleDy, queryRope,     \\"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_entry_regbase.h",
+            "line": 107,
+            "text": "                opPost.Init(dq, dk, dv, dqRope, dkRope, dsink, actual_seq_qlen, actual_seq_kvlen, user, tilingData,    \\"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_entry_regbase.h",
+            "line": 167,
+            "text": "                prefix, actual_seq_qlen, actual_seq_kvlen, deqScaleQ, deqScaleK, deqScaleV, deqScaleDy, queryRope,     \\"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_entry_regbase.h",
+            "line": 206,
+            "text": "           __gm__ uint8_t *actual_seq_qlen, __gm__ uint8_t *actual_seq_kvlen, __gm__ uint8_t *deqScaleQ,"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_nz_post.h",
+            "line": 30,
+            "text": "                                GM_ADDR actual_seq_qlen, GM_ADDR actual_seq_kvlen, GM_ADDR workspace,"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_nz_post.h",
+            "line": 105,
+            "text": "                                                   GM_ADDR dsink, GM_ADDR actual_seq_qlen, GM_ADDR actual_seq_kvlen,"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_nz_post.h",
+            "line": 136,
+            "text": "        actualSeqQlenAddr = actual_seq_qlen;"
+          }
+        ],
+        "windows": [
+          {
+            "at": "op_kernel/arch35/flash_attention_score_grad_entry_regbase.h:50",
+            "window": [
+              "43|                                                       s1TemplateType, s2TemplateType, dTemplateType)                   \\",
+              "44|     do {                                                                                                               \\",
+              "45|         if (unlikely(tilingData->s1s2BNGS1S2BaseParams.enablePreSfmg)) {                                               \\",
+              "46|             if constexpr ((uint32_t)dTemplateType > 64) {                                                              \\",
+              "47|                 FlashAttentionScoreGradPresfmgRegbase<INPUT_TYPE, CALC_TYPE, OUTDTYPE, dTemplateType, IS_D_NO_EQUAL,   \\",
+              "48|                                                       DETER_SPARSE_TYPE, IS_TND, SPLIT_AXIS, IS_TND_SWIZZLE>           \\",
+              "49|                     opPre;                                                                                             \\",
+              "50|                 opPre.Init(dq, dk, dv, dy, attention_in, deqScaleDy, actual_seq_qlen, user, tilingData, &pipeIn);      \\",
+              "51|                 opPre.Process();                                                                                       \\",
+              "52|                 opPre.SyncALLCores();                                                                                  \\",
+              "53|             }                                                                                                          \\",
+              "54|         } else {                                                                                                       \\",
+              "55|             FlashAttentionScoreGradS1S2BNGS1S2PreRegbase<INPUT_TYPE, float, DETER_SPARSE_TYPE, IS_TND, SPLIT_AXIS,     \\",
+              "56|                                                          IS_TND_SWIZZLE, IS_ATTEN_MASK>                                \\",
+              "57|                 opPre;                                                                                                 \\"
+            ]
+          },
+          {
+            "at": "op_kernel/arch35/flash_attention_score_grad_entry_regbase.h:88",
+            "window": [
+              "81|                                     IS_BN2_MULTIBLK, DETER_SPARSE_TYPE, IS_N_EQUAL, IS_D_NO_EQUAL, IS_ROPE, IS_NZ_OUT, \\",
+              "82|                                     IS_TND_SWIZZLE, SPLIT_AXIS, s1TemplateType, s2TemplateType, dTemplateType>>::type; \\",
+              "83|                                                                                                                        \\",
+              "84|         typename std::conditional<                                                                                     \\",
+              "85|             (DETER_SPARSE_TYPE) == NO_DETER, FagBaseApi::FlashAttentionScoreGradKernel<CubeBlockType, VecBlockType>,   \\",
+              "86|             FagBaseApi::FlashAttentionScoreGradKernelDeter<CubeBlockType, VecBlockType>>::type op;                     \\",
+              "87|         op.Init(key, value, dy, query, pse_shift, drop_mask, atten_mask, attention_in, softmax_max, softmax_sum,       \\",
+              "88|                 prefix, actual_seq_qlen, actual_seq_kvlen, deqScaleQ, deqScaleK, deqScaleV, deqScaleDy, queryRope,     \\",
+              "89|                 keyRope, sink, dq, dk, dv, dpse, dqRope, dkRope, dsink, user, tilingData, &pipeBase);                  \\",
+              "90|         op.Process();                                                                                                  \\",
+              "91|         if (ORIG_DTYPE_QUERY != DT_FLOAT) {                                                                            \\",
+              "92|             op.SyncALLCores();                                                                                         \\",
+              "93|             pipeBase.Destroy();                                                                                        \\",
+              "94|             TPipe pipePost;                                                                                            \\",
+              "95|             if constexpr (!IS_NZ_OUT) {                                                                                \\"
+            ]
+          }
+        ]
+      },
+      {
+        "q": "seqExistZero",
+        "total": 5,
+        "hits": [
+          {
+            "file": "op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp",
+            "line": 1665,
+            "text": "                        (fBaseParams.tailZeroCount == 0 && !tndBaseInfo.isSeqExistZero);"
+          },
+          {
+            "file": "op_host/arch35/flash_attention_score_grad_tiling_common_regbase.h",
+            "line": 365,
+            "text": "    bool isSeqExistZero = false;"
+          },
+          {
+            "file": "op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp",
+            "line": 627,
+            "text": "                    tndBaseInfo.isSeqExistZero = true;"
+          },
+          {
+            "file": "op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp",
+            "line": 641,
+            "text": "                tndBaseInfo.isSeqExistZero = (tndBaseInfo.isSeqExistZero || (qLen == 0 || kvLen == 0));"
+          },
+          {
+            "file": "op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp",
+            "line": 854,
+            "text": "                               !tndBaseInfo.isSeqExistZero && fBaseParams.tailZeroCount == 0;"
+          }
+        ],
+        "windows": [
+          {
+            "at": "op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp:1665",
+            "window": [
+              "1658|                   const TndBaseInfo &tndBaseInfo)",
+              "1659| {",
+              "1660|     fBaseParams.isBn2 = (fBaseParams.s1 <= BN2_MAX_S && fBaseParams.s2 <= BN2_MAX_S) &&",
+              "1661|                         (fBaseParams.n1 == fBaseParams.n2) && (fBaseParams.d <= BN2_MAX_D) &&",
+              "1662|                         (fBaseParams.queryType != ge::DT_FLOAT) &&",
+              "1663|                         !(fBaseParams.queryType == ge::DT_FLOAT8_E5M2 ||",
+              "1664|                           fBaseParams.queryType == ge::DT_FLOAT8_E4M3FN || fBaseParams.queryType == ge::DT_HIFLOAT8) &&",
+              "1665|                         (fBaseParams.tailZeroCount == 0 && !tndBaseInfo.isSeqExistZero);",
+              "1667|     bool bnLimit = ((fBaseParams.b * fBaseParams.n1) >= BN2_MULTIBLK_BN_256) ||",
+              "1668|                    ((fBaseParams.b * fBaseParams.n1) >= BN2_MULTIBLK_BN_128 && (fBaseParams.s1 % ALIGN128 == 0) &&",
+              "1669|                     (fBaseParams.s2 % ALIGN128 == 0));",
+              "1670|     bool bnSparseLimit = bnLimit && (fBaseParams.layoutType != INPUT_FORMAT_TND) &&",
+              "1671|                          (fBaseParams.sparseMode != static_cast<uint32_t>(SparseMode::PREFIX)) &&",
+              "1672|                          (fBaseParams.sparseMode != static_cast<uint32_t>(SparseMode::PREFIX_COMPRESS));"
+            ]
+          },
+          {
+            "at": "op_host/arch35/flash_attention_score_grad_tiling_common_regbase.h:365",
+            "window": [
+              "358|     uint64_t tndS1S2PrefixSum[CORE_LIST_NUM] = {0};",
+              "359|     uint64_t tndS1S2AlignPrefixSum[CORE_LIST_NUM] = {0};",
+              "360|     uint64_t tndPrefixSum[CORE_LIST_NUM] = {0};",
+              "361|     uint64_t tndPrefixValidSum[CORE_LIST_NUM] = {0};",
+              "363|     bool isS1GreaterThanS2 = true;",
+              "364|     bool isS1LessThanS2 = true;",
+              "365|     bool isSeqExistZero = false;",
+              "366| };",
+              "368| struct FuzzyBaseInfoParamsRegbase { // 频繁使用的基础参数",
+              "369|     uint64_t coreNum;",
+              "370|     uint64_t aicNum;",
+              "371|     uint64_t ubSize;",
+              "372|     uint64_t l1Size;"
+            ]
+          }
+        ]
+      },
+      {
+        "q": "tndExistZero",
+        "total": 0,
+        "hits": [],
+        "windows": []
+      },
+      {
+        "q": "IsEmptyTensor",
+        "total": 104,
+        "hits": [
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h",
+            "line": 51,
+            "text": "                      ASCENDC_TPL_BOOL_DECL(IsEmptyTensor, 0, 1),"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h",
+            "line": 131,
+            "text": "    ASCENDC_TPL_ARGS_SEL(ASCENDC_TPL_BOOL_SEL(IsEmptyTensor, 0),"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h",
+            "line": 144,
+            "text": "    ASCENDC_TPL_ARGS_SEL(ASCENDC_TPL_BOOL_SEL(IsEmptyTensor, 0),"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h",
+            "line": 157,
+            "text": "    ASCENDC_TPL_ARGS_SEL(ASCENDC_TPL_BOOL_SEL(IsEmptyTensor, 0),"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h",
+            "line": 170,
+            "text": "    ASCENDC_TPL_ARGS_SEL(ASCENDC_TPL_BOOL_SEL(IsEmptyTensor, 0),"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h",
+            "line": 183,
+            "text": "    ASCENDC_TPL_ARGS_SEL(ASCENDC_TPL_BOOL_SEL(IsEmptyTensor, 0),"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h",
+            "line": 196,
+            "text": "    ASCENDC_TPL_ARGS_SEL(ASCENDC_TPL_BOOL_SEL(IsEmptyTensor, 0),"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h",
+            "line": 209,
+            "text": "    ASCENDC_TPL_ARGS_SEL(ASCENDC_TPL_BOOL_SEL(IsEmptyTensor, 0),"
+          }
+        ],
+        "windows": [
+          {
+            "at": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:51",
+            "window": [
+              "44|     optiling::fag::FlashAttentionScoreGradTilingDataUs1s2Bbn2gs1s2Regbase<true, true, true, false>;",
+              "45| using FagTilingWithTemplateTTTT =",
+              "46|     optiling::fag::FlashAttentionScoreGradTilingDataUs1s2Bbn2gs1s2Regbase<true, true, true, true>;",
+              "48| // 可表示的tilingkey范围为64bit，注意不能超过限制",
+              "49| ASCENDC_TPL_ARGS_DECL(FlashAttentionScoreGrad, // 算子唯一标识，可以opType保持一致",
+              "50|                                                // bit: 0 IsRegbasePlatformValue",
+              "51|                       ASCENDC_TPL_BOOL_DECL(IsEmptyTensor, 0, 1),",
+              "52|                       // bit: 3-1 SplitAxis",
+              "53|                       //      0: BN2GS1S2",
+              "54|                       //      1: BN2",
+              "55|                       //      5: BN2S2",
+              "56|                       ASCENDC_TPL_UINT_DECL(SplitAxis, ASCENDC_TPL_3_BW, ASCENDC_TPL_UI_LIST, 0, 1, 5),",
+              "57|                       // bit: 6-4 InputDType",
+              "58|                       //      1: FLOAT32"
+            ]
+          },
+          {
+            "at": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:131",
+            "window": [
+              "124|                       // bit: 54 IsRegbasePlatformValue",
+              "125|                       ASCENDC_TPL_BOOL_DECL(IsRegbase, 0, 1), );",
+              "127| ASCENDC_TPL_SEL(",
+              "129| #if (ORIG_DTYPE_QUERY == -1) || (ORIG_DTYPE_QUERY == DT_FLOAT16)",
+              "130|     // FP16",
+              "131|     ASCENDC_TPL_ARGS_SEL(ASCENDC_TPL_BOOL_SEL(IsEmptyTensor, 0),",
+              "132|                          ASCENDC_TPL_UINT_SEL(SplitAxis, ASCENDC_TPL_UI_LIST, 0),",
+              "133|                          ASCENDC_TPL_UINT_SEL(InputDType, ASCENDC_TPL_UI_LIST, 3), ASCENDC_TPL_BOOL_SEL(IsTnd, 0),",
+              "134|                          ASCENDC_TPL_BOOL_SEL(IsDrop, 0, 1), ASCENDC_TPL_BOOL_SEL(IsPse, 0, 1),",
+              "135|                          ASCENDC_TPL_BOOL_SEL(IsAttenMask, 0, 1),",
+              "136|                          ASCENDC_TPL_UINT_SEL(S1TemplateNum, ASCENDC_TPL_UI_LIST, 128),",
+              "137|                          ASCENDC_TPL_UINT_SEL(S2TemplateNum, ASCENDC_TPL_UI_LIST, 128),",
+              "138|                          ASCENDC_TPL_UINT_SEL(DTemplateNum, ASCENDC_TPL_UI_LIST, 64, 192, 256, 768),"
+            ]
+          }
+        ]
+      }
+    ],
+    "names": {
+      "isSeqExistZero": [],
+      "IsTnd": [
+        {
+          "kind": "CONTRACT",
+          "name": "IsTnd",
+          "file": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h",
+          "line": 68
+        },
+        {
+          "kind": "CONTRACT",
+          "name": "IsTnd",
+          "file": "op_kernel/flash_attention_score_grad_apt.cpp",
+          "line": 35
+        },
+        {
+          "kind": "TEMPLATE_ARG",
+          "name": "IsTnd",
+          "file": "op_kernel/flash_attention_score_grad_apt.cpp",
+          "line": 35
+        },
+        {
+          "kind": "TILING_KEY",
+          "name": "IsTnd",
+          "file": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h",
+          "line": 68
+        }
+      ]
+    },
+    "edges_isSeq": [],
+    "legal_tnd": {
+      "IsTnd=1": 2552,
+      "IsTnd=1 IsEmptyTensor=1": 0
+    }
+  },
+  "Q3": {
+    "start": [
+      "keepProb=1",
+      "dropMask optional input",
+      "参数错误"
+    ],
+    "fts": [
+      {
+        "q": "keepProb",
+        "total": 242,
+        "hits": [
+          {
+            "file": "../common/op_kernel/arch35/dropmask.h",
+            "line": 44,
+            "text": "    uint8_t keepProbUint8;"
+          },
+          {
+            "file": "../common/op_kernel/arch35/dropmask.h",
+            "line": 182,
+            "text": "        // uint32转成4个uint8与keepprob比较得到mask"
+          },
+          {
+            "file": "../common/op_kernel/arch35/dropmask.h",
+            "line": 208,
+            "text": " * @param [in] probValueUint8Scalar, keepprob*MAX_UINT8"
+          },
+          {
+            "file": "../common/op_kernel/arch35/dropmask.h",
+            "line": 259,
+            "text": "                      runInfo.halfS1RealSize * eachRowCount, dropMaskInfo.keepProbUint8);"
+          },
+          {
+            "file": "../common/op_kernel/arch35/flash_attention_score_tiling_regbase_arch35.h",
+            "line": 161,
+            "text": "    float keepProb;"
+          },
+          {
+            "file": "../common/op_kernel/arch35/flash_attention_score_tiling_regbase_arch35.h",
+            "line": 190,
+            "text": "    int64_t keepProbUint8;"
+          },
+          {
+            "file": "../common/op_kernel/arch35/flash_attention_score_tiling_regbase_arch35.h",
+            "line": 323,
+            "text": "    float get_keepProb() const"
+          },
+          {
+            "file": "../common/op_kernel/arch35/flash_attention_score_tiling_regbase_arch35.h",
+            "line": 325,
+            "text": "        return keepProb;"
+          }
+        ],
+        "windows": [
+          {
+            "at": "../common/op_kernel/arch35/dropmask.h:44",
+            "window": [
+              "36| constexpr static uint32_t PHILOX_CONST_KEY_ADD_0 = 0x9E3779B9;",
+              "37| constexpr static uint32_t PHILOX_CONST_KEY_ADD_1 = 0xBB67AE85;",
+              "38| constexpr static uint32_t OFFSET_64 = 64;",
+              "39| constexpr static uint32_t OFFSET_32 = 32;",
+              "41| struct DropMaskInfo {",
+              "42|     int64_t seed;",
+              "43|     int64_t offset;",
+              "44|     uint8_t keepProbUint8;",
+              "45|     uint8_t dropMaskOuter;",
+              "46|     bool boolMode;",
+              "47| };",
+              "48| template <bool hasDrop, bool hasRope = false>",
+              "49| __aicore__ inline uint64_t ComputeDropOffset(RunInfo<false> &runInfo, ConstInfo<false, hasRope> &constInfo,",
+              "50|                                              DropMaskInfo &dropMaskInfo)",
+              "51| {",
+              "52|     int64_t s2SizeAligned = CeilDiv(runInfo.actualS2Size, philoxRandomNumAlignSize) * philoxRandomNumAlignSize;"
+            ]
+          },
+          {
+            "at": "../common/op_kernel/arch35/dropmask.h:182",
+            "window": [
+              "174|             Adds(tmp_key_0, tmp_key_0, (uint32_t)PHILOX_CONST_KEY_ADD_0, pg);",
+              "175|             Adds(tmp_key_1, tmp_key_1, (uint32_t)PHILOX_CONST_KEY_ADD_1, pg);",
+              "176|         }",
+              "177|         Interleave(tmp_ctr_0, tmp_ctr_2, tmp_ctr_0, tmp_ctr_2);",
+              "178|         Interleave(tmp_ctr_1, tmp_ctr_3, tmp_ctr_1, tmp_ctr_3);",
+              "179|         Interleave(tmp_ctr_0, tmp_ctr_1, tmp_ctr_0, tmp_ctr_1);",
+              "180|         Interleave(tmp_ctr_2, tmp_ctr_3, tmp_ctr_2, tmp_ctr_3);",
+              "182|         // uint32转成4个uint8与keepprob比较得到mask",
+              "183|         RegTensor<uint8_t> tmp_ctr_0_u8 = (RegTensor<uint8_t> &)tmp_ctr_0;",
+              "184|         RegTensor<uint8_t> tmp_ctr_1_u8 = (RegTensor<uint8_t> &)tmp_ctr_1;",
+              "185|         RegTensor<uint8_t> tmp_ctr_2_u8 = (RegTensor<uint8_t> &)tmp_ctr_2;",
+              "186|         RegTensor<uint8_t> tmp_ctr_3_u8 = (RegTensor<uint8_t> &)tmp_ctr_3;",
+              "188|         CompareScalar<uint8_t, CMPMODE::LE>(pm_0, tmp_ctr_0_u8, probValueUint8Scalar, preg);",
+              "189|         CompareScalar<uint8_t, CMPMODE::LE>(pm_1, tmp_ctr_1_u8, probValueUint8Scalar, preg);",
+              "190|         CompareScalar<uint8_t, CMPMODE::LE>(pm_2, tmp_ctr_2_u8, probValueUint8Scalar, preg);"
+            ]
+          }
+        ]
+      },
+      {
+        "q": "dropMask",
+        "total": 375,
+        "hits": [
+          {
+            "file": "../common/op_kernel/arch35/dropmask.h",
+            "line": 12,
+            "text": " * \\file dropmask.h"
+          },
+          {
+            "file": "../common/op_kernel/arch35/dropmask.h",
+            "line": 16,
+            "text": "#ifndef DROPMASK_H"
+          },
+          {
+            "file": "../common/op_kernel/arch35/dropmask.h",
+            "line": 17,
+            "text": "#define DROPMASK_H"
+          },
+          {
+            "file": "../common/op_kernel/arch35/dropmask.h",
+            "line": 30,
+            "text": "constexpr static int32_t dropMaskUint32AlignSize = 4;"
+          },
+          {
+            "file": "../common/op_kernel/arch35/dropmask.h",
+            "line": 41,
+            "text": "struct DropMaskInfo {"
+          },
+          {
+            "file": "../common/op_kernel/arch35/dropmask.h",
+            "line": 45,
+            "text": "    uint8_t dropMaskOuter;"
+          },
+          {
+            "file": "../common/op_kernel/arch35/dropmask.h",
+            "line": 50,
+            "text": "                                             DropMaskInfo &dropMaskInfo)"
+          },
+          {
+            "file": "../common/op_kernel/arch35/dropmask.h",
+            "line": 64,
+            "text": "    // s2Offset用int64能表示，dropMaskInfo.offset也能用int64能表示，所以两项相加用uint64_t不会出现回绕"
+          }
+        ],
+        "windows": [
+          {
+            "at": "../common/op_kernel/arch35/dropmask.h:12",
+            "window": [
+              "4|  * CANN Open Software License Agreement Version 2.0 (the \"License\").",
+              "5|  * Please refer to the License for details. You may not use this file except in compliance with the License.",
+              "6|  * THIS SOFTWARE IS PROVIDED ON AN \"AS IS\" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,",
+              "7|  * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.",
+              "8|  * See LICENSE in the root of the software repository for the full text of the License.",
+              "9|  */",
+              "11| /*!",
+              "12|  * \\file dropmask.h",
+              "13|  * \\brief",
+              "14|  */",
+              "16| #ifndef DROPMASK_H",
+              "17| #define DROPMASK_H",
+              "19| #include \"adv_api/math/philox.h\"",
+              "20| #include \"util_regbase.h\""
+            ]
+          },
+          {
+            "at": "../common/op_kernel/arch35/dropmask.h:16",
+            "window": [
+              "8|  * See LICENSE in the root of the software repository for the full text of the License.",
+              "9|  */",
+              "11| /*!",
+              "12|  * \\file dropmask.h",
+              "13|  * \\brief",
+              "14|  */",
+              "16| #ifndef DROPMASK_H",
+              "17| #define DROPMASK_H",
+              "19| #include \"adv_api/math/philox.h\"",
+              "20| #include \"util_regbase.h\"",
+              "22| using namespace AscendC;",
+              "23| using namespace AscendC::MicroAPI;",
+              "24| using AscendC::DropOutShapeInfo;"
+            ]
+          }
+        ]
+      },
+      {
+        "q": "keepProb == 1",
+        "total": 0,
+        "hits": [],
+        "windows": []
+      },
+      {
+        "q": "keepProb >",
+        "total": 2,
+        "hits": [
+          {
+            "file": "op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp",
+            "line": 1705,
+            "text": "        (fBaseParams.keepProb >= 1 ||"
+          },
+          {
+            "file": "op_api/aclnn_flash_attention_score_grad.cpp",
+            "line": 252,
+            "text": "    bool notHasDropMask = ((!(keepProb < 1.0)) && (!(keepProb > 1.0)));"
+          }
+        ],
+        "windows": [
+          {
+            "at": "op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp:1705",
+            "window": [
+              "1698|     bool bn2S2NotTndLimit = (fBaseParams.s1 < fBaseParams.s2) && (fBaseParams.s2 <= BN2S2_MAX_S) &&",
+              "1699|                             (fBaseParams.s2 - fBaseParams.s1 >= BN2_MAX_S) && (fBaseParams.d <= BN2S2_WRITE_UB_D) &&",
+              "1700|                             (!fBaseParams.isSparse) && (!fBaseParams.isDeterministic);",
+              "1701|     bool bn2S2RouteLimit =",
+              "1702|         !fBaseParams.hasRope && fBaseParams.d <= BN2_MAX_D &&",
+              "1703|         (fBaseParams.layoutType == INPUT_FORMAT_TND || (fBaseParams.isAllSame && !fBaseParams.isDeterministic) ||",
+              "1704|          bn2S2NotTndLimit) &&",
+              "1705|         (fBaseParams.keepProb >= 1 ||",
+              "1706|          (fBaseParams.d <= static_cast<uint32_t>(ConstAxisTemplateNum::NUM128) && fBaseParams.keepProb < 1)) &&",
+              "1707|         (fBaseParams.n1 == fBaseParams.n2) && (fBaseParams.queryType != ge::DT_FLOAT) &&",
+              "1708|         !(fBaseParams.queryType == ge::DT_FLOAT8_E5M2 || fBaseParams.queryType == ge::DT_FLOAT8_E4M3FN ||",
+              "1709|           fBaseParams.queryType == ge::DT_HIFLOAT8);",
+              "1711|     if (!fBaseParams.isBn2 && bn2S2RouteLimit) {",
+              "1712|         fBaseParams.layoutType = fBaseParams.isAllSame ? INPUT_FORMAT_TND : fBaseParams.layoutType;",
+              "1713|         fBaseParams.splitAxis = SplitAxisEnum::BN2S2;"
+            ]
+          },
+          {
+            "at": "op_api/aclnn_flash_attention_score_grad.cpp:252",
+            "window": [
+              "244|     if (sKvLenMax == 0 || sQLenSum == 0) {",
+              "245|         // 走原来逻辑是否pad",
+              "246|         OP_LOGD(\"Fag aclnn TND case sKvLenMax(%ld) or sQLenSum(%ld) is 0.\", sKvLenMax, sQLenSum);",
+              "247|         return true;",
+              "248|     }",
+              "250|     OP_LOGD(\"Fag aclnn TND case deterministic: %ld, s2 max: %ld, dDim: %ld, s1 sum: %ld.\", deterministicValue,",
+              "251|             sKvLenMax, dDim, sQLenSum);",
+              "252|     bool notHasDropMask = ((!(keepProb < 1.0)) && (!(keepProb > 1.0)));",
+              "253|     if ((sKvLenMax <= TND_MAX_S2) && (dDim < TND_MAX_DDIM) && (sQLenSum < TND_MAX_S1_SUM) && notHasDropMask) {",
+              "254|         // 去除pad",
+              "255|         OP_LOGD(\"Fag aclnn TND case do not do pad dimD operation.\");",
+              "256|         return false;",
+              "257|     }",
+              "258|     return true;",
+              "259| }"
+            ]
+          }
+        ]
+      }
+    ],
+    "names": {
+      "keepProb": [
+        {
+          "kind": "BRANCH",
+          "name": "keepProb",
+          "file": "op_kernel/arch35/flash_attention_score_grad_s1s2_bn2gs1s2_pre_regbase.h",
+          "line": 163
+        },
+        {
+          "kind": "CONTRACT",
+          "name": "keepProb",
+          "file": "op_kernel/arch35/flash_attention_score_grad_tiling_data_regbase.h",
+          "line": 113
+        },
+        {
+          "kind": "CONTRACT",
+          "name": "keepProb",
+          "file": "op_kernel/arch35/flash_attention_score_grad_tiling_data_regbase.h",
+          "line": 113
+        },
+        {
+          "kind": "FIELD",
+          "name": "keepProb",
+          "file": "op_kernel/arch35/flash_attention_score_grad_tiling_data_regbase.h",
+          "line": 113
+        },
+        {
+          "kind": "TILING_FIELD",
+          "name": "keepProb",
+          "file": "op_kernel/arch35/flash_attention_score_grad_tiling_data_regbase.h",
+          "line": 113
+        }
+      ],
+      "dropMask": [
+        {
+          "kind": "CONTRACT",
+          "name": "dropMask",
+          "file": "op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp",
+          "line": 1172
+        },
+        {
+          "kind": "VARIABLE",
+          "name": "dropMask",
+          "file": "op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp",
+          "line": 1172
+        },
+        {
+          "kind": "VARIABLE",
+          "name": "dropMask",
+          "file": "op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp",
+          "line": 1172
+        },
+        {
+          "kind": "BRANCH",
+          "name": "DROPMASK_H",
+          "file": "../common/op_kernel/arch35/dropmask.h",
+          "line": 15
+        },
+        {
+          "kind": "BUFFER",
+          "name": "dropMaskGm",
+          "file": "op_kernel/arch35/flash_attention_score_grad_block_vec.h",
+          "line": 137
+        },
+        {
+          "kind": "BUFFER",
+          "name": "dropMaskUb",
+          "file": "../common/op_kernel/arch35/dropmask.h",
+          "line": 257
+        },
+        {
+          "kind": "BUFFER",
+          "name": "dropMaskUb",
+          "file": "../common/op_kernel/arch35/dropmask.h",
+          "line": 405
+        },
+        {
+          "kind": "MACRO",
+          "name": "DROPMASK_H",
+          "file": "../common/op_kernel/arch35/dropmask.h",
+          "line": 17
+        }
+      ],
+      "IsDrop": [
+        {
+          "kind": "CONTRACT",
+          "name": "IsDrop",
+          "file": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h",
+          "line": 72
+        },
+        {
+          "kind": "CONTRACT",
+          "name": "IsDrop",
+          "file": "op_kernel/flash_attention_score_grad_apt.cpp",
+          "line": 35
+        },
+        {
+          "kind": "TEMPLATE_ARG",
+          "name": "IsDrop",
+          "file": "op_kernel/flash_attention_score_grad_apt.cpp",
+          "line": 35
+        },
+        {
+          "kind": "TILING_KEY",
+          "name": "IsDrop",
+          "file": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h",
+          "line": 72
+        }
+      ]
+    },
+    "edges_IsDrop": [
+      {
+        "rel": "BINDS",
+        "src": "TILING_KEY IsDrop op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:72",
+        "dst": "MACRO ASCENDC_TPL_ARGS_DECL op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:49"
+      },
+      {
+        "rel": "BINDS",
+        "src": "TILING_KEY IsDrop op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:72",
+        "dst": "MACRO ASCENDC_TPL_ARGS_SEL op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:131"
+      },
+      {
+        "rel": "BINDS",
+        "src": "TILING_KEY IsDrop op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:72",
+        "dst": "MACRO ASCENDC_TPL_SEL op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:127"
+      },
+      {
+        "rel": "BINDS",
+        "src": "TILING_KEY IsDrop op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:72",
+        "dst": "MACRO ASCENDC_TPL_BOOL_DECL op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:51"
+      },
+      {
+        "rel": "BINDS",
+        "src": "TILING_KEY IsDrop op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:72",
+        "dst": "MACRO ASCENDC_TPL_BOOL_SEL op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:131"
+      },
+      {
+        "rel": "BINDS",
+        "src": "TEMPLATE ARGS_SEL_0 op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:131",
+        "dst": "TILING_KEY IsDrop op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:72"
+      },
+      {
+        "rel": "BINDS",
+        "src": "TEMPLATE ARGS_SEL_1 op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:144",
+        "dst": "TILING_KEY IsDrop op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:72"
+      },
+      {
+        "rel": "BINDS",
+        "src": "TEMPLATE ARGS_SEL_2 op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:157",
+        "dst": "TILING_KEY IsDrop op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:72"
+      },
+      {
+        "rel": "BINDS",
+        "src": "TEMPLATE ARGS_SEL_3 op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:170",
+        "dst": "TILING_KEY IsDrop op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:72"
+      },
+      {
+        "rel": "BINDS",
+        "src": "TEMPLATE ARGS_SEL_4 op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:183",
+        "dst": "TILING_KEY IsDrop op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:72"
+      }
+    ],
+    "legal_drop": [
+      {
+        "value": "0",
+        "n": 2441
+      },
+      {
+        "value": "1",
+        "n": 2176
+      }
+    ]
+  },
+  "Q4": {
+    "start": [
+      "Host s1Inner=64",
+      "kernel 模板 128",
+      "FP32 D>256"
+    ],
+    "fts": [
+      {
+        "q": "s1Inner",
+        "total": 49,
+        "hits": [
+          {
+            "file": "../common/op_kernel/arch35/dropmask.h",
+            "line": 59,
+            "text": "    // s1oIdx * s1BaseSize * s2Size + s1innerindex * vec1S1BaseSize * s2Size"
+          },
+          {
+            "file": "op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp",
+            "line": 493,
+            "text": "            int64_t s1OuterTmp = (actualS1Len + fBaseParams.s1Inner * S1CV_RATIO_DEFAULT - 1) /"
+          },
+          {
+            "file": "op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp",
+            "line": 494,
+            "text": "                                 (fBaseParams.s1Inner * S1CV_RATIO_DEFAULT);"
+          },
+          {
+            "file": "op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp",
+            "line": 515,
+            "text": "        s1Offset = s1oIdx * fBaseParams.s1Inner * S1CV_RATIO_DEFAULT * (fBaseParams.n2 * fBaseParams.g * fBaseParams.d);"
+          },
+          {
+            "file": "op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp",
+            "line": 541,
+            "text": "            s1Offset = s1oIdx * fBaseParams.s1Inner * S1CV_RATIO_DEFAULT * fBaseParams.d;"
+          },
+          {
+            "file": "op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp",
+            "line": 543,
+            "text": "            s1Offset = s1oIdx * fBaseParams.s1Inner * S1CV_RATIO_DEFAULT *"
+          },
+          {
+            "file": "op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp",
+            "line": 551,
+            "text": "                s1oIdx * fBaseParams.s1Inner * S1CV_RATIO_DEFAULT * (fBaseParams.n2 * fBaseParams.g * fBaseParams.d);"
+          },
+          {
+            "file": "op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp",
+            "line": 747,
+            "text": "    int64_t p = CeilDivideBy(actualCalcS1Token, fBaseParams.s1Inner * fBaseParams.s1CvRatio) + 1;"
+          }
+        ],
+        "windows": [
+          {
+            "at": "../common/op_kernel/arch35/dropmask.h:59",
+            "window": [
+              "52|     int64_t s2SizeAligned = CeilDiv(runInfo.actualS2Size, philoxRandomNumAlignSize) * philoxRandomNumAlignSize;",
+              "53|     // boidx * n2 * g* s1 * s2",
+              "54|     int64_t bOffset = runInfo.b1SSOffsetAlign * constInfo.n2G;",
+              "55|     // n2oIdx * g * s1 *s2",
+              "56|     int64_t n2Offset = runInfo.n2oIdx * constInfo.gSize * runInfo.actualS1Size * s2SizeAligned;",
+              "57|     // goIdx * s1 * s2",
+              "58|     int64_t gOffset = runInfo.goIdx * runInfo.actualS1Size * s2SizeAligned;",
+              "59|     // s1oIdx * s1BaseSize * s2Size + s1innerindex * vec1S1BaseSize * s2Size",
+              "60|     int64_t s1Offset = (runInfo.s1oIdx * constInfo.s1BaseSize + runInfo.vecCoreOffset) * s2SizeAligned;",
+              "61|     // s2StartIdx + s2index * s2BaseNratioSize",
+              "62|     int64_t s2Offset = runInfo.s2StartIdx + runInfo.s2LoopCount * constInfo.s2BaseSize;",
+              "63|     // bOffset + n2Offset + gOffset + s1Offset +",
+              "64|     // s2Offset用int64能表示，dropMaskInfo.offset也能用int64能表示，所以两项相加用uint64_t不会出现回绕",
+              "65|     return static_cast<uint64_t>(bOffset + n2Offset + gOffset + s1Offset + s2Offset) +",
+              "66|            static_cast<uint64_t>(dropMaskInfo.offset);"
+            ]
+          },
+          {
+            "at": "op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp:493",
+            "window": [
+              "486|     int64_t s1Offset = 0;",
+              "487|     int64_t s2Offset = 0;",
+              "488|     if (fBaseParams.layoutType == INPUT_FORMAT_TND) {",
+              "489|         int64_t resbaseIdx = blockIdx;",
+              "490|         for (int64_t bIdx = 0; bIdx < fBaseParams.b; bIdx++) {",
+              "491|             int64_t actualS1Len = fBaseParams.actualSeqQlen[bIdx];",
+              "492|             int64_t actualS2Len = fBaseParams.actualSeqKvlen[bIdx];",
+              "493|             int64_t s1OuterTmp = (actualS1Len + fBaseParams.s1Inner * S1CV_RATIO_DEFAULT - 1) /",
+              "494|                                  (fBaseParams.s1Inner * S1CV_RATIO_DEFAULT);",
+              "495|             int64_t s2OuterTmp = (actualS2Len + fBaseParams.s2Inner - 1) / fBaseParams.s2Inner;",
+              "496|             int64_t totalBaseIdx = fBaseParams.n2 * fBaseParams.g * s1OuterTmp * s2OuterTmp;",
+              "497|             if (resbaseIdx < totalBaseIdx) {",
+              "498|                 boIdx = bIdx;",
+              "499|                 bDimTail = resbaseIdx;",
+              "500|                 n2oIdx = bDimTail / (fBaseParams.g * s1OuterTmp * s2OuterTmp);"
+            ]
+          }
+        ]
+      },
+      {
+        "q": "cubeBaseM",
+        "total": 8,
+        "hits": [
+          {
+            "file": "op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp",
+            "line": 119,
+            "text": "    const int64_t cubeBaseM = static_cast<int64_t>(params.s1Inner) * params.s1CvRatio;"
+          },
+          {
+            "file": "op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp",
+            "line": 121,
+            "text": "    if (cubeBaseM <= 0 || cubeBaseN <= 0 || params.actualSeqQlen.size() != params.actualSeqKvlen.size()) {"
+          },
+          {
+            "file": "op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp",
+            "line": 134,
+            "text": "        const int64_t m = PositiveCeilDiv(actualSeqQLen, cubeBaseM);"
+          },
+          {
+            "file": "op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp",
+            "line": 151,
+            "text": "    const int64_t cubeBaseM = static_cast<int64_t>(params.s1Inner) * params.s1CvRatio;"
+          },
+          {
+            "file": "op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp",
+            "line": 153,
+            "text": "    if (cubeBaseM <= 0 || cubeBaseN <= 0) {"
+          },
+          {
+            "file": "op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp",
+            "line": 167,
+            "text": "        const int64_t m = PositiveCeilDiv(actualSeqQLen, cubeBaseM);"
+          },
+          {
+            "file": "op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp",
+            "line": 1309,
+            "text": "    int64_t cubebaseM = fBaseParams.s1Inner * fBaseParams.s1CvRatio;"
+          },
+          {
+            "file": "op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp",
+            "line": 1311,
+            "text": "    uint8_t deterTilingSplitMode = (cubebaseM == cubebaseN ? 0 : (cubebaseM > cubebaseN ? 2 : 1));"
+          }
+        ],
+        "windows": [
+          {
+            "at": "op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:119",
+            "window": [
+              "113| bool IsTndDeterSwizzleScheduleSafe(const FuzzyBaseInfoParamsRegbase &params)",
+              "114| {",
+              "115|     if (params.aicNum == 0 || params.n1 <= 0) {",
+              "116|         return false;",
+              "117|     }",
+              "119|     const int64_t cubeBaseM = static_cast<int64_t>(params.s1Inner) * params.s1CvRatio;",
+              "120|     const int64_t cubeBaseN = static_cast<int64_t>(params.s2Inner) * params.s2CvRatio;",
+              "121|     if (cubeBaseM <= 0 || cubeBaseN <= 0 || params.actualSeqQlen.size() != params.actualSeqKvlen.size()) {",
+              "122|         return false;",
+              "123|     }",
+              "125|     // Mode 2 assigns consecutive linear IDs to S2 blocks inside each head and rotates S1 by S2 + round.",
+              "126|     // One head has at most min(k, n) active cores in a round. The same number of S1 blocks is required to"
+            ]
+          },
+          {
+            "at": "op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:121",
+            "window": [
+              "114| {",
+              "115|     if (params.aicNum == 0 || params.n1 <= 0) {",
+              "116|         return false;",
+              "117|     }",
+              "119|     const int64_t cubeBaseM = static_cast<int64_t>(params.s1Inner) * params.s1CvRatio;",
+              "120|     const int64_t cubeBaseN = static_cast<int64_t>(params.s2Inner) * params.s2CvRatio;",
+              "121|     if (cubeBaseM <= 0 || cubeBaseN <= 0 || params.actualSeqQlen.size() != params.actualSeqKvlen.size()) {",
+              "122|         return false;",
+              "123|     }",
+              "125|     // Mode 2 assigns consecutive linear IDs to S2 blocks inside each head and rotates S1 by S2 + round.",
+              "126|     // One head has at most min(k, n) active cores in a round. The same number of S1 blocks is required to",
+              "127|     // keep their dQ coordinates unique. The Python recommendation m >= n is the k >= n special case.",
+              "128|     for (size_t bIdx = 0; bIdx < params.actualSeqQlen.size(); ++bIdx) {"
+            ]
+          }
+        ]
+      },
+      {
+        "q": "s1BaseSize",
+        "total": 258,
+        "hits": [
+          {
+            "file": "../common/op_kernel/arch35/attenmask_arch35.h",
+            "line": 134,
+            "text": "            int64_t preFactor = deltaPre + 1 + constInfo.s1BaseSize;"
+          },
+          {
+            "file": "../common/op_kernel/arch35/attenmask_arch35.h",
+            "line": 157,
+            "text": "                } else if (s1Offset + constInfo.s1BaseSize <= intersectionX) {"
+          },
+          {
+            "file": "../common/op_kernel/arch35/attenmask_arch35.h",
+            "line": 186,
+            "text": "        int64_t s1Offset = runInfo.s1oIdx * constInfo.s1BaseSize + runInfo.vecCoreOffset;"
+          },
+          {
+            "file": "../common/op_kernel/arch35/attenmask_arch35.h",
+            "line": 229,
+            "text": "__aicore__ inline int64_t ComputeOffsetForCausal(const int64_t &delta, const uint32_t &s1BaseSize,"
+          },
+          {
+            "file": "../common/op_kernel/arch35/attenmask_arch35.h",
+            "line": 237,
+            "text": "        return (AttentionCommon::Min(-1 * delta, s1BaseSize)) * attenMaskS2Size + vecCoreOffset + 1;"
+          },
+          {
+            "file": "../common/op_kernel/arch35/attenmask_arch35.h",
+            "line": 240,
+            "text": "        return AttentionCommon::Min(-1 * delta, s1BaseSize) + vecCoreOffset * attenMaskS2Size;"
+          },
+          {
+            "file": "../common/op_kernel/arch35/attenmask_arch35.h",
+            "line": 364,
+            "text": "            int64_t s1Offset = runInfo.s1oIdx * constInfo.s1BaseSize;"
+          },
+          {
+            "file": "../common/op_kernel/arch35/attenmask_arch35.h",
+            "line": 383,
+            "text": "                int64_t maskOffsetPre = ComputeOffsetForCausal(deltaPre, constInfo.s1BaseSize, constInfo.s2BaseSize,"
+          }
+        ],
+        "windows": [
+          {
+            "at": "../common/op_kernel/arch35/attenmask_arch35.h:134",
+            "window": [
+              "127|             return;",
+              "128|         }",
+              "129|         if (((attenMaskInfo.compressMode == static_cast<uint8_t>(AttenMaskCompressMode::BAND_MODE)) ||",
+              "130|              (attenMaskInfo.compressMode == static_cast<uint8_t>(AttenMaskCompressMode::RIGHT_DOWN_CAUSAL_BAND_MODE) &&",
+              "131|               runInfo.boIdx == attenMaskInfo.bandIndex) ||",
+              "132|              (attenMaskInfo.compressMode == static_cast<uint8_t>(AttenMaskCompressMode::BAND_LEFT_UP_CAUSAL_MODE) &&",
+              "133|               runInfo.boIdx == attenMaskInfo.bandIndex))) {",
+              "134|             int64_t preFactor = deltaPre + 1 + constInfo.s1BaseSize;",
+              "135|             if (causalOrNextFactor >= 0 && preFactor <= 0) {",
+              "136|                 attenMaskInfo.computeMode = AttenMaskComputeMode::NO_NEED_COMPUTE_MODE;",
+              "137|             } else if (causalOrNextFactor < 0 && preFactor <= 0) {",
+              "138|                 attenMaskInfo.computeMode = AttenMaskComputeMode::CAUSAL_OR_NEXT_ONLY_MODE;",
+              "139|             } else if (causalOrNextFactor >= 0 && preFactor > 0) {",
+              "140|                 attenMaskInfo.computeMode = AttenMaskComputeMode::PRE_ONLY_MODE;",
+              "141|             } else {"
+            ]
+          },
+          {
+            "at": "../common/op_kernel/arch35/attenmask_arch35.h:157",
+            "window": [
+              "150|                 // attenmask value is all 0, no need to compute",
+              "151|                 attenMaskInfo.computeMode = AttenMaskComputeMode::NO_NEED_COMPUTE_MODE;",
+              "152|             } else {",
+              "153|                 int64_t intersectionX = runInfo.actualS1Size - runInfo.actualS2Size +",
+              "154|                                         ((__gm__ int64_t *)attenMaskInfo.prefixNAddr)[runInfo.boIdx];",
+              "155|                 if (s1Offset >= intersectionX) {",
+              "156|                     attenMaskInfo.computeMode = AttenMaskComputeMode::CAUSAL_OR_NEXT_ONLY_MODE;",
+              "157|                 } else if (s1Offset + constInfo.s1BaseSize <= intersectionX) {",
+              "158|                     attenMaskInfo.computeMode = AttenMaskComputeMode::PREFIX_N_COMPUTE_MODE;",
+              "159|                 } else {",
+              "160|                     attenMaskInfo.computeMode = AttenMaskComputeMode::PREFIX_COMPUTE_MODE;",
+              "161|                 }",
+              "162|             }",
+              "163|         }",
+              "164|         return;"
+            ]
+          }
+        ]
+      },
+      {
+        "q": "S1TemplateNum",
+        "total": 104,
+        "hits": [
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h",
+            "line": 82,
+            "text": "                      ASCENDC_TPL_UINT_DECL(S1TemplateNum, ASCENDC_TPL_8_BW, ASCENDC_TPL_UI_LIST, 0, 64, 128, 512),"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h",
+            "line": 136,
+            "text": "                         ASCENDC_TPL_UINT_SEL(S1TemplateNum, ASCENDC_TPL_UI_LIST, 128),"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h",
+            "line": 149,
+            "text": "                         ASCENDC_TPL_UINT_SEL(S1TemplateNum, ASCENDC_TPL_UI_LIST, 128),"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h",
+            "line": 162,
+            "text": "                         ASCENDC_TPL_UINT_SEL(S1TemplateNum, ASCENDC_TPL_UI_LIST, 128),"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h",
+            "line": 175,
+            "text": "                         ASCENDC_TPL_UINT_SEL(S1TemplateNum, ASCENDC_TPL_UI_LIST, 128),"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h",
+            "line": 188,
+            "text": "                         ASCENDC_TPL_UINT_SEL(S1TemplateNum, ASCENDC_TPL_UI_LIST, 128),"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h",
+            "line": 201,
+            "text": "                         ASCENDC_TPL_UINT_SEL(S1TemplateNum, ASCENDC_TPL_UI_LIST, 128),"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h",
+            "line": 214,
+            "text": "                         ASCENDC_TPL_UINT_SEL(S1TemplateNum, ASCENDC_TPL_UI_LIST, 128),"
+          }
+        ],
+        "windows": [
+          {
+            "at": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:82",
+            "window": [
+              "75|                       //      1: ENABLE",
+              "76|                       ASCENDC_TPL_BOOL_DECL(IsPse, 0, 1),",
+              "77|                       // bit: 10 AttenMaskCfg",
+              "78|                       //      0: DISABLE",
+              "79|                       //      1: ENABLE",
+              "80|                       ASCENDC_TPL_BOOL_DECL(IsAttenMask, 0, 1),",
+              "81|                       // bit: 18-11 S1TemplateType",
+              "82|                       ASCENDC_TPL_UINT_DECL(S1TemplateNum, ASCENDC_TPL_8_BW, ASCENDC_TPL_UI_LIST, 0, 64, 128, 512),",
+              "83|                       // bit: 28-19 S2TemplateType",
+              "84|                       ASCENDC_TPL_UINT_DECL(S2TemplateNum, ASCENDC_TPL_10_BW, ASCENDC_TPL_UI_LIST, 0, 128, 256, 512),",
+              "85|                       // bit: 40-29 DTemplateType",
+              "86|                       ASCENDC_TPL_UINT_DECL(DTemplateNum, ASCENDC_TPL_12_BW, ASCENDC_TPL_UI_LIST, 0, 64, 128, 192, 256,",
+              "87|                                             768),",
+              "88|                       // bit: 41-44 DeterSparseType",
+              "89|                       // 0: NO_DETER"
+            ]
+          },
+          {
+            "at": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h:136",
+            "window": [
+              "129| #if (ORIG_DTYPE_QUERY == -1) || (ORIG_DTYPE_QUERY == DT_FLOAT16)",
+              "130|     // FP16",
+              "131|     ASCENDC_TPL_ARGS_SEL(ASCENDC_TPL_BOOL_SEL(IsEmptyTensor, 0),",
+              "132|                          ASCENDC_TPL_UINT_SEL(SplitAxis, ASCENDC_TPL_UI_LIST, 0),",
+              "133|                          ASCENDC_TPL_UINT_SEL(InputDType, ASCENDC_TPL_UI_LIST, 3), ASCENDC_TPL_BOOL_SEL(IsTnd, 0),",
+              "134|                          ASCENDC_TPL_BOOL_SEL(IsDrop, 0, 1), ASCENDC_TPL_BOOL_SEL(IsPse, 0, 1),",
+              "135|                          ASCENDC_TPL_BOOL_SEL(IsAttenMask, 0, 1),",
+              "136|                          ASCENDC_TPL_UINT_SEL(S1TemplateNum, ASCENDC_TPL_UI_LIST, 128),",
+              "137|                          ASCENDC_TPL_UINT_SEL(S2TemplateNum, ASCENDC_TPL_UI_LIST, 128),",
+              "138|                          ASCENDC_TPL_UINT_SEL(DTemplateNum, ASCENDC_TPL_UI_LIST, 64, 192, 256, 768),",
+              "139|                          ASCENDC_TPL_UINT_SEL(DeterType, ASCENDC_TPL_UI_LIST, 0), ASCENDC_TPL_BOOL_SEL(IsNEqual, 0),",
+              "140|                          ASCENDC_TPL_BOOL_SEL(IsBn2MultiBlk, 0), ASCENDC_TPL_BOOL_SEL(IsDNoEqual, 0, 1),",
+              "141|                          ASCENDC_TPL_BOOL_SEL(IsRope, 0), ASCENDC_TPL_UINT_SEL(OutDType, ASCENDC_TPL_UI_LIST, 3),",
+              "142|                          ASCENDC_TPL_BOOL_SEL(IsNzOut, 0), ASCENDC_TPL_BOOL_SEL(IsTndSwizzle, 0),",
+              "143|                          ASCENDC_TPL_BOOL_SEL(IsRegbase, 1), ASCENDC_TPL_TILING_STRUCT_SEL(FagTilingWithTemplateFFFF)),"
+            ]
+          }
+        ]
+      }
+    ],
+    "names": {
+      "s1Inner": [
+        {
+          "kind": "CONTRACT",
+          "name": "s1Inner",
+          "file": "op_kernel/arch35/flash_attention_score_grad_tiling_data_regbase.h",
+          "line": 225
+        },
+        {
+          "kind": "FIELD",
+          "name": "s1Inner",
+          "file": "op_kernel/arch35/flash_attention_score_grad_tiling_data_regbase.h",
+          "line": 225
+        },
+        {
+          "kind": "PREDICATE",
+          "name": "s1Inner",
+          "file": "op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp",
+          "line": 908
+        },
+        {
+          "kind": "PREDICATE",
+          "name": "s1Inner",
+          "file": "op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp",
+          "line": 1357
+        },
+        {
+          "kind": "TILING_FIELD",
+          "name": "s1Inner",
+          "file": "op_kernel/arch35/flash_attention_score_grad_tiling_data_regbase.h",
+          "line": 225
+        },
+        {
+          "kind": "VARIABLE",
+          "name": "s1Inner",
+          "file": "op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp",
+          "line": 900
+        },
+        {
+          "kind": "VARIABLE",
+          "name": "s1Inner",
+          "file": "op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp",
+          "line": 900
+        }
+      ],
+      "S1TemplateNum": [
+        {
+          "kind": "CONTRACT",
+          "name": "S1TemplateNum",
+          "file": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h",
+          "line": 82
+        },
+        {
+          "kind": "CONTRACT",
+          "name": "S1TemplateNum",
+          "file": "op_kernel/flash_attention_score_grad_apt.cpp",
+          "line": 35
+        },
+        {
+          "kind": "TEMPLATE_ARG",
+          "name": "S1TemplateNum",
+          "file": "op_kernel/flash_attention_score_grad_apt.cpp",
+          "line": 35
+        },
+        {
+          "kind": "TILING_KEY",
+          "name": "S1TemplateNum",
+          "file": "op_kernel/arch35/flash_attention_score_grad_template_tiling_key.h",
+          "line": 82
+        }
+      ]
+    },
+    "legal_S1": [
+      {
+        "value": "128",
+        "n": 4408
+      },
+      {
+        "value": "64",
+        "n": 208
+      },
+      {
+        "value": "0",
+        "n": 1
+      }
+    ],
+    "legal_fp32_d": {
+      "InputDType=1 DTemplateNum=256 S1=64": 0,
+      "InputDType=1 DTemplateNum=256 S1=128": 208,
+      "InputDType=1 DTemplateNum=768 S1=64": 208,
+      "InputDType=1 DTemplateNum=768 S1=128": 0
+    }
+  },
+  "Q5": {
+    "start": [
+      "coreNum=72",
+      "AIC 36",
+      "coreNum/2"
+    ],
+    "fts": [
+      {
+        "q": "GetCoreNumAiv",
+        "total": 4,
+        "hits": [
+          {
+            "file": "op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp",
+            "line": 779,
+            "text": "        coreNum = ascendcPlatform.GetCoreNumAiv();"
+          },
+          {
+            "file": "op_host/flash_attention_score_grad_tiling.cpp",
+            "line": 93,
+            "text": "            aivNum = ascendcPlatform.GetCoreNumAiv();"
+          },
+          {
+            "file": "op_host/flash_attention_score_grad_tiling.cpp",
+            "line": 163,
+            "text": "            aivNum = ascendcPlatform.GetCoreNumAiv();"
+          },
+          {
+            "file": "op_host/flash_attention_score_grad_tiling.cpp",
+            "line": 540,
+            "text": "    compileInfoPtr->aivNum = ascendcPlatform.GetCoreNumAiv();"
+          }
+        ],
+        "windows": [
+          {
+            "at": "op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:779",
+            "window": [
+              "772|         fBaseParams.l1Size = compileInfoPtr->l1Size;",
+              "773|         fBaseParams.l0aSize = compileInfoPtr->l0aSize;",
+              "774|         fBaseParams.l0cSize = compileInfoPtr->l0cSize;",
+              "775|         fBaseParams.l2CacheSize = compileInfoPtr->l2CacheSize;",
+              "776|     } else {",
+              "777|         auto ascendcPlatform = platform_ascendc::PlatformAscendC(platformInfoPtr);",
+              "778|         npuArch = ascendcPlatform.GetCurNpuArch();",
+              "779|         coreNum = ascendcPlatform.GetCoreNumAiv();",
+              "780|         fBaseParams.coreNum = coreNum;",
+              "781|         fBaseParams.aicNum = ascendcPlatform.GetCoreNumAic();",
+              "782|         ascendcPlatform.GetCoreMemSize(platform_ascendc::CoreMemType::UB, fBaseParams.ubSize);",
+              "783|         ascendcPlatform.GetCoreMemSize(platform_ascendc::CoreMemType::L1, fBaseParams.l1Size);",
+              "784|         ascendcPlatform.GetCoreMemSize(platform_ascendc::CoreMemType::L0_A, fBaseParams.l0aSize);",
+              "785|         ascendcPlatform.GetCoreMemSize(platform_ascendc::CoreMemType::L0_C, fBaseParams.l0cSize);",
+              "786|         ascendcPlatform.GetCoreMemSize(platform_ascendc::CoreMemType::L2, fBaseParams.l2CacheSize);"
+            ]
+          },
+          {
+            "at": "op_host/flash_attention_score_grad_tiling.cpp:93",
+            "window": [
+              "86|             OP_CHECK_IF(compilePtr == nullptr, OP_LOGE(context, \"The op [FlashAttentionScoreGrad] received bad params, the reason is: [compile_info is null]\"),",
+              "87|                        return ge::GRAPH_FAILED);",
+              "88|             aivNum = compilePtr->aivNum;",
+              "89|             aicNum = compilePtr->aicNum;",
+              "90|         } else {",
+              "91|             auto ascendcPlatform = platform_ascendc::PlatformAscendC(platformInfoPtr);",
+              "92|             aicNum = ascendcPlatform.GetCoreNumAic();",
+              "93|             aivNum = ascendcPlatform.GetCoreNumAiv();",
+              "94|         }",
+              "95|         OP_CHECK_IF(aivNum == 0, OP_LOGE(context, \"The op [FlashAttentionScoreGrad] received bad params, the reason is: [num of aiv is 0]\"),",
+              "96|                    return GRAPH_FAILED);",
+              "97|         uint64_t dqNum = static_cast<uint64_t>(context->GetOutputShape(OUTPUT_IDX_DQ)->GetStorageShape().GetShapeSize());",
+              "98|         if (dqNum % aivNum == 0ULL) {",
+              "99|             tilingData->emptyTensorTilingData.set_formerDqNum(aivNum);",
+              "100|             tilingData->emptyTensorTilingData.set_singleCoreDqNum(dqNum / aivNum);"
+            ]
+          }
+        ]
+      },
+      {
+        "q": "GetCoreNumAic",
+        "total": 4,
+        "hits": [
+          {
+            "file": "op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp",
+            "line": 781,
+            "text": "        fBaseParams.aicNum = ascendcPlatform.GetCoreNumAic();"
+          },
+          {
+            "file": "op_host/flash_attention_score_grad_tiling.cpp",
+            "line": 92,
+            "text": "            aicNum = ascendcPlatform.GetCoreNumAic();"
+          },
+          {
+            "file": "op_host/flash_attention_score_grad_tiling.cpp",
+            "line": 162,
+            "text": "            aicNum = ascendcPlatform.GetCoreNumAic();"
+          },
+          {
+            "file": "op_host/flash_attention_score_grad_tiling.cpp",
+            "line": 541,
+            "text": "    compileInfoPtr->aicNum = ascendcPlatform.GetCoreNumAic();"
+          }
+        ],
+        "windows": [
+          {
+            "at": "op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:781",
+            "window": [
+              "774|         fBaseParams.l0cSize = compileInfoPtr->l0cSize;",
+              "775|         fBaseParams.l2CacheSize = compileInfoPtr->l2CacheSize;",
+              "776|     } else {",
+              "777|         auto ascendcPlatform = platform_ascendc::PlatformAscendC(platformInfoPtr);",
+              "778|         npuArch = ascendcPlatform.GetCurNpuArch();",
+              "779|         coreNum = ascendcPlatform.GetCoreNumAiv();",
+              "780|         fBaseParams.coreNum = coreNum;",
+              "781|         fBaseParams.aicNum = ascendcPlatform.GetCoreNumAic();",
+              "782|         ascendcPlatform.GetCoreMemSize(platform_ascendc::CoreMemType::UB, fBaseParams.ubSize);",
+              "783|         ascendcPlatform.GetCoreMemSize(platform_ascendc::CoreMemType::L1, fBaseParams.l1Size);",
+              "784|         ascendcPlatform.GetCoreMemSize(platform_ascendc::CoreMemType::L0_A, fBaseParams.l0aSize);",
+              "785|         ascendcPlatform.GetCoreMemSize(platform_ascendc::CoreMemType::L0_C, fBaseParams.l0cSize);",
+              "786|         ascendcPlatform.GetCoreMemSize(platform_ascendc::CoreMemType::L2, fBaseParams.l2CacheSize);",
+              "787|     }",
+              "788|     OP_CHECK_IF((fBaseParams.coreNum == 0) || (fBaseParams.aicNum == 0),"
+            ]
+          },
+          {
+            "at": "op_host/flash_attention_score_grad_tiling.cpp:92",
+            "window": [
+              "85|             auto compilePtr = reinterpret_cast<const FlashAttentionScoreGradCompileInfo *>(context->GetCompileInfo());",
+              "86|             OP_CHECK_IF(compilePtr == nullptr, OP_LOGE(context, \"The op [FlashAttentionScoreGrad] received bad params, the reason is: [compile_info is null]\"),",
+              "87|                        return ge::GRAPH_FAILED);",
+              "88|             aivNum = compilePtr->aivNum;",
+              "89|             aicNum = compilePtr->aicNum;",
+              "90|         } else {",
+              "91|             auto ascendcPlatform = platform_ascendc::PlatformAscendC(platformInfoPtr);",
+              "92|             aicNum = ascendcPlatform.GetCoreNumAic();",
+              "93|             aivNum = ascendcPlatform.GetCoreNumAiv();",
+              "94|         }",
+              "95|         OP_CHECK_IF(aivNum == 0, OP_LOGE(context, \"The op [FlashAttentionScoreGrad] received bad params, the reason is: [num of aiv is 0]\"),",
+              "96|                    return GRAPH_FAILED);",
+              "97|         uint64_t dqNum = static_cast<uint64_t>(context->GetOutputShape(OUTPUT_IDX_DQ)->GetStorageShape().GetShapeSize());",
+              "98|         if (dqNum % aivNum == 0ULL) {",
+              "99|             tilingData->emptyTensorTilingData.set_formerDqNum(aivNum);"
+            ]
+          }
+        ]
+      },
+      {
+        "q": "set_coreNum",
+        "total": 4,
+        "hits": [
+          {
+            "file": "../common/op_kernel/arch35/flash_attention_score_tiling_regbase_arch35.h",
+            "line": 79,
+            "text": "    void set_coreNum(uint32_t coreNumParam)"
+          },
+          {
+            "file": "../common/op_kernel/arch35/flash_attention_score_tiling_regbase_arch35.h",
+            "line": 899,
+            "text": "    void set_coreNum(int32_t coreNumParam)"
+          },
+          {
+            "file": "op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp",
+            "line": 2271,
+            "text": "    s1s2BNGS1S2BaseParams_->set_coreNum(fBaseParams.coreNum);"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_tiling_data_regbase.h",
+            "line": 175,
+            "text": "    void set_coreNum(int64_t coreNumParam) { this->coreNum = coreNumParam; }"
+          }
+        ],
+        "windows": [
+          {
+            "at": "../common/op_kernel/arch35/flash_attention_score_tiling_regbase_arch35.h:79",
+            "window": [
+              "72|         return attentionOutLastCoreDataSize;",
+              "73|     }",
+              "74|     uint64_t get_attentionOutLastCoreIndex() const",
+              "75|     {",
+              "76|         return attentionOutLastCoreIndex;",
+              "77|     }",
+              "79|     void set_coreNum(uint32_t coreNumParam)",
+              "80|     {",
+              "81|         this->coreNum = coreNumParam;",
+              "82|     }",
+              "83|     void set_attentionOutFormerNum(uint32_t attentionOutFormerNumParam)",
+              "84|     {",
+              "85|         this->attentionOutFormerNum = attentionOutFormerNumParam;",
+              "86|     }"
+            ]
+          },
+          {
+            "at": "../common/op_kernel/arch35/flash_attention_score_tiling_regbase_arch35.h:899",
+            "window": [
+              "892|     uint8_t splitCoreMode;",
+              "893|     uint8_t reserve[3];",
+              "895|     int32_t get_coreNum() const",
+              "896|     {",
+              "897|         return coreNum;",
+              "898|     }",
+              "899|     void set_coreNum(int32_t coreNumParam)",
+              "900|     {",
+              "901|         this->coreNum = coreNumParam;",
+              "902|     }",
+              "903|     int64_t get_totalSize() const",
+              "904|     {",
+              "905|         return totalSize;",
+              "906|     }"
+            ]
+          }
+        ]
+      },
+      {
+        "q": "SetBlockDim",
+        "total": 4,
+        "hits": [
+          {
+            "file": "op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp",
+            "line": 1931,
+            "text": "    context_->SetBlockDim(numBlocks);"
+          },
+          {
+            "file": "../common/op_host/fia_tiling_base.h",
+            "line": 77,
+            "text": "        context_->SetBlockDim(numBlocks);"
+          },
+          {
+            "file": "op_host/flash_attention_score_grad_tiling.cpp",
+            "line": 142,
+            "text": "        context->SetBlockDim(CalculateTschBlockDim(sliceNum, aicNum, aivNum));"
+          },
+          {
+            "file": "op_host/flash_attention_score_grad_tiling.cpp",
+            "line": 240,
+            "text": "        context->SetBlockDim(CalculateTschBlockDim(sliceNum, aicNum, aivNum));"
+          }
+        ],
+        "windows": [
+          {
+            "at": "op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:1931",
+            "window": [
+              "1924|         numBlocks = CalcTschBlockDim(s1s2BNGS1S2SplitCoreParams_->get_blockOuter() * AICV_RATIO_DEFAULT,",
+              "1925|                                      fBaseParams.aicNum, fBaseParams.coreNum);",
+              "1926|     }",
+              "1927|     OP_CHECK_IF(numBlocks == 0,",
+              "1928|                 OP_LOGE(\"FlashAttentionScoreGradTilingNormalRegbase\", \"numBlocks is 0, aicNum is %lu, aivNum is %lu.\",",
+              "1929|                         fBaseParams.aicNum, fBaseParams.coreNum),",
+              "1930|                 return ge::GRAPH_FAILED);",
+              "1931|     context_->SetBlockDim(numBlocks);",
+              "1933|     // 使用SyncAll，需要设置为batch mode模式，所有核同时启动，否则在多流方式下执行可能会卡死",
+              "1934|     if (fBaseParams.splitAxis != SplitAxisEnum::BN2 || !fBaseParams.isBn2MultiBlk ||",
+              "1935|         fBaseParams.layoutType != INPUT_FORMAT_TND) {",
+              "1936|         context_->SetScheduleMode(1);",
+              "1937|     }",
+              "1938|     return ge::GRAPH_SUCCESS;"
+            ]
+          },
+          {
+            "at": "../common/op_host/fia_tiling_base.h:77",
+            "window": [
+              "70|     gert::TilingContext *context_ = nullptr;",
+              "71|     virtual void InitTilingInfo(TilingInfo *tilingInfo) = 0;",
+              "72|     virtual bool IsCapable() = 0;",
+              "73|     virtual ge::graphStatus DoOpTiling() = 0;",
+              "75|     [[nodiscard]] ge::graphStatus SetNumBlocks(uint32_t numBlocks) const",
+              "76|     {",
+              "77|         context_->SetBlockDim(numBlocks);",
+              "78|         return ge::GRAPH_SUCCESS;",
+              "79|     }",
+              "81|     [[nodiscard]] ge::graphStatus SetTilingKey(uint64_t tilingKey) const",
+              "82|     {",
+              "83|         context_->SetTilingKey(tilingKey);",
+              "84|         return ge::GRAPH_SUCCESS;"
+            ]
+          }
+        ]
+      },
+      {
+        "q": "coreNum /",
+        "total": 8,
+        "hits": [
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_kernel_deter.h",
+            "line": 347,
+            "text": "    int64_t k = static_cast<int64_t>(this->tilingData->s1s2BNGS1S2BaseParams.coreNum / NUM_TWO);"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_kernel_deter.h",
+            "line": 443,
+            "text": "                static_cast<int64_t>(this->tilingData->s1s2BNGS1S2BaseParams.coreNum / NUM_TWO), r, coordinateInfo);"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_kernel_deter.h",
+            "line": 454,
+            "text": "        int64_t k = static_cast<int64_t>(this->tilingData->s1s2BNGS1S2BaseParams.coreNum / NUM_TWO);"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_kernel_deter.h",
+            "line": 508,
+            "text": "                int64_t k = static_cast<int64_t>(this->tilingData->s1s2BNGS1S2BaseParams.coreNum / NUM_TWO);"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_kernel_deter.h",
+            "line": 549,
+            "text": "        int64_t k = static_cast<int64_t>(this->tilingData->s1s2BNGS1S2BaseParams.coreNum / NUM_TWO);"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_kernel_deter.h",
+            "line": 603,
+            "text": "    int64_t k = static_cast<int64_t>(this->tilingData->s1s2BNGS1S2BaseParams.coreNum / NUM_TWO);"
+          },
+          {
+            "file": "op_kernel/arch35/flash_attention_score_grad_s1s2_bn2gs1s2_pre_regbase.h",
+            "line": 238,
+            "text": "        uint64_t inputAddr = cBlockIdx * tilingData->preTilingData.maskSingleCoreNum / BIT8;"
+          },
+          {
+            "file": "op_host/flash_attention_score_grad_tiling.cpp",
+            "line": 70,
+            "text": "    ration = aivCoreNum / aicCoreNum;"
+          }
+        ],
+        "windows": [
+          {
+            "at": "op_kernel/arch35/flash_attention_score_grad_kernel_deter.h:347",
+            "window": [
+              "341| template <typename CubeBlockType, typename VecBlockType>",
+              "342| __aicore__ inline int64_t FlashAttentionScoreGradKernelDeter<CubeBlockType, VecBlockType>::CalCausalDeterIndex(",
+              "343|     uint32_t roundId, CoordinateInfo &coordinateInfo)",
+              "344| {",
+              "345|     int64_t j = this->cBlockIdx + 1;",
+              "346|     int64_t r = roundId + 1;",
+              "347|     int64_t k = static_cast<int64_t>(this->tilingData->s1s2BNGS1S2BaseParams.coreNum / NUM_TWO);",
+              "348|     int64_t mGap = 0;",
+              "349|     bool useEven = false;",
+              "351|     if constexpr (!BaseClass::IS_TND) {",
+              "352|         int64_t b = this->constInfo.bSize * this->constInfo.n2Size;",
+              "353|         int64_t m = this->constInfo.s1Outer;",
+              "354|         int64_t n = this->constInfo.s2Outer;"
+            ]
+          },
+          {
+            "at": "op_kernel/arch35/flash_attention_score_grad_kernel_deter.h:443",
+            "window": [
+              "437|     if constexpr (BaseClass::IS_TND) {",
+              "438|         if constexpr (IS_TND_SWIZZLE) {",
+              "439|             CalTNDDenseSwizzleIndex<BaseClass::CUBE_BASEM, BaseClass::CUBE_BASEN>(",
+              "440|                 this->actualSeqQlenAddr, this->actualSeqKvlenAddr,",
+              "441|                 this->tilingData->tndSwizzleParam.tndS2BlockPrefixSum, this->constInfo.bSize, this->constInfo.n2Size,",
+              "442|                 this->constInfo.commonConstInfo.gSize, j,",
+              "443|                 static_cast<int64_t>(this->tilingData->s1s2BNGS1S2BaseParams.coreNum / NUM_TWO), r, coordinateInfo);",
+              "444|         } else {",
+              "445|             int64_t b = this->constInfo.bSize;",
+              "446|             CalTNDDenseIndex<BaseClass::CUBE_BASEM, BaseClass::CUBE_BASEN, BaseClass::DETER_SPARSE_TYPE,",
+              "447|                              BaseClass::IS_N_EQUAL>(",
+              "448|                 this->actualSeqQlenAddr, this->actualSeqKvlenAddr, this->tilingData->deterParam.deterPrefix0,",
+              "449|                 this->tilingData->baseDeterParam.deterMaxRound, this->constInfo.bSize, this->constInfo.n2Size,",
+              "450|                 this->constInfo.commonConstInfo.gSize, j, r, 0, this->tilingData->deterParam.deterPrefixStep,"
+            ]
+          }
+        ]
+      }
+    ],
+    "names": {
+      "coreNum": [
+        {
+          "kind": "BRANCH",
+          "name": "coreNum",
+          "file": "op_kernel/arch35/flash_attention_score_grad_kernel_base.h",
+          "line": 571
+        },
+        {
+          "kind": "CONTRACT",
+          "name": "coreNum",
+          "file": "op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp",
+          "line": 760
+        },
+        {
+          "kind": "CONTRACT",
+          "name": "coreNum",
+          "file": "op_kernel/arch35/flash_attention_score_grad_tiling_data_regbase.h",
+          "line": 104
+        },
+        {
+          "kind": "CONTRACT",
+          "name": "coreNum",
+          "file": "op_kernel/arch35/flash_attention_score_grad_tiling_data_regbase.h",
+          "line": 104
+        },
+        {
+          "kind": "FIELD",
+          "name": "coreNum",
+          "file": "op_kernel/arch35/flash_attention_score_grad_tiling_data_regbase.h",
+          "line": 104
+        },
+        {
+          "kind": "TILING_FIELD",
+          "name": "coreNum",
+          "file": "op_kernel/arch35/flash_attention_score_grad_tiling_data_regbase.h",
+          "line": 104
+        },
+        {
+          "kind": "VARIABLE",
+          "name": "coreNum",
+          "file": "op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp",
+          "line": 760
+        }
+      ],
+      "aicNum": [
+        {
+          "kind": "CONTRACT",
+          "name": "aicNum",
+          "file": "op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp",
+          "line": 150
+        },
+        {
+          "kind": "VARIABLE",
+          "name": "aicNum",
+          "file": "op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp",
+          "line": 150
+        }
+      ]
+    },
+    "edges_coreNum": [
+      {
+        "rel": "WRITES",
+        "src": "FUNCTION GetPlatformInfo op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:758",
+        "dst": "VARIABLE coreNum op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:760"
+      },
+      {
+        "rel": "WRITES",
+        "src": "FUNCTION GetSparsePrefixBlockInfo op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:2056",
+        "dst": "VARIABLE coreNum op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:760"
+      },
+      {
+        "rel": "READS",
+        "src": "BRANCH OP_CHECK_IF((fBaseParams.coreNum == 0)||(fBaseParams.aicNum == 0), OP_LOGE(context_->GetNodeName(), \"num of coreNum(aivN op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:788",
+        "dst": "VARIABLE coreNum op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:760"
+      },
+      {
+        "rel": "READS",
+        "src": "BRANCH OP_CHECK_IF((fBaseParams.coreNum == 0)||(fBaseParams.aicNum == 0), OP_LOGE(context_->GetNodeName(), \"num of coreNum(aivN op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:788",
+        "dst": "VARIABLE coreNum op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:760"
+      },
+      {
+        "rel": "READS",
+        "src": "BRANCH OP_CHECK_IF((fBaseParams.coreNum == 0)||(fBaseParams.aicNum == 0), OP_LOGE(context_->GetNodeName(), \"num of coreNum(aivN op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:788",
+        "dst": "VARIABLE coreNum op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:760"
+      },
+      {
+        "rel": "READS",
+        "src": "BRANCH OP_CHECK_IF((fBaseParams.coreNum == 0)||(fBaseParams.aicNum == 0), OP_LOGE(context_->GetNodeName(), \"num of coreNum(aivN op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:788",
+        "dst": "VARIABLE coreNum op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:760"
+      },
+      {
+        "rel": "READS",
+        "src": "BRANCH OP_CHECK_IF((fBaseParams.coreNum == 0)||(fBaseParams.aicNum == 0), OP_LOGE(context_->GetNodeName(), \"num of coreNum(aivN op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:788",
+        "dst": "VARIABLE coreNum op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:760"
+      },
+      {
+        "rel": "READS",
+        "src": "BRANCH OP_CHECK_IF((fBaseParams.coreNum == 0)||(fBaseParams.aicNum == 0), OP_LOGE(context_->GetNodeName(), \"num of coreNum(aivN op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:788",
+        "dst": "VARIABLE coreNum op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:760"
+      },
+      {
+        "rel": "READS",
+        "src": "BRANCH OP_CHECK_IF((fBaseParams.coreNum == 0)||(fBaseParams.aicNum == 0), OP_LOGE(context_->GetNodeName(), \"num of coreNum(aivN op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:788",
+        "dst": "VARIABLE coreNum op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:760"
+      },
+      {
+        "rel": "READS",
+        "src": "BRANCH OP_CHECK_IF(numBlocks == 0, OP_LOGE(\"FlashAttentionScoreGradTilingNormalRegbase\", \"numBlocks is 0, aicNum is %lu, aivNum op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:1927",
+        "dst": "VARIABLE coreNum op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:760"
+      },
+      {
+        "rel": "READS",
+        "src": "BRANCH OP_CHECK_IF(numBlocks == 0, OP_LOGE(\"FlashAttentionScoreGradTilingNormalRegbase\", \"numBlocks is 0, aicNum is %lu, aivNum op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:1927",
+        "dst": "VARIABLE coreNum op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:760"
+      },
+      {
+        "rel": "READS",
+        "src": "BRANCH OP_CHECK_IF(numBlocks == 0, OP_LOGE(\"FlashAttentionScoreGradTilingNormalRegbase\", \"numBlocks is 0, aicNum is %lu, aivNum op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:1927",
+        "dst": "VARIABLE coreNum op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:760"
+      },
+      {
+        "rel": "READS",
+        "src": "BRANCH OP_CHECK_IF(numBlocks == 0, OP_LOGE(\"FlashAttentionScoreGradTilingNormalRegbase\", \"numBlocks is 0, aicNum is %lu, aivNum op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:1927",
+        "dst": "VARIABLE coreNum op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:760"
+      },
+      {
+        "rel": "READS",
+        "src": "BRANCH OP_CHECK_IF(numBlocks == 0, OP_LOGE(\"FlashAttentionScoreGradTilingNormalRegbase\", \"numBlocks is 0, aicNum is %lu, aivNum op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:1927",
+        "dst": "VARIABLE coreNum op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:760"
+      }
+    ],
+    "edges_aicNum": [
+      {
+        "rel": "WRITES",
+        "src": "FUNCTION IsTndDeterSwizzlePerformanceEnough op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:143",
+        "dst": "VARIABLE aicNum op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:150"
+      },
+      {
+        "rel": "WRITES",
+        "src": "FUNCTION RunEmptyTiling op_host/flash_attention_score_grad_tiling.cpp:78",
+        "dst": "VARIABLE aicNum op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:150"
+      },
+      {
+        "rel": "WRITES",
+        "src": "FUNCTION RunEmptyTilingRegbase op_host/flash_attention_score_grad_tiling.cpp:148",
+        "dst": "VARIABLE aicNum op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:150"
+      },
+      {
+        "rel": "READS",
+        "src": "BRANCH !(params.aicNum == 0 || params.n1<= 0) op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:115",
+        "dst": "VARIABLE aicNum op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:150"
+      },
+      {
+        "rel": "READS",
+        "src": "BRANCH !(params.aicNum == 0 || params.n1<= 0) op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:115",
+        "dst": "VARIABLE aicNum op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:150"
+      },
+      {
+        "rel": "READS",
+        "src": "BRANCH !(params.aicNum == 0 || params.n1<= 0) op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:115",
+        "dst": "VARIABLE aicNum op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:150"
+      },
+      {
+        "rel": "READS",
+        "src": "BRANCH !(params.aicNum == 0 || params.n1<= 0) op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:115",
+        "dst": "VARIABLE aicNum op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:150"
+      },
+      {
+        "rel": "READS",
+        "src": "BRANCH !(params.aicNum == 0 || params.n1<= 0) op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:115",
+        "dst": "VARIABLE aicNum op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:150"
+      }
+    ]
+  }
+}

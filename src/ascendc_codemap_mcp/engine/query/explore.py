@@ -64,15 +64,23 @@ _VALIDATION_NAMES = frozenset(
 )
 _TPL_BOILER = ("ASCENDC_TPL_ARGS_DECL", "ASCENDC_TPL_SEL", "ASCENDC_TPL_ARGS_SEL")
 _KIND_MERGE_PREF = [
+    EntityKind.TILING_FIELD.value,
     EntityKind.TILING_KEY.value,
     EntityKind.CONTRACT.value,
-    EntityKind.TILING_FIELD.value,
     EntityKind.TYPE.value,
     EntityKind.KERNEL.value,
     EntityKind.FUNCTION.value,
     EntityKind.BUFFER.value,
     EntityKind.METHOD.value,
     EntityKind.VARIABLE.value,
+]
+_CONTRACT_SEED_PREF = [
+    EntityKind.TILING_FIELD.value,
+    EntityKind.FIELD.value,
+    EntityKind.TILING_KEY.value,
+    EntityKind.COMPILE_VAR.value,
+    EntityKind.MACRO.value,
+    EntityKind.CONTRACT.value,
 ]
 
 
@@ -254,6 +262,93 @@ def _last_ident(name: str) -> str:
     return str(name or "").replace(".", "::").split("::")[-1].strip()
 
 
+def _norm_path(path: str) -> str:
+    return str(path or "").replace("\\", "/")
+
+
+def _is_kernel_path(path: str) -> bool:
+    blob = _norm_path(path)
+    return "/op_kernel/" in blob or blob.startswith("op_kernel/")
+
+
+def _is_host_path(path: str) -> bool:
+    blob = _norm_path(path)
+    return "/op_host/" in blob or blob.startswith("op_host/")
+
+
+def _kernel_accessor_rows(query: Any, seed: dict[str, Any]) -> list[dict[str, Any]]:
+    """Tiling-data getter/setter in op_kernel when the graph has no kernel READS."""
+    leaf = _last_ident(str(seed.get("name") or ""))
+    if not leaf:
+        return []
+    names = [f"get_{leaf}", f"Get{leaf[:1].upper() + leaf[1:]}" if len(leaf) > 1 else ""]
+    names = [n for n in names if n]
+    op_root = getattr(query, "_op_root", None)
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    with query._connect() as conn:
+        for name in names:
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT id, kind, name, file, line_start FROM entity
+                    WHERE name = ? COLLATE NOCASE
+                    LIMIT 8
+                    """,
+                    (name,),
+                ).fetchall()
+            except Exception:  # noqa: BLE001
+                rows = []
+            for row in rows:
+                file = str(row[3] or "")
+                line = int(row[4] or 0)
+                if not _is_kernel_path(file) or not line:
+                    continue
+                key = (_norm_path(file), line)
+                if key in seen:
+                    continue
+                seen.add(key)
+                hit = {
+                    "id": str(row[0] or ""),
+                    "name": str(row[2] or name),
+                    "kind": str(row[1] or ""),
+                    "file": file,
+                    "line_start": line,
+                }
+                snippet = _clip_source(op_root, file, line)
+                out.append(_loc_row(hit, role="consumer", snippet=snippet))
+        if not out:
+            try:
+                lines = conn.execute(
+                    """
+                    SELECT path, line, text FROM source_line
+                    WHERE text LIKE '%' || ? || '%'
+                      AND REPLACE(path, '\\', '/') LIKE '%/op_kernel/%'
+                    LIMIT 8
+                    """,
+                    (f"get_{leaf}",),
+                ).fetchall()
+            except Exception:  # noqa: BLE001
+                lines = []
+            for row in lines:
+                file = str(row[0] or "")
+                line = int(row[1] or 0)
+                key = (_norm_path(file), line)
+                if not file or line <= 0 or key in seen:
+                    continue
+                seen.add(key)
+                hit = {
+                    "id": "",
+                    "name": f"get_{leaf}",
+                    "kind": EntityKind.METHOD.value,
+                    "file": file,
+                    "line_start": line,
+                }
+                snippet = str(row[2] or "").strip() or _clip_source(op_root, file, line)
+                out.append(_loc_row(hit, role="consumer", snippet=snippet))
+    return out
+
+
 def _prefer_tiling_key_seed(
     cards: list[dict[str, Any]], pattern: str
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -271,6 +366,88 @@ def _prefer_tiling_key_seed(
     primary = tks[0]
     aliases = [card for card in cards if str(card.get("id") or "") != str(primary.get("id") or "")]
     return [primary], aliases
+
+
+def _leaf_of(card: dict[str, Any]) -> str:
+    return _last_ident(str(card.get("name") or "")).lower()
+
+
+def _seed_pref_key(card: dict[str, Any]) -> tuple[int, str]:
+    kind = str(card.get("kind") or "")
+    return (
+        _CONTRACT_SEED_PREF.index(kind) if kind in _CONTRACT_SEED_PREF else 50,
+        kind,
+    )
+
+
+def _prefer_contract_seeds(cards: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    """Same leaf → one contract; seed prefers the WRITES target (TILING_FIELD)."""
+    located = [c for c in cards if isinstance(c, dict) and c.get("id")]
+    if not located:
+        return None, []
+    ranked = sorted(located, key=_seed_pref_key)
+    chosen_leaf = _leaf_of(ranked[0])
+    group = [c for c in located if _leaf_of(c) == chosen_leaf] or ranked
+    group.sort(key=_seed_pref_key)
+    return group[0], group[1:]
+
+
+def _distinct_leaves(cards: list[dict[str, Any]]) -> set[str]:
+    return {leaf for c in cards if isinstance(c, dict) and (leaf := _leaf_of(c))}
+
+
+def _expand_statement_snippet(
+    query: Any, card: dict[str, Any], pool: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """COMPILE_VAR / MACRO / TILING_KEY Definition uses a ~16-line statement window."""
+    from ascendc_codemap_mcp.engine.query.sql import _source_line_window, _statement_window
+
+    out = dict(card)
+    kind = str(out.get("kind") or "").upper()
+    candidates = [out]
+    leaf = _leaf_of(out)
+    for other in pool:
+        if not isinstance(other, dict):
+            continue
+        if _leaf_of(other) != leaf:
+            continue
+        other_kind = str(other.get("kind") or "").upper()
+        if other_kind in {
+            EntityKind.COMPILE_VAR.value,
+            EntityKind.MACRO.value,
+            EntityKind.TILING_KEY.value,
+        }:
+            candidates.append(other)
+    preferred = sorted(
+        candidates,
+        key=lambda row: (
+            0
+            if str(row.get("kind") or "").upper() == EntityKind.COMPILE_VAR.value
+            else 1
+            if str(row.get("kind") or "").upper() == EntityKind.MACRO.value
+            else 2,
+        ),
+    )
+    source = preferred[0] if preferred else out
+    file = str(source.get("file") or "")
+    line = int(source.get("line") or source.get("line_start") or 0)
+    if not file or line <= 0:
+        return out
+    window = ""
+    try:
+        with query._connect() as conn:
+            window = _source_line_window(conn, file, line)
+    except Exception:  # noqa: BLE001
+        window = ""
+    if not window:
+        window, _cut = _statement_window(getattr(query, "_op_root", None), file, line)
+    if window:
+        out["file"] = file
+        out["line"] = line
+        out["snippet"] = window
+        if str(source.get("kind") or ""):
+            out["kind"] = source.get("kind")
+    return out
 
 
 def build_contract_card(
@@ -293,84 +470,109 @@ def build_contract_card(
     import json
 
     with query._connect() as conn:
-        rel_rows = conn.execute(
-            """
-            SELECT kind, src, dst, data FROM relation
-            WHERE src = ? OR dst = ?
-            LIMIT 400
-            """,
-            (sid, sid),
-        ).fetchall()
-        for rel in rel_rows:
-            rkind = str(rel["kind"] or "")
-            src_id = str(rel["src"] or "")
-            dst_id = str(rel["dst"] or "")
-            try:
-                rdata = json.loads(rel["data"] or "{}")
-            except json.JSONDecodeError:
-                rdata = {}
-            if not isinstance(rdata, dict):
-                rdata = {}
-            other_id = dst_id if src_id == sid else src_id
-            row = query._entity_row(conn, other_id)
-            if row is None:
+        seed_ids: list[str] = []
+        for extra in [seed, *(extra_seeds or [])]:
+            if not isinstance(extra, dict):
                 continue
-            try:
-                edata = json.loads(row["data"] or "{}")
-            except json.JSONDecodeError:
-                edata = {}
-            if not isinstance(edata, dict):
-                edata = {}
-            hit = {
-                "id": str(row["id"]),
-                "name": str(row["name"] or ""),
-                "kind": str(row["kind"] or ""),
-                "file": str(rdata.get("file") or row["file"] or ""),
-                "line_start": int(rdata.get("line") or row["line_start"] or 0),
-                "consumer_role": rdata.get("consumer_role") or "",
-            }
-            if str(row["kind"] or "") == EntityKind.BRANCH.value:
-                has_branch = True
-            if (
-                rkind in _PRODUCER_KINDS
-                and dst_id == sid
-                and str(hit["kind"] or "") not in _PRODUCER_SKIP_KINDS
-                and not _is_validation_name(str(hit.get("name") or ""))
-            ):
-                snippet = _clip_source(op_root, hit["file"], hit["line_start"])
-                producers.append(_loc_row(hit, role="producer", snippet=snippet))
-            if (
-                rkind in _CONSUMER_KINDS
-                and (dst_id == sid or src_id == sid)
-                and not _is_validation_name(str(hit.get("name") or ""))
-            ):
-                snippet = _clip_source(op_root, hit["file"], hit["line_start"])
-                consumers.append(_loc_row(hit, role="consumer", snippet=snippet))
-            if rkind == RelationKind.BINDS.value:
-                binds.append(_loc_row(hit, role="bind"))
-            if rkind == RelationKind.MATERIALIZES_AS.value:
-                kernel_repr.append(
-                    _loc_row(
-                        hit,
-                        role="kernel_repr",
-                        snippet=_clip_source(op_root, hit["file"], hit["line_start"]),
+            eid = str(extra.get("id") or "")
+            if eid and eid not in seed_ids:
+                seed_ids.append(eid)
+        if sid and sid not in seed_ids:
+            seed_ids.insert(0, sid)
+        for cur_id in seed_ids:
+            rel_rows = conn.execute(
+                """
+                SELECT kind, src, dst, data FROM relation
+                WHERE src = ? OR dst = ?
+                LIMIT 400
+                """,
+                (cur_id, cur_id),
+            ).fetchall()
+            for rel in rel_rows:
+                rkind = str(rel["kind"] or "")
+                src_id = str(rel["src"] or "")
+                dst_id = str(rel["dst"] or "")
+                try:
+                    rdata = json.loads(rel["data"] or "{}")
+                except json.JSONDecodeError:
+                    rdata = {}
+                if not isinstance(rdata, dict):
+                    rdata = {}
+                other_id = dst_id if src_id == cur_id else src_id
+                row = query._entity_row(conn, other_id)
+                if row is None:
+                    continue
+                try:
+                    edata = json.loads(row["data"] or "{}")
+                except json.JSONDecodeError:
+                    edata = {}
+                if not isinstance(edata, dict):
+                    edata = {}
+                hit = {
+                    "id": str(row["id"]),
+                    "name": str(row["name"] or ""),
+                    "kind": str(row["kind"] or ""),
+                    "file": str(rdata.get("file") or row["file"] or ""),
+                    "line_start": int(rdata.get("line") or row["line_start"] or 0),
+                    "consumer_role": rdata.get("consumer_role") or "",
+                }
+                if str(row["kind"] or "") == EntityKind.BRANCH.value:
+                    has_branch = True
+                if (
+                    rkind in _PRODUCER_KINDS
+                    and dst_id == cur_id
+                    and str(hit["kind"] or "") not in _PRODUCER_SKIP_KINDS
+                    and not _is_validation_name(str(hit.get("name") or ""))
+                ):
+                    snippet = _clip_source(op_root, hit["file"], hit["line_start"])
+                    producers.append(_loc_row(hit, role="producer", snippet=snippet))
+                if (
+                    rkind in _CONSUMER_KINDS
+                    and (dst_id == cur_id or src_id == cur_id)
+                    and not _is_validation_name(str(hit.get("name") or ""))
+                ):
+                    snippet = _clip_source(op_root, hit["file"], hit["line_start"])
+                    consumers.append(_loc_row(hit, role="consumer", snippet=snippet))
+                if rkind == RelationKind.BINDS.value:
+                    binds.append(_loc_row(hit, role="bind"))
+                if rkind == RelationKind.MATERIALIZES_AS.value:
+                    kernel_repr.append(
+                        _loc_row(
+                            hit,
+                            role="kernel_repr",
+                            snippet=_clip_source(op_root, hit["file"], hit["line_start"]),
+                        )
                     )
-                )
-            if (
-                rkind == RelationKind.CONTROLS.value
-                and str(row["kind"] or "") == EntityKind.PREDICATE.value
-                and str(edata.get("predicate_role") or "") == "entry_path"
-            ):
-                entry.append(
-                    _loc_row(
-                        hit,
-                        role="entry",
-                        snippet=_clip_source(op_root, hit["file"], hit["line_start"]),
+                if (
+                    rkind == RelationKind.CONTROLS.value
+                    and str(row["kind"] or "") == EntityKind.PREDICATE.value
+                    and str(edata.get("predicate_role") or "") == "entry_path"
+                ):
+                    entry.append(
+                        _loc_row(
+                            hit,
+                            role="entry",
+                            snippet=_clip_source(op_root, hit["file"], hit["line_start"]),
+                        )
                     )
-                )
         closure = semantic_impact_closure_sql(
-            conn, [sid], entity_row=query._entity_row
+            conn, seed_ids or [sid], entity_row=query._entity_row
         )
+    producers = _dedup_rows(producers)
+    consumers = _dedup_rows(consumers)
+    seed_file = _norm_path(str(seed.get("file") or ""))
+    seed_line = int(seed.get("line_start") or seed.get("line") or 0)
+    have_kernel = any(
+        _is_kernel_path(str(row.get("file") or ""))
+        and (
+            _norm_path(str(row.get("file") or "")),
+            int(row.get("line") or row.get("line_start") or 0),
+        )
+        != (seed_file, seed_line)
+        for row in consumers
+    )
+    if not have_kernel:
+        consumers = _dedup_rows(consumers + _kernel_accessor_rows(query, seed))
     sinks = []
     for row in closure.get("sinks") or []:
         if _is_validation_name(str(row.get("name") or "")):
@@ -386,7 +588,7 @@ def build_contract_card(
     )
     seed_row = _loc_row(seed, role="seed", snippet=seed_snippet)
     fence = fence_contract(
-        seeds=[seed_row] + list(extra_seeds or []),
+        seeds=[seed_row],
         producers=producers,
         consumers=consumers,
         sinks=sinks,
@@ -660,6 +862,32 @@ def _useful_rows(rows: Any, seed_name: str) -> list[dict[str, Any]]:
     return _dedup_rows(out)
 
 
+def _render_search_markdown(payload: dict[str, Any]) -> list[str]:
+    cards = [c for c in (payload.get("cards") or []) if isinstance(c, dict)]
+    total = int(payload.get("total") or len(cards))
+    lines = [f"Matches: {total}", ""]
+    showing = len(cards)
+    if payload.get("truncated") and showing < total:
+        lines.append(f"showing {showing} of {total}")
+        lines.append("")
+    for row in cards:
+        file = str(row.get("file") or "")
+        line = int(row.get("line") or row.get("line_start") or 0)
+        text = str(row.get("text") or row.get("snippet") or "").strip()
+        loc = f"{file}:{line}" if file and line else (file or "?")
+        lines.append(loc)
+        if text:
+            lines.append(text)
+        lines.append("")
+    hint = str(payload.get("hint") or "")
+    if hint:
+        lines.extend([hint, ""])
+    if not cards:
+        lines.append("UNKNOWN: no source line matched this phrase.")
+        lines.append("")
+    return lines
+
+
 def _render_find_markdown(payload: dict[str, Any]) -> list[str]:
     cards = [c for c in (payload.get("cards") or []) if isinstance(c, dict)]
     total = int(payload.get("total") or len(cards))
@@ -800,6 +1028,14 @@ def _render_contract_markdown(payload: dict[str, Any]) -> list[str]:
     producers = _useful_rows(contract.get("producers") or [], seed_name)
     consumers = _useful_rows(contract.get("consumers") or [], seed_name)
     if not producers:
+        producers = _dedup_rows(
+            [row for row in (contract.get("producers") or []) if isinstance(row, dict) and _has_loc(row)]
+        )
+    if not consumers:
+        consumers = _dedup_rows(
+            [row for row in (contract.get("consumers") or []) if isinstance(row, dict) and _has_loc(row)]
+        )
+    if not producers:
         for card in cards:
             extras = card.get("extras") if isinstance(card.get("extras"), dict) else {}
             producers.extend(
@@ -832,15 +1068,21 @@ def _render_contract_markdown(payload: dict[str, Any]) -> list[str]:
     file, line, name, _ = _site_line(seed)
     lines.append("TilingKey")
     lines.append(f"{name} · {file}:{line}" if file and line else name)
-    if consumers:
+    seed_file, seed_line = file, line
+    kernel_rows: list[dict[str, Any]] = []
+    for row in consumers:
+        cfile, cline, cname, _ = _site_line(row)
+        if cfile and cline and (cfile, cline) == (seed_file, seed_line):
+            continue
+        if _is_host_path(cfile):
+            continue
+        kernel_rows.append(row)
+    if kernel_rows:
         lines.append("        │")
         lines.append("        ▼")
         lines.append("Kernel")
-        seed_file, seed_line, _, _ = _site_line(seed if isinstance(seed, dict) else {})
-        for row in consumers[:8]:
+        for row in kernel_rows[:8]:
             cfile, cline, cname, _ = _site_line(row)
-            if cfile and cline and (cfile, cline) == (seed_file, seed_line):
-                continue
             if cfile and cline:
                 lines.append(f"  {cfile}:{cline}")
             elif cname:
@@ -887,7 +1129,10 @@ def render_explore_markdown(
         if part
     )
     op = str(payload.get("operation") or "")
-    if _is_name_list(payload) or op == "find":
+    shape = str(payload.get("shape") or "")
+    if op == "search" or shape == "search":
+        body = _render_search_markdown(payload)
+    elif _is_name_list(payload) or op == "find":
         body = _render_find_markdown(payload)
     elif op == "contract":
         body = _render_contract_markdown(payload)
@@ -899,11 +1144,50 @@ def render_explore_markdown(
     dim_cov = payload.get("dim_coverage")
     if isinstance(dim_cov, dict) and dim_cov:
         extra.append("**Dim**")
+        counts_by_dim = (
+            payload.get("dim_value_counts")
+            if isinstance(payload.get("dim_value_counts"), dict)
+            else {}
+        )
         for dim, values in dim_cov.items():
-            shown = values if isinstance(values, list) else [values]
-            extra.append(f"- {dim}: {{{', '.join(str(v) for v in shown)}}}")
+            shown = list(values) if isinstance(values, list) else [values]
+            dim_counts = (
+                counts_by_dim.get(dim) if isinstance(counts_by_dim.get(dim), dict) else {}
+            )
+            if not shown and dim_counts:
+                shown = list(dim_counts.keys())
+            if dim_counts:
+                parts = []
+                for v in shown:
+                    n = dim_counts.get(str(v), dim_counts.get(v))
+                    parts.append(f"{v}: {n}" if n is not None else str(v))
+                extra.append(f"- {dim}: {{{', '.join(parts)}}}")
+            else:
+                extra.append(f"- {dim}: {{{', '.join(str(v) for v in shown)}}}")
         if payload.get("legal_key_count") not in (None, ""):
             extra.append(f"- legal_key_count: {payload.get('legal_key_count')}")
+        extra.append("")
+    cross = payload.get("cross_counts")
+    if isinstance(cross, dict) and cross:
+        extra.append("**Cross**")
+        for sdim, cmap in cross.items():
+            if not isinstance(cmap, dict):
+                continue
+            parts = [f"{v}: {n}" for v, n in list(cmap.items())[:12]]
+            extra.append(f"- {sdim}: {{{', '.join(parts)}}}")
+        pair = payload.get("cross_pair") if isinstance(payload.get("cross_pair"), dict) else {}
+        cells = pair.get("cells") if isinstance(pair.get("cells"), list) else []
+        if cells:
+            da = str(pair.get("dim_a") or "")
+            db = str(pair.get("dim_b") or "")
+            extra.append(f"- {da} × {db}")
+            for cell in cells[:8]:
+                if not isinstance(cell, dict):
+                    continue
+                va = cell.get("value")
+                cmap = cell.get("counts") if isinstance(cell.get("counts"), dict) else {}
+                parts = [f"{vb}: {n}" for vb, n in list(cmap.items())[:8]]
+                extra.append(f"  {va} × {{{', '.join(parts)}}}")
         extra.append("")
     lines = ([header, ""] if header else []) + extra + body
     return cut_explore_text("\n".join(lines).rstrip() + "\n")
@@ -1002,7 +1286,18 @@ def _overlay_site(card: dict[str, Any], site: dict[str, Any], query: Any) -> dic
     line = int(site.get("line") or 0)
     line_end = int(site.get("line_end") or 0)
     op_root = getattr(query, "_op_root", None)
-    if _looks_like_definition(site):
+    kind = str(site.get("kind") or card.get("kind") or "").upper()
+    if kind in {
+        EntityKind.COMPILE_VAR.value,
+        EntityKind.MACRO.value,
+        EntityKind.TILING_KEY.value,
+    }:
+        from ascendc_codemap_mcp.engine.query.sql import _statement_window
+
+        snippet, _cut = _statement_window(op_root, file, line)
+        if not snippet:
+            snippet = _clip_source(op_root, file, line, max_lines=_USED_AT_LINES)
+    elif _looks_like_definition(site):
         snippet = _clip_source(
             op_root, file, line, line_end=line_end or 0, max_lines=_MAX_RANGE_LINES
         )
@@ -1038,9 +1333,21 @@ def attach_explore_fields(
     if not cards and payload.get("seeds"):
         cards = list(payload.get("seeds") or [])
     cards = [c for c in cards if isinstance(c, dict)]
+    if str(payload.get("shape") or "") == "search" or operation == "search":
+        payload.setdefault("completeness", COMPLETE if cards else UNKNOWN)
+        if not cards:
+            payload["completeness"] = UNKNOWN
+        payload["text"] = render_explore_markdown(payload, projection=projection)
+        return slim_explore_payload(payload)
+    raw_cards = list(cards)
+    extra_seeds: list[dict[str, Any]] = []
     if unique_seed:
         cards = _prefer_located_cards(cards)
-    if str(payload.get("shape") or "") == "name" and unique_seed:
+    if unique_seed and operation == "contract":
+        primary_c, extra_seeds = _prefer_contract_seeds(cards)
+        if primary_c is not None:
+            cards = [primary_c, *extra_seeds] if extra_seeds else [primary_c]
+    elif str(payload.get("shape") or "") == "name" and unique_seed:
         cards, aliases = _prefer_tiling_key_seed(cards, pattern)
         if aliases:
             payload["aliases"] = [
@@ -1048,6 +1355,9 @@ def attach_explore_fields(
                 for a in aliases
                 if isinstance(a, dict)
             ]
+        extra_seeds = [
+            a for a in (aliases or []) if isinstance(a, dict) and a.get("id")
+        ]
     cards = _merge_canonical_identities(cards)
     payload["cards"] = cards
     if not cards:
@@ -1068,6 +1378,9 @@ def attach_explore_fields(
         payload["cards"] = cards
     if unique_seed:
         payload["count"] = len(cards)
+        primary = _expand_statement_snippet(query, primary, raw_cards + extra_seeds)
+        cards[0] = primary
+        payload["cards"] = cards
     sites = _definition_site_candidates(cards)
     def_sites = [s for s in sites if _looks_like_definition(s)]
     if file_filter:
@@ -1077,6 +1390,7 @@ def attach_explore_fields(
         )
         if match is not None:
             primary = _overlay_site(primary, match, query)
+            primary = _expand_statement_snippet(query, primary, raw_cards)
             cards[0] = primary
             payload["cards"] = cards
     if not unique_seed:
@@ -1085,7 +1399,11 @@ def attach_explore_fields(
         payload["text"] = render_explore_markdown(payload, projection=projection)
         return slim_explore_payload(payload)
     try:
-        card = build_contract_card(query, primary, extra_seeds=None)
+        card = build_contract_card(
+            query,
+            primary,
+            extra_seeds=extra_seeds or None,
+        )
     except Exception:  # noqa: BLE001
         payload.setdefault("completeness", INCOMPLETE)
         payload.setdefault("unresolved_reason", "CONTRACT_BUILD_FAILED")
@@ -1094,15 +1412,16 @@ def attach_explore_fields(
     payload["contract"] = card
     payload["impact_sinks"] = card.get("impact_sinks") or []
     payload["entry"] = card.get("entry") or []
-    if len(cards) > 1 and str(payload.get("shape") or "") == "name":
+    multi_leaf = len(_distinct_leaves(cards if operation == "contract" else raw_cards)) > 1
+    if multi_leaf and str(payload.get("shape") or "") == "name":
         payload["completeness"] = AMBIGUOUS
         payload["unresolved_reason"] = "MULTIPLE_SEEDS"
         payload["candidates"] = [
             {"name": c.get("name"), "kind": c.get("kind"), "file": c.get("file")}
-            for c in cards[:8]
+            for c in (raw_cards or cards)[:8]
             if isinstance(c, dict)
         ]
-    elif len(def_sites) > 1:
+    elif len(def_sites) > 1 and operation != "contract":
         op_root = getattr(query, "_op_root", None)
         payload["completeness"] = AMBIGUOUS
         payload["unresolved_reason"] = "MULTIPLE_SEEDS"

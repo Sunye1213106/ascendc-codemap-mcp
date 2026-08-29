@@ -23,6 +23,8 @@ def test_bundled_skills_exist() -> None:
     assert "dim_names" in text or "**Dims**" in text
     assert "UNKNOWN" in text
     assert "legal_key_count" in text or "operation" in text
+    assert "search name" in text
+    assert "在 dim 查询上忽略" not in text
     assert "InitBuffer" in text
     assert "codemap_explore" not in text
     assert "overview" not in text or "Do not call overview" in text

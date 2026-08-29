@@ -85,6 +85,7 @@ def test_query_schema_has_operation_enum() -> None:
     enum = op.get("enum") or []
     assert "resolve" in enum
     assert "find" in enum
+    assert "search" in enum
     assert "ctx" not in props
     ann = getattr(tool, "annotations", None)
     assert ann is not None

@@ -64,6 +64,11 @@ FUNC_FULL_MAX = 96
 MACRO_CONT_MAX = 80
 STATEMENT_BEFORE = 8
 STATEMENT_AFTER = 8
+_STMT_EXPAND_KINDS = {
+    EntityKind.COMPILE_VAR.value,
+    EntityKind.MACRO.value,
+    EntityKind.TILING_KEY.value,
+}
 BRANCH_OUTER_BEFORE = 16
 PRIMARY_CANDIDATES = 3
 MAX_PAYLOAD_CHARS = 24_000
@@ -430,7 +435,11 @@ def _is_recorded_definition(hit: dict[str, Any]) -> bool:
 def _card_snippet_for_hit(hit: dict[str, Any]) -> tuple[str, bool]:
     text = str(hit.get("snippet") or "")
     kind = str(hit.get("kind") or "").upper()
-    if _is_recorded_definition(hit) or kind == EntityKind.MACRO.value:
+    if (
+        _is_recorded_definition(hit)
+        or kind == EntityKind.MACRO.value
+        or kind in _STMT_EXPAND_KINDS
+    ):
         return text, bool(hit.get("truncated"))
     return _clip_definition_snippet(text)
 
@@ -1544,6 +1553,64 @@ def _statement_window(
     return "\n".join(_numbered_lines(start, chosen)), False
 
 
+def _source_line_window(
+    conn: sqlite3.Connection,
+    file: str,
+    line: int,
+    *,
+    before: int = STATEMENT_BEFORE,
+    after: int = STATEMENT_AFTER,
+) -> str:
+    """~16-line window from indexed `source_line`. Empty if the table is absent."""
+    from ascendc_codemap_mcp.engine.store.accel import has_source_line
+
+    if not file or int(line or 0) <= 0:
+        return ""
+    if not has_source_line(conn):
+        return ""
+    centre = int(line)
+    start = max(1, centre - int(before))
+    end = centre + int(after)
+    needle = str(file or "").replace("\\", "/")
+    leaf = needle.rsplit("/", 1)[-1]
+    try:
+        rows = conn.execute(
+            """
+            SELECT path, line, text FROM source_line
+            WHERE line BETWEEN ? AND ?
+              AND (
+                    path = ?
+                 OR REPLACE(REPLACE(path, '\\', '/'), '\\', '/') LIKE '%' || ?
+              )
+            ORDER BY line, path
+            """,
+            (start, end, file, leaf),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return ""
+    if not rows:
+        return ""
+    best_path = ""
+    for row in rows:
+        path = str(row[0] or "").replace("\\", "/")
+        if path == needle or path.endswith("/" + needle) or needle.endswith("/" + path):
+            best_path = str(row[0] or "")
+            break
+        if leaf and path.endswith("/" + leaf) or path.endswith(leaf):
+            best_path = str(row[0] or "")
+            break
+    if not best_path:
+        best_path = str(rows[0][0] or "")
+    chosen = [
+        (int(r[1] or 0), str(r[2] or ""))
+        for r in rows
+        if str(r[0] or "") == best_path
+    ]
+    if not chosen:
+        return ""
+    return "\n".join(f"{ln}:{txt}" for ln, txt in chosen)
+
+
 def _is_trivial_decl(row: dict[str, Any]) -> bool:
     kind = str(row.get("kind") or "")
     rhs = str(row.get("rhs") or "").strip()
@@ -1753,6 +1820,10 @@ def _disk_window(
     centre = int(line)
     kind_u = str(kind or "").upper()
     span_end = int(line_end or 0)
+    if kind_u in _STMT_EXPAND_KINDS and kind_u != EntityKind.MACRO.value:
+        window, _cut = _statement_window(op_root, file, line)
+        if window:
+            return window, False, empty
     if kind_u == EntityKind.MACRO.value:
         end = _backslash_continued_end(path, centre)
         chosen = _read_line_range(path, centre, end)
@@ -1948,6 +2019,26 @@ def _fts_match_query(needle: str) -> str:
     """Quote a substring so FTS5 trigram treats it as a phrase."""
     text = str(needle or "").replace('"', " ").strip()
     return f'"{text}"' if text else ""
+
+
+def _fts_and_query(tokens: Sequence[str]) -> str:
+    """AND of quoted phrases. Does not expand abbreviations."""
+    parts = [_fts_match_query(tok) for tok in tokens if str(tok or "").strip()]
+    return " AND ".join(part for part in parts if part)
+
+
+def _search_phrase_tokens(phrase: str) -> list[str]:
+    """Split a missed phrase into AND tokens. No abbrev expansion."""
+    text = str(phrase or "").strip()
+    seen: list[str] = []
+    for tok in text.split():
+        core = tok.replace("*", "").replace("?", "").replace("%", "").strip()
+        if len(core) >= 3 and core not in seen:
+            seen.append(core)
+    for tok in _ident_tokens(text):
+        if len(tok) >= 3 and tok not in seen:
+            seen.append(tok)
+    return seen
 
 
 def _compact_template_block(row: dict[str, Any]) -> dict[str, Any]:
@@ -2844,6 +2935,19 @@ class UoSqlQuery:
                         int(hit.get("line_end") or 0),
                         _backslash_continued_end(src, line),
                     )
+            if str(kind or "").upper() in _STMT_EXPAND_KINDS and line > 0:
+                window = ""
+                if conn is not None:
+                    window = _source_line_window(conn, orig or file, line)
+                if not window:
+                    window, _cut = _statement_window(
+                        self._op_root, orig or file, line
+                    )
+                if window and (
+                    str(snippet or "").count("\n") < 2 or len(window) > len(snippet)
+                ):
+                    snippet = window
+                    numbered = True
             hit["snippet"] = snippet if numbered else _cap_snippet(snippet, line)
             if int(hit.get("line_end") or 0) > 0 and not _snippet_covers_line(
                 str(hit.get("snippet") or ""), int(hit.get("line_end") or 0)
@@ -4918,12 +5022,12 @@ class UoSqlQuery:
             for dim_name, want in structured.items():
                 domain = self._declared_dim_values(dim_name)
                 if domain:
-                    declared_hints.append(f"{dim_name}={domain[0]}")
+                    declared_hints.append(f"{dim_name} {{{', '.join(domain)}}}")
             if declared_hints:
                 payload["hint"] = (
-                    "No combo matched. Declared values include "
-                    + ", ".join(declared_hints)
-                    + ". Boolean true/false aliases 0/1. Dim=<name> lists one dimension."
+                    "declared "
+                    + "; ".join(declared_hints)
+                    + ", legal_key=0"
                 )
         return _fit_payload(payload)
 
@@ -4931,6 +5035,22 @@ class UoSqlQuery:
         needle = str(name or "").strip()
         if not needle:
             return []
+        found: list[str] = []
+        seen: set[str] = set()
+
+        def _add(raw: Any) -> None:
+            if isinstance(raw, (list, tuple, set)):
+                items = list(raw)
+            elif raw is None:
+                return
+            else:
+                items = [raw]
+            for item in items:
+                text = str(item)
+                if text and text not in seen:
+                    seen.add(text)
+                    found.append(text)
+
         with self._connect() as conn:
             row = conn.execute(
                 """
@@ -4940,24 +5060,196 @@ class UoSqlQuery:
                 """,
                 (needle,),
             ).fetchone()
-        if not row:
-            return []
-        try:
-            data = json.loads(_row_get(row, "data") or row[0] or "{}")
-        except (TypeError, json.JSONDecodeError, IndexError):
-            data = {}
-        if not isinstance(data, dict):
-            return []
-        attrs = data.get("attrs") if isinstance(data.get("attrs"), dict) else data
-        for key in ("value_domain", "declared_values", "allowed_values", "domain"):
-            raw = None
-            if isinstance(attrs, dict):
-                raw = attrs.get(key)
-            if raw is None:
-                raw = data.get(key)
-            if isinstance(raw, list) and raw:
-                return [str(v) for v in raw]
-        return []
+            if row:
+                try:
+                    data = json.loads(_row_get(row, "data") or row[0] or "{}")
+                except (TypeError, json.JSONDecodeError, IndexError):
+                    data = {}
+                if isinstance(data, dict):
+                    attrs = data.get("attrs") if isinstance(data.get("attrs"), dict) else data
+                    for key in ("value_domain", "declared_values", "allowed_values", "domain"):
+                        raw = None
+                        if isinstance(attrs, dict):
+                            raw = attrs.get(key)
+                        if raw is None:
+                            raw = data.get(key)
+                        if raw is not None:
+                            _add(raw)
+                            break
+            try:
+                for extra in conn.execute(
+                    "SELECT DISTINCT value FROM template_block_dim WHERE dim = ? ORDER BY value",
+                    (needle,),
+                ):
+                    _add(extra[0])
+            except sqlite3.OperationalError:
+                pass
+        return found
+
+    def _legal_dim_value_counts(self, dim: str) -> dict[str, int]:
+        needle = str(dim or "").strip()
+        if not needle:
+            return {}
+        with self._connect() as conn:
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT value, COUNT(*) FROM legal_key_dim
+                    WHERE dim = ?
+                    GROUP BY value
+                    ORDER BY value
+                    """,
+                    (needle,),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return {}
+        return {str(row[0]): int(row[1] or 0) for row in rows if row[0] is not None}
+
+    def _legal_cross_counts(
+        self, dim: str, value: str, *, limit_dims: int = 12
+    ) -> dict[str, dict[str, int]]:
+        """Sibling-dim counts under dim=value, including zeros for known values."""
+        dname = str(dim or "").strip()
+        dval = str(value or "").strip()
+        if not dname or not dval:
+            return {}
+        from ascendc_codemap_mcp.engine.tpl_dsl import bool_value_aliases
+
+        aliases = [dval]
+        for alt in bool_value_aliases(dval):
+            if alt not in aliases:
+                aliases.append(alt)
+        with self._connect() as conn:
+            try:
+                marks = ",".join("?" for _ in aliases)
+                matched_sql = (
+                    "SELECT key_id FROM legal_key_dim "
+                    f"WHERE dim = ? AND value IN ({marks})"
+                )
+                matched_params = (dname, *aliases)
+                sibling_rows = conn.execute(
+                    f"""
+                    SELECT dim, value, COUNT(*) FROM legal_key_dim
+                    WHERE key_id IN ({matched_sql}) AND dim != ?
+                    GROUP BY dim, value
+                    """,
+                    (*matched_params, dname),
+                ).fetchall()
+                universe = conn.execute(
+                    """
+                    SELECT dim, value FROM legal_key_dim
+                    WHERE dim != ?
+                    GROUP BY dim, value
+                    """,
+                    (dname,),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return {}
+        present: dict[str, dict[str, int]] = {}
+        for row in sibling_rows:
+            present.setdefault(str(row[0]), {})[str(row[1])] = int(row[2] or 0)
+        universe_map: dict[str, list[str]] = {}
+        for row in universe:
+            universe_map.setdefault(str(row[0]), []).append(str(row[1]))
+        ranked: list[tuple[int, int, str]] = []
+        for sdim, values in universe_map.items():
+            declared = self._declared_dim_values(sdim)
+            all_vals = list(dict.fromkeys(values))
+            counts = {v: int(present.get(sdim, {}).get(v, 0)) for v in all_vals}
+            for extra in declared:
+                counts.setdefault(str(extra), int(present.get(sdim, {}).get(str(extra), 0)))
+            has_pos = any(n > 0 for n in counts.values())
+            has_zero = any(n == 0 for n in counts.values())
+            prefix = dname[:4].lower()
+            share = 0 if str(sdim).lower().startswith(prefix) and len(prefix) >= 3 else 1
+            interesting = 0 if (has_pos and has_zero) else 1
+            ranked.append((share, interesting, -sum(1 for n in counts.values() if n > 0), sdim))
+            present[sdim] = counts
+        ranked.sort()
+        out: dict[str, dict[str, int]] = {}
+        for _share, _interesting, _n, sdim in ranked[: max(1, int(limit_dims))]:
+            out[sdim] = present.get(sdim) or {}
+        return out
+
+    def _legal_pair_cross(
+        self,
+        dim: str,
+        value: str,
+        dim_a: str,
+        dim_b: str,
+    ) -> dict[str, Any]:
+        """Two-sibling grid under dim=value, including zero cells."""
+        dname = str(dim or "").strip()
+        dval = str(value or "").strip()
+        a = str(dim_a or "").strip()
+        b = str(dim_b or "").strip()
+        if not dname or not dval or not a or not b or a == b:
+            return {}
+        from ascendc_codemap_mcp.engine.tpl_dsl import bool_value_aliases
+
+        aliases = [dval]
+        for alt in bool_value_aliases(dval):
+            if alt not in aliases:
+                aliases.append(alt)
+        with self._connect() as conn:
+            try:
+                marks = ",".join("?" for _ in aliases)
+                matched_sql = (
+                    "SELECT key_id FROM legal_key_dim "
+                    f"WHERE dim = ? AND value IN ({marks})"
+                )
+                matched_params = (dname, *aliases)
+                vals_a = [
+                    str(r[0])
+                    for r in conn.execute(
+                        "SELECT DISTINCT value FROM legal_key_dim WHERE dim = ? ORDER BY value",
+                        (a,),
+                    )
+                ]
+                vals_b = [
+                    str(r[0])
+                    for r in conn.execute(
+                        "SELECT DISTINCT value FROM legal_key_dim WHERE dim = ? ORDER BY value",
+                        (b,),
+                    )
+                ]
+                hits = {
+                    (str(r[0]), str(r[1])): int(r[2] or 0)
+                    for r in conn.execute(
+                        f"""
+                        SELECT a.value, b.value, COUNT(*)
+                        FROM legal_key_dim a
+                        JOIN legal_key_dim b ON a.key_id = b.key_id
+                        WHERE a.key_id IN ({matched_sql})
+                          AND a.dim = ? AND b.dim = ?
+                        GROUP BY a.value, b.value
+                        """,
+                        (*matched_params, a, b),
+                    )
+                }
+            except sqlite3.OperationalError:
+                return {}
+        cells: list[dict[str, Any]] = []
+        for va in vals_a:
+            by_b: dict[str, int] = {}
+            for vb in vals_b:
+                by_b[vb] = int(hits.get((va, vb), 0))
+            cells.append({"value": va, "counts": by_b})
+        return {"dim_a": a, "dim_b": b, "cells": cells}
+
+    def _legal_dim_exists(self, dim: str) -> bool:
+        name = str(dim or "").strip()
+        if not name:
+            return False
+        with self._connect() as conn:
+            try:
+                row = conn.execute(
+                    "SELECT 1 FROM legal_key_dim WHERE dim = ? LIMIT 1",
+                    (name,),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return False
+        return row is not None
 
     def aggregate_buffer(self, pattern: str = "", *, limit: int = 50) -> dict[str, Any]:
         needle = str(pattern or "").strip()
@@ -5548,8 +5840,6 @@ class UoSqlQuery:
                 EntityKind.FIELD.value,
                 EntityKind.PREDICATE.value,
                 EntityKind.VARIABLE.value,
-                EntityKind.COMPILE_VAR.value,
-                EntityKind.MACRO.value,
             ):
                 other = by_kind.get(weaker)
                 if other and _last_ident(str(other.get("name") or "")).lower() == key_ident:
@@ -6392,34 +6682,100 @@ class UoSqlQuery:
         needle = str(pattern or "").strip()
         match = self.aggregate_template_match(needle, limit=limit)
         _rest, dim_only = normalize_cover_pattern(needle)
+        structured = dict(match.get("filters") or {})
         if dim_only:
-            legal: dict[str, Any] = {"ok": True, "total_matched": 0, "count": 0}
+            counts = self._legal_dim_value_counts(str(dim_only))
+            legal_n = sum(counts.values())
+            legal = {"ok": True, "total_matched": legal_n, "count": legal_n}
         else:
             legal = self.legal_key_query(pattern=needle, limit=limit)
+            counts = {}
+            legal_n = int(legal.get("total_matched") or legal.get("count") or 0)
         matched = int(match.get("matching_block_count") or 0)
         coverage = dict(match.get("coverage") or {})
         dim_coverage = coverage.get("dim_coverage") or match.get("dim_coverage") or {}
-        legal_n = int(legal.get("total_matched") or legal.get("count") or 0)
+        if dim_only and counts:
+            dim_coverage = {str(dim_only): list(counts.keys())}
         coverage["legal_key_count"] = legal_n
         payload: dict[str, Any] = {
-            "ok": bool(match.get("ok") or legal.get("ok") or dim_coverage),
+            "ok": bool(match.get("ok") or legal.get("ok") or dim_coverage or legal_n),
             "shape": "cover",
             "pattern": needle,
-            "filters": match.get("filters") or {},
+            "filters": structured,
             "dim_coverage": dim_coverage,
             "matching_block_count": matched,
             "nearby": list(match.get("nearby") or [])[: int(limit)],
             "total_matched": matched,
             "legal_key_count": legal_n,
             "coverage": coverage,
-            "count": int(match.get("count") or matched),
-            "answerable": bool((match.get("coverage") or {}).get("answerable")),
+            "count": int(match.get("count") or matched or legal_n),
+            "answerable": bool((match.get("coverage") or {}).get("answerable") or legal_n),
             "completeness": str((match.get("coverage") or {}).get("completeness") or ""),
         }
+        if counts:
+            payload["dim_value_counts"] = {str(dim_only): counts}
         if match.get("dim_only"):
             payload["dim_only"] = match.get("dim_only")
             payload["cover_kind"] = "dim_list"
             payload["ok"] = True
+        if structured and not dim_only:
+            if legal_n > 0:
+                cross = {}
+                if len(structured) == 1:
+                    dim_name, dval = next(iter(structured.items()))
+                    cross = self._legal_cross_counts(dim_name, dval)
+                else:
+                    # Combo filter: still cross remaining dims against the first.
+                    dim_name, dval = next(iter(structured.items()))
+                    cross = self._legal_cross_counts(dim_name, dval)
+                    cross = {
+                        k: v
+                        for k, v in cross.items()
+                        if k not in structured
+                    }
+                if cross:
+                    payload["cross_counts"] = cross
+                    prefix = str(dim_name)[:4].lower()
+                    dim_sw = next(
+                        (
+                            k
+                            for k in cross
+                            if str(k).lower().startswith(prefix) and k != dim_name
+                        ),
+                        "",
+                    )
+                    dim_dt = (
+                        "DeterType"
+                        if dim_name != "DeterType" and self._legal_dim_exists("DeterType")
+                        else ""
+                    )
+                    if not dim_sw:
+                        dim_sw = next(
+                            (k for k in cross if k not in {dim_name, dim_dt}),
+                            "",
+                        )
+                    pair: dict[str, Any] = {}
+                    if dim_dt and dim_sw:
+                        pair = self._legal_pair_cross(dim_name, dval, dim_dt, dim_sw)
+                    elif dim_sw:
+                        other = next(
+                            (k for k in cross if k not in {dim_name, dim_sw}),
+                            "",
+                        )
+                        if other:
+                            pair = self._legal_pair_cross(dim_name, dval, other, dim_sw)
+                    if pair.get("cells"):
+                        payload["cross_pair"] = pair
+            else:
+                declared_bits: list[str] = []
+                for dim_name in structured:
+                    domain = self._declared_dim_values(dim_name)
+                    if domain:
+                        declared_bits.append(f"{dim_name} {{{', '.join(domain)}}}")
+                if declared_bits:
+                    payload["hint"] = (
+                        "declared " + "; ".join(declared_bits) + f", legal_key=0"
+                    )
         if matched > 0:
             payload["template_blocks"] = list(match.get("template_blocks") or [])[:TEMPLATE_BLOCK_EXEMPLARS]
         else:
@@ -6437,8 +6793,11 @@ class UoSqlQuery:
                 payload["snippet"] = window
                 payload["file"] = first.get("file") or ""
                 payload["line"] = int(first.get("line") or 0)
+        legal_miss_hint = str(payload.get("hint") or "")
         attach_query_hints(payload, needle, count=int(payload.get("count") or 0), mode="cover")
-        if match.get("hint"):
+        if legal_miss_hint:
+            payload["hint"] = legal_miss_hint
+        elif match.get("hint"):
             payload["hint"] = match.get("hint")
         return _fit_payload(payload)
 
@@ -6808,6 +7167,149 @@ class UoSqlQuery:
         attach_query_hints(payload, "", count=len(phases), mode="index")
         return _fit_payload(payload)
 
+    def _search_source_lines(
+        self,
+        conn: sqlite3.Connection,
+        phrase: str,
+        *,
+        file_filter: str = "",
+        limit: int = 8,
+        and_tokens: list[str] | None = None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        from ascendc_codemap_mcp.engine.store.accel import has_source_fts, has_source_line
+
+        cap = max(1, int(limit))
+        arch = str(self._architecture or "")
+        file_tok = str(file_filter or "").replace("\\", "/").strip()
+        file_leaf = file_tok.rsplit("/", 1)[-1] if file_tok else ""
+        file_sql = ""
+        file_params: list[Any] = []
+        if file_leaf:
+            file_sql = " AND REPLACE(sl.path, '\\', '/') LIKE '%' || ?"
+            file_params.append(file_leaf)
+        order_sql = (
+            " ORDER BY CASE"
+            " WHEN REPLACE(sl.path, '\\', '/') LIKE '%/common/%' THEN 3"
+            " WHEN REPLACE(sl.path, '\\', '/') LIKE '%/op_host/%'"
+            "   OR REPLACE(sl.path, '\\', '/') LIKE '%/op_kernel/%' THEN 0"
+            " WHEN REPLACE(sl.path, '\\', '/') LIKE '%/' || ? || '/%' THEN 1"
+            " ELSE 2 END, sl.path, sl.line"
+        )
+        order_params: list[Any] = [arch]
+        fts_q = (
+            _fts_and_query(and_tokens)
+            if and_tokens
+            else _fts_match_query(phrase)
+        )
+        sample_rows: list[Any] | None = None
+        total = 0
+        if has_source_fts(conn) and fts_q:
+            try:
+                where = "WHERE f.source_fts MATCH ?" + file_sql
+                count_params = (fts_q, *file_params)
+                total = int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM source_fts f "
+                        "JOIN source_line sl ON sl.id = f.rowid " + where,
+                        count_params,
+                    ).fetchone()[0]
+                    or 0
+                )
+                sample_rows = conn.execute(
+                    "SELECT sl.path, sl.line, sl.text "
+                    "FROM source_fts f JOIN source_line sl ON sl.id = f.rowid "
+                    + where
+                    + order_sql
+                    + " LIMIT ?",
+                    (*count_params, *order_params, cap),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                total = 0
+                sample_rows = None
+        if sample_rows is None and has_source_line(conn):
+            needles = list(and_tokens) if and_tokens else [phrase]
+            like_sql = " AND ".join("sl.text LIKE '%' || ? || '%'" for _ in needles)
+            where = "WHERE " + like_sql + file_sql
+            like_params = (*needles, *file_params)
+            total = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM source_line sl " + where,
+                    like_params,
+                ).fetchone()[0]
+                or 0
+            )
+            sample_rows = conn.execute(
+                "SELECT sl.path, sl.line, sl.text FROM source_line sl "
+                + where
+                + order_sql
+                + " LIMIT ?",
+                (*like_params, *order_params, cap),
+            ).fetchall()
+        if not total or sample_rows is None:
+            return [], 0
+        cards = [
+            {
+                "file": str(r[0] or ""),
+                "line": int(r[1] or 0),
+                "text": str(r[2] or "").rstrip(),
+            }
+            for r in sample_rows
+        ]
+        return cards, total
+
+    def query_search(self, plan: Any, *, limit: int = 8) -> dict[str, Any]:
+        from ascendc_codemap_mcp.engine.query.completeness import COMPLETE, UNKNOWN
+
+        phrase = str(getattr(plan, "name", "") or "").strip()
+        file_filter = str(getattr(plan, "file", "") or "").strip()
+        cap = max(1, int(limit))
+        empty = {
+            "ok": False,
+            "shape": "search",
+            "operation": "search",
+            "cards": [],
+            "count": 0,
+            "total": 0,
+            "truncated": False,
+            "completeness": UNKNOWN,
+            "unresolved_reason": "NO_SEED",
+            "hint": f"no source line matched {phrase!r}; try a different phrase",
+        }
+        if len(phrase) < 3:
+            return empty
+        with self._connect() as conn:
+            cards, total = self._search_source_lines(
+                conn, phrase, file_filter=file_filter, limit=cap
+            )
+            if not cards:
+                tokens = _search_phrase_tokens(phrase)
+                if len(tokens) >= 2:
+                    cards, total = self._search_source_lines(
+                        conn,
+                        phrase,
+                        file_filter=file_filter,
+                        limit=cap,
+                        and_tokens=tokens,
+                    )
+        if not cards:
+            return empty
+        truncated = total > len(cards)
+        hint = ""
+        if truncated:
+            hint = f"showing {len(cards)} of {total}"
+        return {
+            "ok": True,
+            "shape": "search",
+            "operation": "search",
+            "cards": cards,
+            "count": len(cards),
+            "total": total,
+            "truncated": truncated,
+            "completeness": COMPLETE,
+            "unresolved_reason": "",
+            "hint": hint,
+        }
+
     def query_find(self, plan: Any, *, limit: int = 8) -> dict[str, Any]:
         from ascendc_codemap_mcp.engine.query.completeness import COMPLETE, UNKNOWN
         from ascendc_codemap_mcp.engine.query.predicate_ast import (
@@ -6929,19 +7431,9 @@ class UoSqlQuery:
                 with_snippet=not discovery,
                 require_span_for_branch=False,
             )
-        recovered_via = ""
         if discovery:
             hits = _collapse_by_name(hits)
-            if not hits:
-                for token in _recovery_tokens(name_pattern):
-                    recovered = _collapse_by_name(
-                        self._hits_by_name_like(token, fetch=fetch)
-                    )
-                    if recovered:
-                        hits = recovered
-                        recovered_via = token
-                        break
-            rank_pattern = recovered_via or name_pattern
+            rank_pattern = name_pattern
             total_ents, freq = self._ident_frequencies()
             if not _is_glob_pattern(rank_pattern):
                 best_q = max(
@@ -6971,7 +7463,10 @@ class UoSqlQuery:
             kind_counts = Counter(str(hit.get("kind") or "") or "OTHER" for hit in hits)
         else:
             total = len(hits)
-            page = hits[: max(1, int(limit))]
+            if kind == EntityKind.OPERATION.value:
+                page = _round_robin_by_file(hits, limit=max(1, int(limit)))
+            else:
+                page = hits[: max(1, int(limit))]
         payload: dict[str, Any] = {
             "ok": bool(page),
             "shape": "find",
@@ -6990,50 +7485,43 @@ class UoSqlQuery:
                 if kind
             ]
             if page:
-                if recovered_via:
-                    hint = (
-                        f"no ident {name_pattern}; showing {recovered_via}. "
-                        "resolve one of these idents"
+                hint = (
+                    "name discovery: resolve one of these idents, "
+                    "or find kind=... to enumerate its sites"
+                )
+                leaf = _needle_core(name_pattern)
+                exact_op = any(
+                    str(hit.get("kind") or "") == EntityKind.OPERATION.value
+                    and _last_ident(str(hit.get("name") or "")).lower() == leaf
+                    for hit in hits
+                )
+                if exact_op and leaf:
+                    sites, site_total = self.list_call_sites(
+                        _last_ident(name_pattern) or name_pattern, limit=limit
                     )
-                else:
-                    hint = (
-                        "name discovery: resolve one of these idents, "
-                        "or find kind=... to enumerate its sites"
-                    )
-                    leaf = _needle_core(name_pattern)
-                    exact_op = any(
-                        str(hit.get("kind") or "") == EntityKind.OPERATION.value
-                        and _last_ident(str(hit.get("name") or "")).lower() == leaf
-                        for hit in hits
-                    )
-                    if exact_op and leaf:
-                        sites, site_total = self.list_call_sites(
-                            _last_ident(name_pattern) or name_pattern, limit=limit
+                    if sites:
+                        payload["operation_sites"] = sites
+                        payload["operation_sites_total"] = site_total
+                        payload["operation_sites_truncated"] = site_total > len(
+                            sites
                         )
-                        if sites:
-                            payload["operation_sites"] = sites
-                            payload["operation_sites_total"] = site_total
-                            payload["operation_sites_truncated"] = site_total > len(
-                                sites
+                        hint = (
+                            f"call sites: {site_total} — already listed below"
+                            + (
+                                f" (showing {len(sites)} of {site_total})"
+                                if site_total > len(sites)
+                                else ""
                             )
-                            hint = (
-                                f"call sites: {site_total} — already listed below"
-                                + (
-                                    f" (showing {len(sites)} of {site_total})"
-                                    if site_total > len(sites)
-                                    else ""
-                                )
-                            )
-                if total > len(page) and not recovered_via:
+                        )
+                if total > len(page):
                     hint = (
                         f"showing {len(page)} of {total} names; "
                         "tighten name= or raise limit. "
                     ) + hint
                 payload["hint"] = hint
             else:
-                tokens = _recovery_tokens(name_pattern)
-                payload["hint"] = f"no ident matches {name_pattern!r}" + (
-                    f"; split tokens: {', '.join(tokens)}" if tokens else ""
+                payload["hint"] = (
+                    f"no ident {name_pattern}; use search name={name_pattern}"
                 )
         if not page:
             if dim:

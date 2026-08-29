@@ -48,9 +48,9 @@ Workflow:
 3. If stale or dirty: codemap_update. Read state and updated; ok=true is not a rebuild.
 4. Query with codemap_query only. operation is an enum (default resolve). Do not call overview or symbol.
 
-Do not know the exact ident? Discover it first: codemap_query operation=find name=<fragment> (substring, or glob with * ?) returns Matches (ranked candidates). A miss is recovered in the same call by splitting camelCase / snake_case / digits and expanding common abbreviations (Buf↔Buffer). Then resolve one of those names. Extra name= on resolve is ignored when symbol= is already set.
+Do not know the exact ident? search name=<phrase> scans source_fts (the line text). find name= matches entity.name only — a miss is UNKNOWN, not a Buffer-family recovery. Then resolve / contract one of those names. Extra name= on resolve is ignored when symbol= is already set.
 
-Each operation prints one card: find → Matches/Groups; resolve → Definition + References (file:line); contract → Host → TilingKey → Kernel (template macros collapsed); impact → affected locations. Returned Definition spans are usable evidence. If neighboring lines are absent, use codemap_evidence or targeted Read. Empty resolve lists this operator's Dims. UNKNOWN means that ident is absent here — use those Dims; do not retry the same name. AMBIGUOUS is only multiple definition bodies; pick one. A Call sites list under find is already the site list. Do not Grep files already listed. file= without line filters Definition to that file.
+Each operation prints one card: search → path:line + that line; find → Matches/Groups; resolve → Definition + References (file:line); contract → Host → TilingKey → Kernel (template macros collapsed); impact → affected locations. Returned Definition spans are usable evidence. If neighboring lines are absent, use codemap_evidence or targeted Read. Empty resolve lists this operator's Dims. UNKNOWN means that ident is absent here — use those Dims; do not retry the same name. AMBIGUOUS is only different leaves or multiple definition bodies; pick one. A Call sites list under find is already the site list. Do not Grep files already listed. file= without line filters Definition to that file. Cover dim= prints value: n; legal_key_count is the compiled-key total.
 
 Rules:
 - Never guess architecture. Pass identifiers, file+line, or closed filters — not a natural-language sentence.
@@ -245,7 +245,7 @@ def codemap_status(
 
 @mcp.tool(title="Query CodeMap", annotations=READ, structured_output=True)
 def codemap_query(
-    operation: Literal["resolve", "contract", "impact", "entry", "find", "trace"] = "resolve",
+    operation: Literal["resolve", "contract", "impact", "entry", "find", "search", "trace"] = "resolve",
     codemap_id: str = "",
     project: str = "",
     architecture: str = "",
@@ -275,7 +275,7 @@ def codemap_query(
     limit: int = 8,
     expected_snapshot_id: str = "",
 ) -> CallToolResult:
-    """Typed graph query. resolve/contract/impact need an exact ident (symbol). Do not know the ident? find with name= (substring, or glob with * ?) lists matching idents. find with kind= enumerates sites, e.g. kind=OPERATION callee=Foo for every call site. Identity is codemap_id or project+architecture."""
+    """Typed graph query. resolve/contract/impact need an exact ident (symbol). Do not know the ident? search name= scans source lines; find name= lists matching entity names (a miss is 0). find with kind= enumerates sites, e.g. kind=OPERATION callee=Foo for every call site. Identity is codemap_id or project+architecture."""
     return _query_result(
         query_impl(
             operation=operation,

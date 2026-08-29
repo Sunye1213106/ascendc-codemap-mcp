@@ -1,0 +1,122 @@
+{
+  "tables": [
+    "build_variant",
+    "entity",
+    "entity_name_leaf",
+    "file",
+    "legal_key",
+    "legal_key_dim",
+    "meta",
+    "relation",
+    "source_fts",
+    "source_fts_config",
+    "source_fts_data",
+    "source_fts_docsize",
+    "source_fts_idx",
+    "source_line",
+    "source_span",
+    "template_block",
+    "template_block_dim",
+    "view_blob"
+  ],
+  "counts": {
+    "entity": 34489,
+    "relation": 144417,
+    "source_span": 12839,
+    "source_line": 75151,
+    "source_fts": 75151,
+    "legal_key": 4617,
+    "legal_key_dim": 87723
+  },
+  "schema": {
+    "legal_key": [
+      "id",
+      "packed",
+      "hex",
+      "sel_group",
+      "status"
+    ],
+    "legal_key_dim": [
+      "key_id",
+      "dim",
+      "value"
+    ],
+    "source_fts": [
+      "text"
+    ],
+    "source_line": [
+      "id",
+      "path",
+      "line",
+      "text"
+    ],
+    "entity": [
+      "id",
+      "kind",
+      "name",
+      "status",
+      "confidence",
+      "file",
+      "line_start",
+      "line_end",
+      "data"
+    ],
+    "relation": [
+      "id",
+      "kind",
+      "src",
+      "dst",
+      "status",
+      "confidence",
+      "data"
+    ]
+  },
+  "dims": [
+    "DTemplateNum",
+    "DeterType",
+    "InputDType",
+    "IsAttenMask",
+    "IsBn2MultiBlk",
+    "IsDNoEqual",
+    "IsDrop",
+    "IsEmptyTensor",
+    "IsNEqual",
+    "IsNzOut",
+    "IsPse",
+    "IsRegbase",
+    "IsRope",
+    "IsTnd",
+    "IsTndSwizzle",
+    "OutDType",
+    "S1TemplateNum",
+    "S2TemplateNum",
+    "SplitAxis"
+  ],
+  "fts_probe": {
+    "IS_SMALL_D_PRELOAD": [
+      {
+        "error": "no such column: sl.file"
+      }
+    ],
+    "empty tensor": [
+      {
+        "error": "no such column: sl.file"
+      }
+    ],
+    "IsEmptyTensor": [
+      {
+        "error": "no such column: sl.file"
+      }
+    ],
+    "keepProb": [
+      {
+        "error": "no such column: sl.file"
+      }
+    ],
+    "dropMask": [
+      {
+        "error": "no such column: sl.file"
+      }
+    ]
+  }
+}

@@ -35,6 +35,22 @@ def test_find_accepts_name_pattern_without_kind() -> None:
     assert plan.kind == ""
 
 
+def test_search_requires_name() -> None:
+    try:
+        validate_plan(operation="search")
+    except InvalidQuery as exc:
+        assert "name" in str(exc).lower()
+    else:
+        raise AssertionError("expected INVALID_QUERY")
+
+
+def test_search_accepts_name_and_file() -> None:
+    plan = validate_plan(operation="search", name="BufferNum", file="block_cube.h")
+    assert plan.operation == "search"
+    assert plan.name == "BufferNum"
+    assert plan.file == "block_cube.h"
+
+
 def test_illegal_filter_suggests_legal_rebinding() -> None:
     try:
         validate_plan(operation="find", kind="FUNCTION", symbol="SyncALLCores")

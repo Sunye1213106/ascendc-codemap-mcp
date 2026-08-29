@@ -113,7 +113,9 @@ def _main(argv: list[str] | None = None) -> int:
         parser.add_argument("--architecture", default="")
         parser.add_argument("--codemap-id", default="", dest="codemap_id")
         parser.add_argument("pattern", nargs="?", default="")
-        parser.add_argument("--operation", default="resolve")
+        from ascendc_codemap_mcp.engine.query.typed import OPERATIONS
+
+        parser.add_argument("--operation", default="resolve", choices=OPERATIONS)
         parser.add_argument("--symbol", default="")
         parser.add_argument("--name", default="")
         parser.add_argument("--kind", default="")

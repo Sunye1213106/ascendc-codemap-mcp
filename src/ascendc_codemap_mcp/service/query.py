@@ -152,7 +152,7 @@ def _infer_verdict(payload: dict[str, Any], *, truncated: bool) -> str:
     completeness = str(payload.get("completeness") or "")
     op = str(payload.get("operation") or "")
     shape = str(payload.get("shape") or "")
-    is_find = op == "find" or shape == "find"
+    is_find = op in {"find", "search"} or shape in {"find", "search"}
     if completeness == "UNKNOWN" or payload.get("error_code") == "INVALID_QUERY":
         return VERDICT_UNKNOWN
     if completeness == "INCOMPLETE" or completeness == "AMBIGUOUS":

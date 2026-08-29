@@ -306,7 +306,7 @@ Agent 用 typed 工具。`operation` 是闭集 enum，缺省 `resolve`。`symbol
 | 增量刷新                      | `codemap_update`                                           |
 
 
-`codemap_query` 的 `operation`：`resolve`（缺省，唯一 seed） / `find`（集合，`kind` 必填） / `impact` / `contract` / `entry` / `trace`。Dim 用 `dim` + `value`，不要写 `Dim=` 字符串。兼容别名：`index_operator`、`update_operator`。只读工具带 `readOnlyHint`。查询结果走统一 envelope（`ok`、`codemap`、`verdict`、`layer`、`data`、`evidence`、`coverage`、`next_cursor`）和 `structuredContent`。
+`codemap_query` 的 `operation`：`resolve`（缺省，唯一 seed） / `search`（源码行） / `find`（集合，`kind` 或 `name`） / `impact` / `contract` / `entry` / `trace`。Dim 用 `dim` + `value`，不要写 `Dim=` 字符串。兼容别名：`index_operator`、`update_operator`。只读工具带 `readOnlyHint`。查询结果走统一 envelope（`ok`、`codemap`、`verdict`、`layer`、`data`、`evidence`、`coverage`、`next_cursor`）和 `structuredContent`。
 
 跟 `evidence[].id`（`span:...`）走，并把当时的 `snapshot_id` 当作 `expected_snapshot_id`；对不上是 `SNAPSHOT_CHANGED`。`coverage.truncated` 且带了 `next_cursor` 再翻页；nested neighbor 样本只标 `nested_truncated`，不是假翻页。`count: 0` 不等于「图上没有」，跟 `hint`。
 

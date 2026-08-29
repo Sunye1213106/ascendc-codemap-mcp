@@ -1,0 +1,1148 @@
+
+## Q1 RunEmptyTiling  FTS 'RunEmptyTiling' total=4
+  op_host/flash_attention_score_grad_tiling.cpp:78:     ge::graphStatus RunEmptyTiling(gert::TilingContext *context)
+  op_host/flash_attention_score_grad_tiling.cpp:148:     ge::graphStatus RunEmptyTilingRegbase(gert::TilingContext *context)
+  op_host/flash_attention_score_grad_tiling.cpp:513:             return flashAttentionScoreGradTiling.RunEmptyTilingRegbase(context);
+  op_host/flash_attention_score_grad_tiling.cpp:519:             return flashAttentionScoreGradTiling.RunEmptyTiling(context);
+  WINDOW op_host/flash_attention_score_grad_tiling.cpp:78
+    66|     uint32_t ration;
+    66|             // v: S2=256, B=1, H2=128
+    67|     if (aicCoreNum == 0U || aivCoreNum == 0U || aicCoreNum > aivCoreNum) {
+    67|             {{{256, 1, 128}, {256, 1, 128}}, ge::DT_FLOAT, ge::FORMAT_ND},
+    68|         return sliceNum;
+    68|             // dy
+    69|     }
+    69|             {{{256, 1, 128}, {256, 1, 128}}, ge::DT_FLOAT, ge::FORMAT_ND},
+    70|     ration = aivCoreNum / aicCoreNum;
+    70|             // pse_shift
+    71|     return (sliceNum + (ration - 1)) / ration;
+    71|             {{{}, {}}, ge::DT_FLOAT, ge::FORMAT_ND},
+    72| }
+    72|             // drop_mask
+    73|             {{{}, {}}, ge::DT_FLOAT, ge::FORMAT_ND},
+    74| // tiling func + tiling prepare
+    74|             // padding_mask
+    75| class FlashAttentionScoreGradTiling {
+    75|             {{{}, {}}, ge::DT_INT32, ge::FORMAT_ND},
+    76| public:
+    76|             // atten_mask: S1=256, S2=256
+    77|             {{{256, 256}, {256, 256}}, ge::DT_UINT8, ge::FORMAT_ND},
+    78|     ge::graphStatus RunEmptyTiling(gert::TilingContext *context)
+    78|             // softmax_max
+    79|     {
+    79|             {{{1, 1, 256, 8}, {1, 1, 256, 8}}, ge::DT_FLOAT, ge::FORMAT_ND},
+    80|         FlashAttentionScoreGradTilingData *tilingData = context->GetTilingData<FlashAttentionScoreGradTilingData>();
+    80|             // softmax_sum
+    81|         uint64_t aicNum = 40; // 40: B3 default aicNum
+    81|             {{{1, 1, 256, 8}, {1, 1, 256, 8}}, ge::DT_FLOAT, ge::FORMAT_ND},
+    82|         uint64_t aivNum = 20; // 20: B3 default aivNum
+    82|             // softmax_in
+    83|         auto platformInfoPtr = context->GetPlatformInfo();
+    83|             {{{}, {}}, ge::DT_FLOAT, ge::FORMAT_ND},
+    84|         if (platformInfoPtr == nullptr) {
+    84|             // attention_in
+    85|             auto compilePtr = reinterpret_cast<const FlashAttentionScoreGradCompileInfo *>(context->GetCompileInfo());
+    85|             {{{256, 1, 128}, {256, 1, 128}}, ge::DT_FLOAT, ge::FORMAT_ND},
+    86|             OP_CHECK_IF(compilePtr == nullptr, OP_LOGE(context, "The op [FlashAttentionScoreGrad] received bad params, the reason is: [compile_info is null]"),
+    86|             // prefix
+    87|                        return ge::GRAPH_FAILED);
+    87|             {{{}, {}}, ge::DT_INT64, ge::FORMAT_ND},
+    88|             aivNum = compilePtr->aivNum;
+    88|             // actual_seq_qlen
+    89|             aicNum = compilePtr->aicNum;
+    89|             {{{}, {}}, ge::DT_INT64, ge::FORMAT_ND},
+    90|         } else {
+    90|             // actual_seq_kvlen
+
+## Q1 RunEmptyTilingRegbase  FTS 'RunEmptyTilingRegbase' total=2
+  op_host/flash_attention_score_grad_tiling.cpp:148:     ge::graphStatus RunEmptyTilingRegbase(gert::TilingContext *context)
+  op_host/flash_attention_score_grad_tiling.cpp:513:             return flashAttentionScoreGradTiling.RunEmptyTilingRegbase(context);
+  WINDOW op_host/flash_attention_score_grad_tiling.cpp:148
+    133|         } else {
+    133|          {"sparse_mode", Ops::Transformer::AnyValue::CreateFrom<int64_t>(0)},
+    134|             tilingData->emptyTensorTilingData.set_formerDpseNum(dpseNum % aivNum);
+    134|          {"pse_type", Ops::Transformer::AnyValue::CreateFrom<int64_t>(1)},
+    135|             tilingData->emptyTensorTilingData.set_singleCoreDpseNum(dpseNum / aivNum + 1);
+    135|          {"seed", Ops::Transformer::AnyValue::CreateFrom<int64_t>(0)},
+    136|             tilingData->emptyTensorTilingData.set_tailCoreDpseNum(dpseNum / aivNum);
+    136|          {"offset", Ops::Transformer::AnyValue::CreateFrom<int64_t>(0)},
+    137|         }
+    137|          {"out_dtype", Ops::Transformer::AnyValue::CreateFrom<int64_t>(0)},
+    138|          {"softmax_in_layout", Ops::Transformer::AnyValue::CreateFrom<std::string>("")}},
+    139|         context->SetTilingKey(FAG_EMPTY_TILING_KEY);
+    139|         &compileInfo, "Ascend950", A5SocInfo, 4096);
+    140|         auto sliceNum =
+    140|     int64_t expectTilingKey = 18577349537174544;
+    141|             (dqNum < aivNum && dkNum < aivNum && dpseNum < aivNum) ? std::max(std::max(dqNum, dkNum), dpseNum) : aivNum;
+    141|     std::string expectTilingData =
+    142|         context->SetBlockDim(CalculateTschBlockDim(sliceNum, aicNum, aivNum));
+    142|         "32 1 1 1 256 256 128 128 4575657222443697349 255 65536 65536 0 0 0 2 1 0 0 2 1099511627776 0 0 0 0 2 "
+    143|         size_t *workspaces = context->GetWorkspaceSizes(1);
+    143|         "549755813952 549755813952 2 549755814016 4294967300 0 0 1 2 3 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 "
+    144|         workspaces[0] = WORKSPACE_SIZE;
+    144|         "0 0 0 0 0 0 0 0 1 2 3 4 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 16384 8192 4 8192 "
+    145|         return ge::GRAPH_SUCCESS;
+    145|         "8192 4 8192 8192 4 8192 0 0 0 4 61440 30720 114688 30720 1 16384 1 16384 1 0 0 0 0 0 0 0 0 0 0 1 32768 16384 "
+    146|     }
+    146|         "16384 1 32768 16384 16384 1 32768 16384 16384 0 0 0 0 0 0 0 0 0 0 0 0 0 0 ";
+    147|     std::vector<size_t> expectWorkspaces = {21037056};
+    148|     ge::graphStatus RunEmptyTilingRegbase(gert::TilingContext *context)
+    148|     ExecuteTestCase(tilingContextPara, ge::GRAPH_SUCCESS, expectTilingKey, expectTilingData, expectWorkspaces);
+    149|     {
+    149| }
+    150|         fag::FlashAttentionScoreGradEmptyTensorTilingDataRegbase* emptyTensorTilingDataRegbase = context->GetTilingData<fag::FlashAttentionScoreGradEmptyTensorT
+    151|         uint64_t aicNum = 32; // 32: A5 default aicNum
+    151| TEST_F(FlashAttentionScoreGradTiling, FlashAttentionScoreGrad_950_tiling_1)
+    152|         uint64_t aivNum = 64; // 64: A5 default aivNum
+    152| {
+    153|         auto platformInfoPtr = context->GetPlatformInfo();
+    153|     int64_t actual_seq_qlist[4] = {128, 384, 768, 974};
+    154|         if (platformInfoPtr == nullptr) {
+    154|     int64_t actual_seq_kvlist[4] = {128, 384, 768, 974};
+    155|             auto compilePtr = reinterpret_cast<const FlashAttentionScoreGradCompileInfo *>(context->GetCompileInfo());
+    155|     Ops::Transformer::OpTiling::FlashAttentionScoreGradCompileInfo compileInfo = {
+    156|             OP_CHECK_IF(compilePtr == nullptr, OP_LOGE(context, "The op [FlashAttentionScoreGrad] received bad params, the reason is: [compile_info is null]"),
+    156|         64,                                     // aivNum
+    157|                        return ge::GRAPH_FAILED);
+    157|         32,                                     // aicNum
+    158|             aivNum = compilePtr->aivNum;
+    158|         196608,                                 // ubSize
+    159|             aicNum = compilePtr->aicNum;
+    159|         524288,                                 // l1Size
+    160|         } else {
+    160|         65536,                                  // l0aSize
+    161|             auto ascendcPlatform = platform_ascendc::PlatformAscendC(platformInfoPtr);
+    161|         65536,                                  // l0bSize
+    162|             aicNum = ascendcPlatform.GetCoreNumAic();
+    162|         131072,                                 // l0cSize
+    163|             aivNum = ascendcPlatform.GetCoreNumAiv();
+    163|         33554432,                               // l2CacheSize
+
+## Q1 GetShapeSize 0  FTS 'GetShapeSize() == 0' total=3
+  op_host/flash_attention_score_grad_tiling.cpp:255:         if (dqShape->GetStorageShape().GetShapeSize() == 0 || dkShape->GetStorageShape().GetShapeSize() == 0 ||
+  op_host/flash_attention_score_grad_tiling.cpp:256:             dvShape->GetStorageShape().GetShapeSize() == 0) {
+  op_host/flash_attention_score_grad_tiling.cpp:261:         if (dqRopeShape->GetStorageShape().GetShapeSize() == 0 || dkRopeShape->GetStorageShape().GetShapeSize() == 0) {
+  WINDOW op_host/flash_attention_score_grad_tiling.cpp:255
+    247| static bool IsEmptyOutput(gert::TilingContext *context)
+    247|         &compileInfo, "Ascend950", A5SocInfo, 4096);
+    248| {
+    248|     int64_t expectTilingKey = 19703248907146416;
+    249|     const gert::StorageShape *dqShape = context->GetOutputShape(OUTPUT_IDX_DQ);
+    249|     std::string expectTilingData = "";
+    250|     const gert::StorageShape *dqRopeShape = context->GetOutputShape(OUTPUT_IDX_DQ_ROPE);
+    250|     std::vector<size_t> expectWorkspaces = {21562880};
+    251|     const gert::StorageShape *dkShape = context->GetOutputShape(OUTPUT_IDX_DK);
+    251|     ExecuteTestCase(tilingContextPara, ge::GRAPH_SUCCESS, expectTilingKey, expectTilingData, expectWorkspaces);
+    252|     const gert::StorageShape *dkRopeShape = context->GetOutputShape(OUTPUT_IDX_DK_ROPE);
+    252| }
+    253|     const gert::StorageShape *dvShape = context->GetOutputShape(OUTPUT_IDX_DV);
+    254|     if (dqShape != nullptr && dkShape != nullptr && dvShape != nullptr) {
+    254| TEST_F(FlashAttentionScoreGradTiling, FlashAttentionScoreGrad_950_tiling_2)
+    255|         if (dqShape->GetStorageShape().GetShapeSize() == 0 || dkShape->GetStorageShape().GetShapeSize() == 0 ||
+    255| {
+    256|             dvShape->GetStorageShape().GetShapeSize() == 0) {
+    256|     Ops::Transformer::OpTiling::FlashAttentionScoreGradCompileInfo compileInfo = {
+    257|             return true;
+    257|         64,                                     // aivNum
+    258|         }
+    258|         32,                                     // aicNum
+    259|     }
+    259|         196608,                                 // ubSize
+    260|     if (dqRopeShape != nullptr && dkRopeShape != nullptr) {
+    260|         524288,                                 // l1Size
+    261|         if (dqRopeShape->GetStorageShape().GetShapeSize() == 0 || dkRopeShape->GetStorageShape().GetShapeSize() == 0) {
+    261|         65536,                                  // l0aSize
+    262|             return true;
+    262|         65536,                                  // l0bSize
+    263|         }
+    263|         131072,                                 // l0cSize
+
+## Q1 FAG_EMPTY  FTS 'FAG_EMPTY_TILING_KEY' total=2
+  op_host/flash_attention_score_grad_tiling.cpp:59: constexpr uint32_t FAG_EMPTY_TILING_KEY = 0;
+  op_host/flash_attention_score_grad_tiling.cpp:139:         context->SetTilingKey(FAG_EMPTY_TILING_KEY);
+  WINDOW op_host/flash_attention_score_grad_tiling.cpp:59
+    53| constexpr int64_t T_MAX_LIMIT = 1000000;
+    53|         65536,                                  // l0bSize
+    54| constexpr int64_t N_MAX_LIMIT = 256;
+    54|         131072,                                 // l0cSize
+    55| constexpr int64_t D_MAX_LIMIT = 768;
+    55|         33554432,                               // l2CacheSize
+    56| constexpr int64_t ACTUAL_SEQ_Q_LEN_MAX_LIMIT = 2048;
+    56|         32,                                     // coreNum
+    57| constexpr int64_t ACTUAL_SEQ_Q_LEN_PREFIX_MAX_LIMIT = 1000;
+    57|         platform_ascendc::SocVersion::ASCEND950 // socVersion
+    58|     };
+    59| constexpr uint32_t FAG_EMPTY_TILING_KEY = 0;
+    59|     gert::TilingContextPara tilingContextPara(
+    60| constexpr uint32_t TILING_KEY_1 = 1U;
+    60|         "FlashAttentionScoreGrad",
+    61| constexpr size_t WORKSPACE_SIZE = 100 * 1024 * 1024;
+    61|         {
+    62| constexpr uint64_t SMLEST_ROPE_SIZE = 64;
+    62|             // q: S1=256, B=1, H1=128
+    63|             {{{256, 1, 128}, {256, 1, 128}}, ge::DT_FLOAT, ge::FORMAT_ND},
+    64| static uint32_t CalculateTschBlockDim(uint32_t sliceNum, uint32_t aicCoreNum, uint32_t aivCoreNum)
+    64|             // k: S2=256, B=1, H2=128
+    65| {
+    65|             {{{256, 1, 128}, {256, 1, 128}}, ge::DT_FLOAT, ge::FORMAT_ND},
+
+## Q2 isSeqExistZero assign  FTS 'isSeqExistZero = true' total=1
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:627:                     tndBaseInfo.isSeqExistZero = true;
+  WINDOW op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:627
+    616|         int64_t lastQLen = 0;
+    617|         int64_t lastKvLen = 0;
+    618|         fBaseParams.isS1S2Same = true;
+    619|         fBaseParams.isAllSame = true;
+    620|         bool isEOD = false;
+    621|         for (size_t i = 0; i < seqQShapeSize; i++) {
+    622|             if (i == static_cast<size_t>(0)) {
+    623|                 fBaseParams.actualSeqQlen.push_back(qValue[i]);
+    624|                 fBaseParams.actualSeqKvlen.push_back(kvValue[i]);
+    625|                 if (qValue[0] == 0 || kvValue[0] == 0) {
+    626|                     fBaseParams.sValueZeroUnderTND = true;
+    627|                     tndBaseInfo.isSeqExistZero = true;
+    628|                 }
+    629|                 tndBaseInfo.isS1GreaterThanS2 = tndBaseInfo.isS1GreaterThanS2 && (qValue[0] >= kvValue[0]);
+    630|                 tndBaseInfo.isS1LessThanS2 = tndBaseInfo.isS1LessThanS2 && (qValue[0] <= kvValue[0]);
+    631|             } else {
+    632|                 lastQLen = fBaseParams.actualSeqQlen[i - 1];
+    633|                 lastKvLen = fBaseParams.actualSeqKvlen[i - 1];
+    634|                 auto qLen = qValue[i] - qValue[i - 1];
+    635|                 auto kvLen = kvValue[i] - kvValue[i - 1];
+    636|                 fBaseParams.actualSeqQlen.push_back(qLen < 0 ? 0 : qLen);
+    637|                 fBaseParams.actualSeqKvlen.push_back(kvLen < 0 ? 0 : kvLen);
+    638|                 if (qLen < 0 || kvLen < 0) {
+    639|                     isEOD = true;
+
+## Q3 keepProb 1 drop  FTS 'keepProb == 1' total=0
+
+## Q3 dropMask optional  FTS 'dropMask' total=375
+  ../common/op_kernel/arch35/dropmask.h:12:  * \file dropmask.h
+  ../common/op_kernel/arch35/dropmask.h:16: #ifndef DROPMASK_H
+  ../common/op_kernel/arch35/dropmask.h:17: #define DROPMASK_H
+  ../common/op_kernel/arch35/dropmask.h:30: constexpr static int32_t dropMaskUint32AlignSize = 4;
+  ../common/op_kernel/arch35/dropmask.h:41: struct DropMaskInfo {
+  ../common/op_kernel/arch35/dropmask.h:45:     uint8_t dropMaskOuter;
+  WINDOW ../common/op_kernel/arch35/dropmask.h:12
+    8|  * See LICENSE in the root of the software repository for the full text of the License.
+    9|  */
+    11| /*!
+    12|  * \file dropmask.h
+    13|  * \brief
+    14|  */
+    16| #ifndef DROPMASK_H
+
+## Q4 set_s1Inner  FTS 'set_s1Inner' total=2
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:2314:     s1s2BNGS1S2SplitCoreParams_->set_s1Inner(fBaseParams.s1Inner);
+  op_kernel/arch35/flash_attention_score_grad_tiling_data_regbase.h:249:     void set_s1Inner(uint32_t val) { s1Inner = val; }
+  WINDOW op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:2314
+    2306|     s1s2BNGS1S2BaseParams_->set_deterBandScheduleMode(static_cast<uint8_t>(fBaseParams.deterBandScheduleMode));
+    2307|     if (fBaseParams.isSplitByBlockIdx) {
+    2308|         s1s2BNGS1S2BaseParams_->set_totalPerBatchNum(GetTotalPerBatchNum(fBaseParams, fBaseParams.sparseType));
+    2309|     }
+    2310|     s1s2BNGS1S2BaseParams_->set_sparseType(fBaseParams.sparseType);
+    2311|     s1s2BNGS1S2BaseParams_->set_enablePreSfmg(fBaseParams.enablePreSfmg);
+    2312|     // s1/s2 split
+    2313|     s1s2BNGS1S2SplitCoreParams_->set_s1Outer(fBaseParams.s1Outer);
+    2314|     s1s2BNGS1S2SplitCoreParams_->set_s1Inner(fBaseParams.s1Inner);
+    2315|     s1s2BNGS1S2SplitCoreParams_->set_s1CvInner(fBaseParams.s1CvInner);
+    2316|     s1s2BNGS1S2SplitCoreParams_->set_s1Tail(fBaseParams.s1Tail);
+    2317|     s1s2BNGS1S2SplitCoreParams_->set_s1CvTail(fBaseParams.s1CvTail);
+    2318|     s1s2BNGS1S2SplitCoreParams_->set_s2Outer(fBaseParams.s2Outer);
+    2319|     s1s2BNGS1S2SplitCoreParams_->set_s2Inner(fBaseParams.s2Inner);
+    2320|     s1s2BNGS1S2SplitCoreParams_->set_s2Tail(fBaseParams.s2Tail);
+    2321|     s1s2BNGS1S2SplitCoreParams_->set_bandIdx(fBaseParams.bandIdx);
+    2322|     s1s2BNGS1S2BlockNumList_->set_blockStarts(fBaseParams.blockStarts);
+
+## Q4 s1Inner =  FTS 's1Inner =' total=6
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:900:     int64_t s1Inner = std::get<0>(bestSplitRes);
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:908:     fBaseParams.s1Inner = s1Inner;
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:1328:         fBaseParams.s1Inner = fBaseParams.s1Inner * NUM_TWO;
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:1357:         fBaseParams.s1Inner = s1Inner;
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:1909:     uint32_t s1Inner = s1s2TemplateSize.first / 2;
+  op_kernel/arch35/flash_attention_score_grad_tiling_data_regbase.h:249:     void set_s1Inner(uint32_t val) { s1Inner = val; }
+  WINDOW op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:900
+    892|             static_cast<int>(fBaseParams.isSplitByBlockIdx), static_cast<uint32_t>(fBaseParams.deterBandScheduleMode));
+    893| }
+    895| void FlashAttentionScoreGradTilingNormalRegbase::DoSplit()
+    896| {
+    897|     fBaseParams.s1CvRatio = S1CV_RATIO_DEFAULT;
+    898|     fBaseParams.s2CvRatio = S2CV_RATIO_DEFAULT;
+    899|     std::tuple<uint32_t, uint32_t, uint32_t> bestSplitRes = FuzzyForBestSplit();
+    900|     int64_t s1Inner = std::get<0>(bestSplitRes);
+    901|     int64_t s1CvInner =
+    902|         s1Inner * fBaseParams.s1CvRatio > fBaseParams.s1 ? fBaseParams.s1 : s1Inner * fBaseParams.s1CvRatio;
+    903|     int64_t s1Outer = (fBaseParams.s1 + s1CvInner - 1) / s1CvInner;
+    904|     int64_t s1TailTmp = fBaseParams.s1 % s1Inner;
+    905|     int64_t s1CvTailTmp = fBaseParams.s1 % s1CvInner;
+    906|     fBaseParams.s1Tail = s1TailTmp == 0 ? s1Inner : s1TailTmp;
+    907|     fBaseParams.s1CvTail = s1CvTailTmp == 0 ? s1CvInner : s1CvTailTmp;
+    908|     fBaseParams.s1Inner = s1Inner;
+
+## Q7 DoPostTiling  FTS 'DoPostTiling' total=3
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:870:     DoPostTiling();
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:1671: void FlashAttentionScoreGradTilingNormalRegbase::DoPostTiling()
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.h:92:     void DoPostTiling();
+  WINDOW op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:870
+    850|            fBaseParams.s1 >= TND_SWIZZLE_MIN_S1_SIZE_1)) &&
+    851|          (fBaseParams.sparseType != static_cast<uint8_t>(SparseType::UNSUPPORTED)));
+    852|     tndBaseInfo.isTndSwizzle = fBaseParams.enableSwizzle && fBaseParams.layoutType == INPUT_FORMAT_TND &&
+    853|                                templateSupportCond && fBaseParams.b < TND_SWIZZLE_PREFIX_NUM &&
+    854|                                !tndBaseInfo.isSeqExistZero && fBaseParams.tailZeroCount == 0;
+    855|     if (fBaseParams.isDeterministic && fBaseParams.splitAxis == SplitAxisEnum::BN2S2 && tndBaseInfo.isTndSwizzle) {
+    856|         ConfigureTndDeterBn2S2Swizzle(fBaseParams, tndBaseInfo);
+    857|     }
+    858|     OP_LOGI(context_,
+    859|             "isExceedL2Cache=[%d], sparseType=[%d], enableSwizzle=[%d], "
+    860|             "deterTndSwizzleSupported=[%d], isTndSwizzle=[%d], isNzOut=[%d].",
+    861|             static_cast<int>(isExceedL2Cache), static_cast<int>(fBaseParams.sparseType),
+    862|             static_cast<int>(fBaseParams.enableSwizzle), static_cast<int>(deterTndSwizzleSupported),
+    863|             tndBaseInfo.isTndSwizzle, fBaseParams.isNzOut);
+    865|     ret = InitTilingData();
+    866|     if (ret != ge::GRAPH_SUCCESS) {
+    867|         return ret;
+    868|     }
+    869|     DoPreTiling();
+    870|     DoPostTiling();
+    871|     DetermineMode(fBaseParams);
+    872|     DetermineBlockSchedule();
+    873|     return ge::GRAPH_SUCCESS;
+    874| }
+    876| void FlashAttentionScoreGradTilingNormalRegbase::DetermineBlockSchedule()
+    877| {
+    878|     const BlockScheduleResult result = SelectBlockSchedule(fBaseParams);
+    879|     fBaseParams.isSplitByBlockIdx = result.isSplitByBlockIdx;
+    880|     fBaseParams.deterBandScheduleMode = result.deterBandSchedule.mode;
+    881|     if (result.deterBandSchedule.mode != DeterBandScheduleMode::DISABLED) {
+    882|         fBaseParams.deterMaxRound = result.deterBandSchedule.maxRound;
+    883|         const int64_t actualBatch = (fBaseParams.b - fBaseParams.tailZeroCount) * fBaseParams.n2;
+    884|         OP_LOGI(context_,
+    885|                 "Select deterministic BAND schedule, mode=[%u], maxRound=[%ld], k=[%lu], b=[%ld], "
+    886|                 "effective(m,n,p,q)=[%ld,%ld,%ld,%ld]",
+    887|                 static_cast<uint32_t>(result.deterBandSchedule.mode), result.deterBandSchedule.maxRound,
+    888|                 fBaseParams.aicNum, actualBatch, result.deterBandSchedule.m, result.deterBandSchedule.n,
+    889|                 result.deterBandSchedule.p, result.deterBandSchedule.q);
+    890|     }
+
+## Q7 FP32 post  FTS 'DT_FLOAT' total=379
+  op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp:167:     bool softmaxTypeCheck = (softmaxMaxType == softmaxSumType) && (softmaxMaxType == ge::DT_FLOAT);
+  op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp:290:                         fBaseParams.queryType != ge::DT_FLOAT && fBaseParams.d == fBaseParams.d1 &&
+  op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp:304:                          fBaseParams.queryType != ge::DT_FLOAT && fBaseParams.d == fBaseParams.d1 &&
+  op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp:873:     if (fBaseParams.queryType == ge::DT_FLOAT && fBaseParams.d > static_cast<uint32_t>(ConstAxisTemplateNum::NUM256)) {
+  op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp:878:     } else if (fBaseParams.queryType == ge::DT_FLOAT8_E5M2 || fBaseParams.queryType == ge::DT_FLOAT8_E4M3FN) {
+  op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp:1025:         OP_CHECK_IF(sinkDtype != ge::DT_FLOAT,
+  WINDOW op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp:167
+    164|     auto softmaxMaxType = softmaxMax->GetDataType();
+    165|     auto softmaxSumType = softmaxSum->GetDataType();
+    167|     bool softmaxTypeCheck = (softmaxMaxType == softmaxSumType) && (softmaxMaxType == ge::DT_FLOAT);
+    168|     std::string dtypeMsg = "{" + ge::TypeUtils::DataTypeToSerialString(softmaxMaxType) + ", " +
+    169|                            ge::TypeUtils::DataTypeToSerialString(softmaxSumType) + "}";
+    170|     OP_CHECK_IF(softmaxTypeCheck != true,
+    171|                 OP_LOGE_FOR_INVALID_DTYPES_WITH_REASON(
+
+## Q9 isNzOut  FTS 'isNzOut' total=129
+  op_host/arch35/flash_attention_score_grad_tiling_common_regbase.h:503:     bool isNzOut = false;
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:829:     fBaseParams.isNzOut =
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:860:             "deterTndSwizzleSupported=[%d], isTndSwizzle=[%d], isNzOut=[%d].",
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:863:             tndBaseInfo.isTndSwizzle, fBaseParams.isNzOut);
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:1614:     if (fBaseParams.isNzOut) {
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:1746:     if (fBaseParams.isNzOut) {
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:1758:         if (fBaseParams.isNzOut) {
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:1883:         "hasRope[%d], outDtype[%d], isNzOut[%d], isTndSwizzle[%d], isRegbasePlatformValue[%d]",
+  WINDOW op_host/arch35/flash_attention_score_grad_tiling_common_regbase.h:503
+    492|     int64_t qStartIdx;
+    493|     int64_t kvStartIdx;
+    494|     bool enableSwizzle = false;
+    495|     bool isSplitByBlockIdx = false;
+    496|     DeterBandScheduleMode deterBandScheduleMode = DeterBandScheduleMode::DISABLED;
+    497|     uint32_t sinkOptional = 0;
+    498|     uint64_t sinkSize = 0;
+    499|     uint64_t s1SinkOuter = 0;
+    500|     uint64_t s2SinkOuter = 0;
+    501|     uint32_t tndMaxSumLayout = 0; // 0: BNS8, 1: TND
+    502|     bool enablePreSfmg = 0;
+    503|     bool isNzOut = false;
+    504| };
+    506| template <class T>
+    507| inline auto AlignTo(const T n, const T alignSize) -> T
+    508| {
+    509|     if (alignSize == 0) {
+    510|         return 0;
+    511|     }
+    512|     return (n + alignSize - 1) & (~(alignSize - 1));
+    513| }
+    515| template <typename T>
+
+## Q9 D 96  FTS 'Aligned96' total=1
+  ../common/op_kernel/arch35/util_regbase.h:41:     Aligned96 = 96,
+  WINDOW ../common/op_kernel/arch35/util_regbase.h:41
+    35|     Aligned16 = 16,
+    36|     Aligned32 = 32,
+    37|     Aligned48 = 48,
+    38|     Aligned64 = 64,
+    39|     Aligned72 = 72,
+    40|     Aligned80 = 80,
+    41|     Aligned96 = 96,
+    42|     Aligned128 = 128,
+    43|     Aligned160 = 160,
+    44|     Aligned192 = 192,
+    45|     Aligned256 = 256,
+    46|     Aligned512 = 512,
+    47|     Aligned576 = 576,
+
+## Q12 GqaDense def  FTS 'GqaDense' total=14
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:48: struct GQADenseScheduleResult {
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:77: GQADenseScheduleResult SelectGQADenseSchedule(int64_t k, int64_t m, int64_t n, int64_t b, int64_t g)
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:79:     GQADenseScheduleResult result;
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:1344:         const GQADenseScheduleResult schedule =
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:1345:             SelectGQADenseSchedule(static_cast<int64_t>(fBaseParams.aicNum), fBaseParams.s1Outer, fBaseParams.s2Outer,
+  op_kernel/arch35/deter.h:244: __aicore__ inline void CalGQADenseIndex(int64_t k, int64_t m, int64_t n, int64_t b, int64_t core_id, int64_t round_id,
+  op_kernel/arch35/deter.h:828:         CalGQADenseIndex(k, NUM_TWO * m - t * k + 1, t * k, half_, j, a2, g, coordinate);
+  op_kernel/arch35/deter.h:1155: __aicore__ inline void CalGQADenseIndexNoTune(int64_t k, int64_t m, int64_t n, int64_t b, int64_t core_id,
+  WINDOW op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:48
+    33|     int64_t q = 0;
+    34| };
+    36| struct BlockScheduleResult {
+    37|     bool isSplitByBlockIdx = false;
+    38|     DeterBandScheduleResult deterBandSchedule;
+    39| };
+    41| struct DeterBandScheduleParams {
+    42|     int64_t m = 0;
+    43|     int64_t n = 0;
+    44|     int64_t p = 0;
+    45|     int64_t q = 0;
+    46| };
+    48| struct GQADenseScheduleResult {
+    49|     int64_t baseRound = 0;
+    50|     int64_t selectedRound = 0;
+    51|     int64_t basePeriod = 0;
+    52|     int64_t selectedPeriod = 0;
+    53| };
+    55| int64_t PositiveCeilDiv(int64_t dividend, int64_t divisor)
+    56| {
+    57|     return dividend / divisor + static_cast<int64_t>(dividend % divisor != 0);
+    58| }
+    60| int64_t PositiveGcd(int64_t lhs, int64_t rhs)
+    61| {
+    62|     while (rhs > 0) {
+    63|         const int64_t remainder = lhs % rhs;
+
+## Q12 g == 1 swizzle  FTS 'g == 1' total=47
+  op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp:300:         bool ngs1s2BnIsAble = ((fBaseParams.g * fBaseParams.s1 * s2AlignVecSize) != 0) && (fBaseParams.g == 1) &&
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:356:     result.isSplitByBlockIdx = canSplitByBlockIdx && (((params.b * params.n2) & 1) == 0) && params.g == 1 &&
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:373:                                 params.g == 1 && params.coreNum == params.aicNum * NUM_TWO && actualBatch > 0;
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:838:     // kernel侧确定性swizzle尚未适配GQA，需通过g == 1将GQA筛除。
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:845:          fBaseParams.deterSparseType == static_cast<uint32_t>(DeterSparseType::DETER_DENSE) && fBaseParams.g == 1 &&
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:1878:                          fBaseParams.g == 1;
+  op_host/arch35/flash_attention_score_grad_tiling_varlen_regbase.cpp:136:         if (fBaseParams.g == 1) {
+  op_host/arch35/flash_attention_score_grad_tiling_varlen_regbase.cpp:155:         if (N11 > 0 && fBaseParams.g == 1) {
+  WINDOW op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp:300
+    292|         int64_t dTypeSize = fBaseParams.queryType == ge::DT_BF16 ?
+    293|                                 ge::GetSizeByDataType(static_cast<ge::DataType>(fBaseParams.queryType)) * NUM_TWO :
+    294|                                 ge::GetSizeByDataType(static_cast<ge::DataType>(fBaseParams.queryType));
+    295|         int64_t s2Align =
+    296|             AlignTo(fBaseParams.s2 * ge::GetSizeByDataType(static_cast<ge::DataType>(fBaseParams.queryType)),
+    297|                     static_cast<int64_t>(ConstAxisTemplateNum::NUM32)) /
+    298|             ge::GetSizeByDataType(static_cast<ge::DataType>(fBaseParams.queryType));
+    299|         int64_t s2AlignVecSize = AlignTo(s2Align * dTypeSize, static_cast<int64_t>(ConstAxisTemplateNum::NUM32));
+    300|         bool ngs1s2BnIsAble = ((fBaseParams.g * fBaseParams.s1 * s2AlignVecSize) != 0) && (fBaseParams.g == 1) &&
+    301|                               (s2AlignVecSize <= MAX_KV_SEQLEN) &&
+    302|                               ((fBaseParams.g * fBaseParams.s1 * s2AlignVecSize) <= ALIGN64 * ALIGN128 * FP32_BYTES);
+    303|         bool isBNCaple = fBaseParams.attenMaskOptional != EMPTY_TENSOR && fBaseParams.layoutType != INPUT_FORMAT_TND &&
+    304|                          fBaseParams.queryType != ge::DT_FLOAT && fBaseParams.d == fBaseParams.d1 &&
+    305|                          fBaseParams.pseType == static_cast<uint32_t>(PseType::PSE_OUTER_ADD_MUL_TYPE) &&
+    306|                          ngs1s2BnIsAble;
+    307|         bool invalid =
+    308|             (static_cast<int64_t>(fBaseParams.attenMaskS1Size) * static_cast<int64_t>(fBaseParams.attenMaskS2Size) <
+
+## Q18 FagTilingWithTemplate  FTS 'FagTilingWithTemplate' total=115
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:2188:         FagTilingWithTemplateTTTT *tilingData = this->context_->GetTilingData<FagTilingWithTemplateTTTT>();
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:2202:         FagTilingWithTemplateTTTF *tilingData = this->context_->GetTilingData<FagTilingWithTemplateTTTF>();
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:2215:         FagTilingWithTemplateFFTT *tilingData = this->context_->GetTilingData<FagTilingWithTemplateFFTT>();
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:2228:             FagTilingWithTemplateTFTF *tilingData = this->context_->GetTilingData<FagTilingWithTemplateTFTF>();
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:2236:             FagTilingWithTemplateFFTF *tilingData = this->context_->GetTilingData<FagTilingWithTemplateFFTF>();
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:2245:             FagTilingWithTemplateTFFF *tilingData = this->context_->GetTilingData<FagTilingWithTemplateTFFF>();
+  WINDOW op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:2188
+    2180|         }
+    2181|     }
+    2182| }
+    2184| ge::graphStatus FlashAttentionScoreGradTilingNormalRegbase::InitTilingData()
+    2185| {
+    2186|     bool isTnd = (fBaseParams.layoutType == INPUT_FORMAT_TND);
+    2187|     if (IsNewDeter(fBaseParams) && tndBaseInfo.isTndSwizzle) {
+    2188|         FagTilingWithTemplateTTTT *tilingData = this->context_->GetTilingData<FagTilingWithTemplateTTTT>();
+    2189|         if (tilingData == nullptr) {
+    2190|             OP_LOGE("InitTilingData", "InitTilingData failed.");
+    2191|             return ge::GRAPH_FAILED;
+    2192|         }
+    2193|         s1s2BNGS1S2BaseParams_ = &tilingData->s1s2BNGS1S2BaseParams;
+    2194|         s1s2BNGS1S2SplitCoreParams_ = &tilingData->s1s2BNGS1S2SplitCoreParams;
+    2195|         s1s2BNGS1S2BlockNumList_ = &tilingData->s1s2BNGS1S2BlockNumList;
+    2196|         preTilingData_ = &tilingData->preTilingData;
+
+## Q18 entry GetTiling  FTS 'needDeterPrefix' total=4
+  op_kernel/arch35/flash_attention_score_grad_entry_regbase.h:217:     constexpr static bool needDeterPrefix = NEED_DETER_PREFIX(deterType, isTnd);
+  op_kernel/arch35/flash_attention_score_grad_entry_regbase.h:219:         needDeterPrefix, isTnd, isTndSwizzle>;
+  op_kernel/flash_attention_score_grad_apt.cpp:51:     constexpr bool needDeterPrefix = NEED_DETER_PREFIX(DeterType, IsTnd);
+  op_kernel/flash_attention_score_grad_apt.cpp:53:         needDeterPrefix, IsTnd, IsTndSwizzle>;
+  WINDOW op_kernel/arch35/flash_attention_score_grad_entry_regbase.h:217
+    207|            __gm__ uint8_t *deqScaleK, __gm__ uint8_t *deqScaleV, __gm__ uint8_t *deqScaleDy, __gm__ uint8_t *dsScale,
+    208|            __gm__ uint8_t *pScale, __gm__ uint8_t *queryRope, __gm__ uint8_t *keyRope, __gm__ uint8_t *sink,
+    209|            __gm__ uint8_t *dq, __gm__ uint8_t *dk, __gm__ uint8_t *dv, __gm__ uint8_t *dpse, __gm__ uint8_t *dqRope,
+    210|            __gm__ uint8_t *dkRope, __gm__ uint8_t *dsink, __gm__ uint8_t *workspace, __gm__ uint8_t *tiling_data)
+    211| {
+    212|     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);
+    213|     TPipe pipeIn;
+    214|     SetMaskNorm();
+    215|     SetSysWorkspace(workspace);
+    216|     __gm__ uint8_t *user = GetUserWorkspace(workspace);
+    217|     constexpr static bool needDeterPrefix = NEED_DETER_PREFIX(deterType, isTnd);
+    218|     using fagTiling = FlashAttentionScoreGradTilingDataUs1s2Bbn2gs1s2Regbase<NEED_DETER(deterType),
+    219|         needDeterPrefix, isTnd, isTndSwizzle>;
+    220|     size_t offset = (size_t)(&((fagTiling *)0)->s1s2BNGS1S2BaseParams);
+    222|     const __gm__ fagTiling *__restrict tilingData = (const __gm__ fagTiling *__restrict)(tiling_data + offset);
+    223| #if (ORIG_DTYPE_QUERY == DT_FLOAT16)
+    224|     if constexpr (splitAxis == BN2GS1S2) {
+    225|         INVOKE_FAG_GENERAL_S1S2_BN2GS1S2_REGBASE_IMPL_FP16(
+    226|             half, float, half, isAttenMask, isPse, isDrop, isTnd, isBn2MultiBlk, deterType, isNEqual, isDNoEqual,
+    227|             isRope, isNzOut, isTndSwizzle, BN2GS1S2, S1TemplateType(s1TemplateType), S2TemplateType(s2TemplateType),
+
+## Q19 SetScheduleMode impl  FTS 'SetScheduleMode' total=3
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:1936:         context_->SetScheduleMode(1);
+  ../common/op_host/fia_tiling_base.h:110:     [[nodiscard]] ge::graphStatus SetScheduleMode(ScheduleMode scheduleMode) const
+  ../common/op_host/fia_tiling_base.h:112:         return context_->SetScheduleMode(static_cast<uint32_t>(scheduleMode));
+  WINDOW op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:1936
+    1924|         numBlocks = CalcTschBlockDim(s1s2BNGS1S2SplitCoreParams_->get_blockOuter() * AICV_RATIO_DEFAULT,
+    1925|                                      fBaseParams.aicNum, fBaseParams.coreNum);
+    1926|     }
+    1927|     OP_CHECK_IF(numBlocks == 0,
+    1928|                 OP_LOGE("FlashAttentionScoreGradTilingNormalRegbase", "numBlocks is 0, aicNum is %lu, aivNum is %lu.",
+    1929|                         fBaseParams.aicNum, fBaseParams.coreNum),
+    1930|                 return ge::GRAPH_FAILED);
+    1931|     context_->SetBlockDim(numBlocks);
+    1933|     // 使用SyncAll，需要设置为batch mode模式，所有核同时启动，否则在多流方式下执行可能会卡死
+    1934|     if (fBaseParams.splitAxis != SplitAxisEnum::BN2 || !fBaseParams.isBn2MultiBlk ||
+    1935|         fBaseParams.layoutType != INPUT_FORMAT_TND) {
+    1936|         context_->SetScheduleMode(1);
+    1937|     }
+    1938|     return ge::GRAPH_SUCCESS;
+    1939| }
+    1941| void FlashAttentionScoreGradTilingNormalRegbase::GetParseS1S2OuterInfo(int64_t (*parseInfo)[ARRAY_LENGTH])
+    1942| {
+    1943|     std::vector<bool> invalidS1Array(fBaseParams.s1Outer, false);
+    1944|     for (int64_t i = 0; i < fBaseParams.s2Outer; i++) {
+    1945|         int64_t leftIntersectionPoint = std::max(0L, int64_t(fBaseParams.cvS2Inner * i) - fBaseParams.s2Token);
+    1946|         if (leftIntersectionPoint > int64_t(fBaseParams.s1)) {
+    1947|             parseInfo[i][BEGIN_IDX] = (fBaseParams.s1 + fBaseParams.s1CvInner - 1) / fBaseParams.s1CvInner;
+    1948|         } else {
+
+## Q19 isBn2MultiBlk =  FTS 'isBn2MultiBlk' total=129
+  op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp:1673:     fBaseParams.isBn2MultiBlk =
+  op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp:1681:     fBaseParams.isBn2 = fBaseParams.isBn2MultiBlk ? true : fBaseParams.isBn2; // 多基本块场景是原始bn2的子集
+  op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp:1682:     if (fBaseParams.isBn2 && !fBaseParams.isBn2MultiBlk) {
+  op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp:1689:     if (fBaseParams.isBn2MultiBlk) {
+  op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp:1693:             fBaseParams.isBn2MultiBlk = false;
+  op_host/arch35/flash_attention_score_grad_tiling_common_regbase.h:480:     bool isBn2MultiBlk = false;
+  WINDOW op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp:1673
+    1661|                         (fBaseParams.n1 == fBaseParams.n2) && (fBaseParams.d <= BN2_MAX_D) &&
+    1662|                         (fBaseParams.queryType != ge::DT_FLOAT) &&
+    1663|                         !(fBaseParams.queryType == ge::DT_FLOAT8_E5M2 ||
+    1664|                           fBaseParams.queryType == ge::DT_FLOAT8_E4M3FN || fBaseParams.queryType == ge::DT_HIFLOAT8) &&
+    1665|                         (fBaseParams.tailZeroCount == 0 && !tndBaseInfo.isSeqExistZero);
+    1667|     bool bnLimit = ((fBaseParams.b * fBaseParams.n1) >= BN2_MULTIBLK_BN_256) ||
+    1668|                    ((fBaseParams.b * fBaseParams.n1) >= BN2_MULTIBLK_BN_128 && (fBaseParams.s1 % ALIGN128 == 0) &&
+    1669|                     (fBaseParams.s2 % ALIGN128 == 0));
+    1670|     bool bnSparseLimit = bnLimit && (fBaseParams.layoutType != INPUT_FORMAT_TND) &&
+    1671|                          (fBaseParams.sparseMode != static_cast<uint32_t>(SparseMode::PREFIX)) &&
+    1672|                          (fBaseParams.sparseMode != static_cast<uint32_t>(SparseMode::PREFIX_COMPRESS));
+    1673|     fBaseParams.isBn2MultiBlk =
+    1674|         bnSparseLimit && (fBaseParams.s1 > BN2_MAX_S || fBaseParams.s2 > BN2_MAX_S) &&
+    1675|         (fBaseParams.s1 <= BN2_MULTIBLK_SEQ && fBaseParams.s2 <= BN2_MULTIBLK_SEQ) &&
+    1676|         (fBaseParams.n1 == fBaseParams.n2) && fBaseParams.d <= BN2_MAX_D && (fBaseParams.queryType != ge::DT_FLOAT) &&
+    1677|         (fBaseParams.d == fBaseParams.d1) &&
+    1678|         !(fBaseParams.queryType == ge::DT_FLOAT8_E5M2 || fBaseParams.queryType == ge::DT_FLOAT8_E4M3FN ||
+    1679|           fBaseParams.queryType == ge::DT_HIFLOAT8) &&
+    1680|         !fBaseParams.hasRope;
+    1681|     fBaseParams.isBn2 = fBaseParams.isBn2MultiBlk ? true : fBaseParams.isBn2; // 多基本块场景是原始bn2的子集
+    1682|     if (fBaseParams.isBn2 && !fBaseParams.isBn2MultiBlk) {
+    1683|         fBaseParams.isDeterministic = false;
+    1684|         if ((fBaseParams.layoutType == INPUT_FORMAT_TND && fBaseParams.d > ALIGN128) || fBaseParams.dropMaskOuter) {
+    1685|             fBaseParams.isBn2 = false;
+
+## Q1 all RunEmptyTilingRegbase hits
+  op_host/flash_attention_score_grad_tiling.cpp:148:     ge::graphStatus RunEmptyTilingRegbase(gert::TilingContext *context)
+  op_host/flash_attention_score_grad_tiling.cpp:513:             return flashAttentionScoreGradTiling.RunEmptyTilingRegbase(context);
+
+## Q3 keepProb hits in op_host arch35 (first 20)
+
+## Q9 fBaseParams.isNzOut
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:829:     fBaseParams.isNzOut =
+    817|     SetSplitAxis(context_, fBaseParams, tndBaseInfo);
+    818|     DoSplit();
+    819|     auto ret = DoSparse();
+    820|     if (ret != ge::GRAPH_SUCCESS) {
+    821|         return ret;
+    822|     }
+    824|     // 分核优化，对于超出l2 cache的case优先多个核处理BN下的S1S2
+    825|     bool isExceedL2Cache = CheckExceedL2Cache();
+    826|     bool isLargeInvalidBlk = CheckIsLargeInvalidBlk(fBaseParams);
+    827|     fBaseParams.enableSwizzle = (isExceedL2Cache || isLargeInvalidBlk) && fBaseParams.blockOuter == fBaseParams.aicNum;
+    828|     // dqkv fixp nz出优化开关
+    829|     fBaseParams.isNzOut =
+    830|         (fBaseParams.splitAxis == SplitAxisEnum::BN2GS1S2 &&
+    831|          fBaseParams.d > static_cast<uint32_t>(ConstAxisTemplateNum::NUM64) &&
+    832|          fBaseParams.d < static_cast<uint32_t>(ConstAxisTemplateNum::NUM128) && fBaseParams.d % FP16_C0_SIZE != 0 &&
+    833|          !(fBaseParams.queryType == ge::DT_FLOAT8_E5M2 || fBaseParams.queryType == ge::DT_FLOAT8_E4M3FN ||
+    834|            fBaseParams.queryType == ge::DT_HIFLOAT8 || fBaseParams.queryType == ge::DT_FLOAT) &&
+    835|          fBaseParams.deterSparseType != static_cast<uint32_t>(DeterSparseType::DETER_OLD)) &&
+    836|         fBaseParams.enableSwizzle && fBaseParams.s1 >= NZ_OUT_MIN_S_SIZE && fBaseParams.s2 >= NZ_OUT_MIN_S_SIZE;
+    837|     // TND场景下，确定性计算+MHA+Dense支持BN2GS1S2/BN2S2模板，非确定性计算支持BN2S2模板。
+    838|     // kernel侧确定性swizzle尚未适配GQA，需通过g == 1将GQA筛除。
+    839|     // Mode 2 pads every batch's (N2, S2) columns to a full AIC group. Reject schedules whose aggregate
+    840|     // valid-slot ratio is too low; otherwise short tail groups serialize batches while most cores stay idle.
+    841|     const bool deterTndSwizzleSupported = !fBaseParams.isDeterministic || IsTndDeterSwizzleSupported(fBaseParams);
+
+## Q10 GET_IS_L1_PRELOAD  FTS 'GET_IS_L1_PRELOAD' total=2
+  op_kernel/arch35/flash_attention_score_grad_block_cube.h:143:     constexpr static bool IS_L1_PRELOAD = GET_IS_L1_PRELOAD<INPUT_TYPE>(
+  op_kernel/arch35/flash_attention_score_grad_common.h:240: __aicore__ constexpr bool GET_IS_L1_PRELOAD(const uint32_t HEAD_DIM_ALIGN, const uint32_t SPLIT_AXIS,
+  WINDOW op_kernel/arch35/flash_attention_score_grad_block_cube.h:143
+    129|     }
+    130| }
+    132| TEMPLATES_DEF
+    133| class FAGBlockCube {
+    134| public:
+    135|     constexpr static bool IS_FP32_INPUT = IsSameType<INPUT_TYPE, float>::value;
+    136|     constexpr static uint32_t CUBE_BASEM = (uint32_t)s1TemplateType;
+    137|     constexpr static uint32_t CUBE_BASEN = (uint32_t)s2TemplateType;
+    138|     constexpr static uint32_t HEAD_DIM_ALIGN = (uint32_t)dTemplateType;
+    139|     constexpr static uint32_t C0_SIZE = 16;
+    140|     constexpr static uint32_t L0_SINGLE_BUFFER_SIZE = 32 * 1024;
+    141|     constexpr static bool IS_L1_REUSE =
+    142|         GET_IS_L1_REUSE<INPUT_TYPE>(HEAD_DIM_ALIGN, IS_DETER_OLD(DETER_SPARSE_TYPE), false);
+    143|     constexpr static bool IS_L1_PRELOAD = GET_IS_L1_PRELOAD<INPUT_TYPE>(
+    144|         HEAD_DIM_ALIGN, SPLIT_AXIS, IS_DETER_OLD(DETER_SPARSE_TYPE), IS_TND, false, IS_ROPE);
+    145|     constexpr static bool IS_FP32_D_EXCEED_256 = IS_FP32_INPUT &&
+    146|                                                  HEAD_DIM_ALIGN > static_cast<uint16_t>(DTemplateType::Aligned256);
+    147|     constexpr static bool IS_DKV_RESIDENT_L0C =
+    148|         IS_DKV_RESIDENT_L0C(CUBE_BASEM, CUBE_BASEN, HEAD_DIM_ALIGN) && !IS_FP32_INPUT;
+    149|     constexpr static bool IS_SMALL_D_PRELOAD =
+    150|         IS_L1_PRELOAD && IS_L1_REUSE && HEAD_DIM_ALIGN <= static_cast<uint16_t>(DTemplateType::Aligned128) &&
+    151|         !IS_DROP && SPLIT_AXIS == BN2GS1S2 && DETER_SPARSE_TYPE == NO_DETER && !IS_FP32_INPUT;
+    153|     constexpr static uint32_t DQ_L0_SPLIT_K = GET_DQ_L0_SPLIT_K<INPUT_TYPE, CUBE_BASEM, HEAD_DIM_ALIGN>();
+    154|     constexpr static uint32_t DKV_L0_SPLIT_K = GET_DKV_L0_SPLIT_K<INPUT_TYPE, CUBE_BASEN, HEAD_DIM_ALIGN>();
+    155|     constexpr static bool ENABLE_UNITFLAG =
+    156|         HEAD_DIM_ALIGN <= static_cast<uint16_t>(DTemplateType::Aligned768) && !IS_DETER_OLD(DETER_SPARSE_TYPE);
+    157|     constexpr static bool IS_DV_RESIDENT_L0C = !IS_FP32_INPUT &&
+
+## Q10 GET_IS_L1_REUSE  FTS 'GET_IS_L1_REUSE' total=2
+  op_kernel/arch35/flash_attention_score_grad_block_cube.h:142:         GET_IS_L1_REUSE<INPUT_TYPE>(HEAD_DIM_ALIGN, IS_DETER_OLD(DETER_SPARSE_TYPE), false);
+  op_kernel/arch35/flash_attention_score_grad_common.h:254: __aicore__ constexpr bool GET_IS_L1_REUSE(const uint32_t HEAD_DIM_ALIGN, const bool IS_DETER_OLD,
+  WINDOW op_kernel/arch35/flash_attention_score_grad_block_cube.h:142
+    128|         return static_cast<uint16_t>(S1TemplateType::Aligned128);
+    129|     }
+    130| }
+    132| TEMPLATES_DEF
+    133| class FAGBlockCube {
+    134| public:
+    135|     constexpr static bool IS_FP32_INPUT = IsSameType<INPUT_TYPE, float>::value;
+    136|     constexpr static uint32_t CUBE_BASEM = (uint32_t)s1TemplateType;
+    137|     constexpr static uint32_t CUBE_BASEN = (uint32_t)s2TemplateType;
+    138|     constexpr static uint32_t HEAD_DIM_ALIGN = (uint32_t)dTemplateType;
+    139|     constexpr static uint32_t C0_SIZE = 16;
+    140|     constexpr static uint32_t L0_SINGLE_BUFFER_SIZE = 32 * 1024;
+    141|     constexpr static bool IS_L1_REUSE =
+    142|         GET_IS_L1_REUSE<INPUT_TYPE>(HEAD_DIM_ALIGN, IS_DETER_OLD(DETER_SPARSE_TYPE), false);
+    143|     constexpr static bool IS_L1_PRELOAD = GET_IS_L1_PRELOAD<INPUT_TYPE>(
+    144|         HEAD_DIM_ALIGN, SPLIT_AXIS, IS_DETER_OLD(DETER_SPARSE_TYPE), IS_TND, false, IS_ROPE);
+    145|     constexpr static bool IS_FP32_D_EXCEED_256 = IS_FP32_INPUT &&
+    146|                                                  HEAD_DIM_ALIGN > static_cast<uint16_t>(DTemplateType::Aligned256);
+    147|     constexpr static bool IS_DKV_RESIDENT_L0C =
+    148|         IS_DKV_RESIDENT_L0C(CUBE_BASEM, CUBE_BASEN, HEAD_DIM_ALIGN) && !IS_FP32_INPUT;
+    149|     constexpr static bool IS_SMALL_D_PRELOAD =
+    150|         IS_L1_PRELOAD && IS_L1_REUSE && HEAD_DIM_ALIGN <= static_cast<uint16_t>(DTemplateType::Aligned128) &&
+    151|         !IS_DROP && SPLIT_AXIS == BN2GS1S2 && DETER_SPARSE_TYPE == NO_DETER && !IS_FP32_INPUT;
+    153|     constexpr static uint32_t DQ_L0_SPLIT_K = GET_DQ_L0_SPLIT_K<INPUT_TYPE, CUBE_BASEM, HEAD_DIM_ALIGN>();
+    154|     constexpr static uint32_t DKV_L0_SPLIT_K = GET_DKV_L0_SPLIT_K<INPUT_TYPE, CUBE_BASEN, HEAD_DIM_ALIGN>();
+    155|     constexpr static bool ENABLE_UNITFLAG =
+    156|         HEAD_DIM_ALIGN <= static_cast<uint16_t>(DTemplateType::Aligned768) && !IS_DETER_OLD(DETER_SPARSE_TYPE);
+
+## Q10 IS_SMALL_D_PRELOAD  FTS 'IS_SMALL_D_PRELOAD' total=10
+  op_kernel/arch35/flash_attention_score_grad_block_cube.h:52: template <uint8_t IS_L1_REUSE, uint8_t IS_L1_PRELOAD, uint8_t IS_SMALL_D_PRELOAD>
+  op_kernel/arch35/flash_attention_score_grad_block_cube.h:55:         std::conditional_t<IS_SMALL_D_PRELOAD, MutexBuffersPolicy4buff<BufferType::L1>,
+  op_kernel/arch35/flash_attention_score_grad_block_cube.h:63: template <uint8_t IS_L1_REUSE, uint8_t IS_L1_PRELOAD, uint8_t IS_SMALL_D_PRELOAD>
+  op_kernel/arch35/flash_attention_score_grad_block_cube.h:66:         std::conditional_t<IS_SMALL_D_PRELOAD, MutexBuffersPolicy3buff<BufferType::L1>,
+  WINDOW op_kernel/arch35/flash_attention_score_grad_block_cube.h:52
+    42|     int64_t nextQueryOffset;
+    43|     int64_t nextDyOffset;
+    44|     int64_t nextQueryRopeOffset;
+    45|     int64_t nextKeyRopeOffset;
+    46|     int32_t nextMOrN;
+    47|     bool copyCurrent = true;
+    48|     bool copyNext = false;
+    49| };
+    51| /* ============确定Query的L1类型============= */
+    52| template <uint8_t IS_L1_REUSE, uint8_t IS_L1_PRELOAD, uint8_t IS_SMALL_D_PRELOAD>
+    53| struct QL1BuffSelector {
+    54|     using TYPE =
+    55|         std::conditional_t<IS_SMALL_D_PRELOAD, MutexBuffersPolicy4buff<BufferType::L1>,
+    56|                            std::conditional_t<IS_L1_REUSE,
+    57|                                               std::conditional_t<IS_L1_PRELOAD, MutexBuffersPolicy3buff<BufferType::L1>,
+    58|                                                                  MutexBuffersPolicyDB<BufferType::L1>>,
+    59|                                               MutexBuffersPolicySingleBuffer<BufferType::L1>>>;
+    60| };
+    62| /* ============确定Key的L1类型============= */
+
+## Q14 ChooseBand  FTS 'deterBandScheduleMode =' total=3
+  op_host/arch35/flash_attention_score_grad_tiling_common_regbase.h:496:     DeterBandScheduleMode deterBandScheduleMode = DeterBandScheduleMode::DISABLED;
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:880:     fBaseParams.deterBandScheduleMode = result.deterBandSchedule.mode;
+  op_kernel/arch35/flash_attention_score_grad_tiling_data_regbase.h:218:         this->deterBandScheduleMode = deterBandScheduleModeParam;
+  WINDOW op_host/arch35/flash_attention_score_grad_tiling_common_regbase.h:496
+    476|     uint64_t endNeedSyncRound[CORE_LIST_NUM];
+    477|     int64_t separateDkOffset[CORE_LIST_NUM];
+    479|     bool isBn2 = false;
+    480|     bool isBn2MultiBlk = false;
+    481|     bool hasRope = false;
+    482|     SplitAxisEnum splitAxis = SplitAxisEnum::BN2GS1S2;
+    483|     bool sValueZeroUnderTND = false;
+    484|     bool isInvalidCol = false;
+    485|     bool isInvalidRow = false;
+    486|     uint64_t tailZeroCount = 0;
+    488|     ConstAxisTemplateNum s1TemplateType = ConstAxisTemplateNum::NUM128;
+    489|     ConstAxisTemplateNum s2TemplateType = ConstAxisTemplateNum::NUM128;
+    490|     ConstAxisTemplateNum dTemplateType = ConstAxisTemplateNum::NUM64;
+    492|     int64_t qStartIdx;
+    493|     int64_t kvStartIdx;
+    494|     bool enableSwizzle = false;
+    495|     bool isSplitByBlockIdx = false;
+    496|     DeterBandScheduleMode deterBandScheduleMode = DeterBandScheduleMode::DISABLED;
+    497|     uint32_t sinkOptional = 0;
+    498|     uint64_t sinkSize = 0;
+    499|     uint64_t s1SinkOuter = 0;
+    500|     uint64_t s2SinkOuter = 0;
+    501|     uint32_t tndMaxSumLayout = 0; // 0: BNS8, 1: TND
+    502|     bool enablePreSfmg = 0;
+    503|     bool isNzOut = false;
+    504| };
+    506| template <class T>
+    507| inline auto AlignTo(const T n, const T alignSize) -> T
+    508| {
+    509|     if (alignSize == 0) {
+    510|         return 0;
+    511|     }
+    512|     return (n + alignSize - 1) & (~(alignSize - 1));
+    513| }
+    515| template <typename T>
+    516| auto AlignUp(T num1, T num2) -> T
+
+## Q17 hasRope NUM192  FTS 'hasRope' total=95
+  ../common/op_kernel/arch35/attenmask_arch35.h:60: template <bool isInfer = false, bool hasRope = false>
+  ../common/op_kernel/arch35/attenmask_arch35.h:63:                                          int64_t s2BaseSize, ConstInfo<isInfer, hasRope> &constInfo)
+  ../common/op_kernel/arch35/attenmask_arch35.h:109: template <bool hasAtten, bool isInfer = false, bool hasRope = false, bool isMxfp8FullQuant = false>
+  ../common/op_kernel/arch35/attenmask_arch35.h:111:                                                const RunInfo<isInfer> &runInfo, ConstInfo<isInfer, hasRope> &constInfo,
+  ../common/op_kernel/arch35/attenmask_arch35.h:169:           bool isInfer = false, bool hasRope = false, bool isFd = false>
+  ../common/op_kernel/arch35/attenmask_arch35.h:171:                                                      ConstInfo<isInfer, hasRope> &constInfo,
+  WINDOW ../common/op_kernel/arch35/attenmask_arch35.h:60
+    52|     int64_t attenMaskS2Size;
+    53|     int64_t bandIndex;
+    54|     GM_ADDR prefixNAddr;
+    55|     int64_t attenMaskOffsetPre;
+    56|     AttenMaskComputeMode computeMode = AttenMaskComputeMode::NORMAL_MODE;
+    57|     int64_t attenMaskS1Offset;
+    58| };
+    60| template <bool isInfer = false, bool hasRope = false>
+    61| __aicore__ inline void BoolCopyInRegbase(LocalTensor<uint8_t> &dstTensor, GlobalTensor<uint8_t> &srcTensor,
+    62|                                          int64_t srcOffset, uint32_t s1Size, uint32_t s2Size, int64_t totalS2Size,
+    63|                                          int64_t s2BaseSize, ConstInfo<isInfer, hasRope> &constInfo)
+    64| {
+    65|     if (s1Size == 0 || s2Size == 0) {
+    66|         return;
+    67|     }
+
+## Q17 NUM192 all
+  op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp:909:         fBaseParams.dTemplateType = ConstAxisTemplateNum::NUM192;
+  op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp:910:         return static_cast<uint32_t>(ConstAxisTemplateNum::NUM192);
+  op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp:918:     } else if (fBaseParams.d <= static_cast<uint32_t>(ConstAxisTemplateNum::NUM192)) {
+  op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp:919:         fBaseParams.dTemplateType = ConstAxisTemplateNum::NUM192;
+  op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp:920:         return static_cast<uint32_t>(ConstAxisTemplateNum::NUM192);
+  op_host/arch35/flash_attention_score_grad_tiling_common_regbase.h:282:     NUM192 = 192,
+
+## Q6 enablePreSfmg assign  FTS 'enablePreSfmg =' total=6
+  op_host/arch35/flash_attention_score_grad_tiling_common_regbase.h:502:     bool enablePreSfmg = 0;
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:1574:     fBaseParams.enablePreSfmg =
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:1588:     OP_LOGI("DoPreTiling", "enablePreSfmg = %d, maskUsedCoreNum = %ld", fBaseParams.enablePreSfmg, maskUsedCoreNum);
+  op_kernel/arch35/flash_attention_score_grad_common.h:462:     bool enablePreSfmg = false;
+  op_kernel/arch35/flash_attention_score_grad_kernel_base.h:686:     constInfo.enablePreSfmg = ((uint32_t)dTemplateType > 64) && tilingData->s1s2BNGS1S2BaseParams.enablePreSfmg;
+  op_kernel/arch35/flash_attention_score_grad_tiling_data_regbase.h:212:     void set_enablePreSfmg(uint8_t enablePreSfmgParam) { this->enablePreSfmg = enablePreSfmgParam; }
+  WINDOW op_host/arch35/flash_attention_score_grad_tiling_common_regbase.h:502
+    486|     uint64_t tailZeroCount = 0;
+    488|     ConstAxisTemplateNum s1TemplateType = ConstAxisTemplateNum::NUM128;
+    489|     ConstAxisTemplateNum s2TemplateType = ConstAxisTemplateNum::NUM128;
+    490|     ConstAxisTemplateNum dTemplateType = ConstAxisTemplateNum::NUM64;
+    492|     int64_t qStartIdx;
+    493|     int64_t kvStartIdx;
+    494|     bool enableSwizzle = false;
+    495|     bool isSplitByBlockIdx = false;
+    496|     DeterBandScheduleMode deterBandScheduleMode = DeterBandScheduleMode::DISABLED;
+    497|     uint32_t sinkOptional = 0;
+    498|     uint64_t sinkSize = 0;
+    499|     uint64_t s1SinkOuter = 0;
+    500|     uint64_t s2SinkOuter = 0;
+    501|     uint32_t tndMaxSumLayout = 0; // 0: BNS8, 1: TND
+    502|     bool enablePreSfmg = 0;
+    503|     bool isNzOut = false;
+    504| };
+    506| template <class T>
+    507| inline auto AlignTo(const T n, const T alignSize) -> T
+    508| {
+    509|     if (alignSize == 0) {
+    510|         return 0;
+    511|     }
+    512|     return (n + alignSize - 1) & (~(alignSize - 1));
+    513| }
+    515| template <typename T>
+    516| auto AlignUp(T num1, T num2) -> T
+    517| {
+    518|     if (num2 == 0) {
+
+## Q7 DoPostTiling body around 1671
+    1631|     uint64_t vPreTailNumTmp = vSize % vPreBlockFactor;
+    1632|     uint64_t vPreTailNum = vPreTailNumTmp == static_cast<uint64_t>(0) ? vPreBlockFactor : vPreTailNumTmp;
+    1634|     if (fBaseParams.sinkOptional == NORMAL_TENSOR) {
+    1635|         fBaseParams.s1SinkOuter = fBaseParams.s1Outer * AICV_RATIO_DEFAULT;
+    1636|         fBaseParams.s2SinkOuter = fBaseParams.s2Outer;
+    1637|         fBaseParams.sinkSize = (fBaseParams.b - fBaseParams.tailZeroCount) * fBaseParams.n2 * fBaseParams.g *
+    1638|                                fBaseParams.s1SinkOuter * fBaseParams.s2SinkOuter;
+    1639|         uint64_t sinkWorkSpaceSize = (fBaseParams.sinkSize + GM_ALIGN) / GM_ALIGN * GM_ALIGN;
+    1640|         uint64_t sinkPreBlockFactor = (sinkWorkSpaceSize + maskUsedCoreNum - 1) / maskUsedCoreNum;
+    1641|         uint64_t sinkPreBlockTotal = (sinkWorkSpaceSize + sinkPreBlockFactor - 1) / sinkPreBlockFactor;
+    1642|         uint64_t sinkPreTailNumTmp = sinkWorkSpaceSize % sinkPreBlockFactor;
+    1643|         uint64_t sinkPreTailNum =
+    1644|             sinkPreTailNumTmp == static_cast<uint64_t>(0) ? sinkPreBlockFactor : sinkPreTailNumTmp;
+    1645|         preTilingData_->set_sinkPreBlockFactor(sinkPreBlockFactor);
+    1646|         preTilingData_->set_sinkPreBlockTotal(sinkPreBlockTotal);
+    1647|         preTilingData_->set_sinkPreBlockTail(sinkPreTailNum);
+    1648|         OP_LOGI(
+    1649|             context_,
+    1650|             "FAG sinkOptional, fBaseParams.s1SinkOuter is %ld, fBaseParams.s2SinkOuter = %ld, fBaseParams.sinkSize = "
+    1651|             "%ld, maskUsedCoreNum = %ld, sinkPreBlockFactor = %ld, sinkPreBlockTotal = %ld, sinkPreTailNum = %ld.",
+    1652|             fBaseParams.s1SinkOuter, fBaseParams.s2SinkOuter, fBaseParams.sinkSize, maskUsedCoreNum, sinkPreBlockFactor,
+    1653|             sinkPreBlockTotal, sinkPreTailNum);
+    1654|     }
+    1656|     uint64_t maskPreBlockTotal = fBaseParams.dropMaskSize;
+    1657|     preTilingData_->set_qPreBlockFactor(qPreBlockFactor);
+    1658|     preTilingData_->set_qPreBlockTotal(qPreBlockTotal);
+    1659|     preTilingData_->set_qPreBlockTail(qPreTailNum);
+    1660|     preTilingData_->set_kPreBlockFactor(kPreBlockFactor);
+    1661|     preTilingData_->set_kPreBlockTotal(kPreBlockTotal);
+    1662|     preTilingData_->set_kPreBlockTail(kPreTailNum);
+    1663|     preTilingData_->set_vPreBlockFactor(vPreBlockFactor);
+    1664|     preTilingData_->set_vPreBlockTotal(vPreBlockTotal);
+    1665|     preTilingData_->set_vPreBlockTail(vPreTailNum);
+    1666|     preTilingData_->set_dropoutIsDivisibleBy8(fBaseParams.dropoutIsDivisibleBy8);
+    1667|     preTilingData_->set_sValueZeroUnderTND(fBaseParams.sValueZeroUnderTND);
+    1668|     preTilingData_->set_hasInvalidCol(fBaseParams.isInvalidCol);
+    1669| }
+    1671| void FlashAttentionScoreGradTilingNormalRegbase::DoPostTiling()
+    1672| {
+    1673|     uint64_t postUbBaseSize = fBaseParams.hasRope ? ROPE_POST_BASE * FP16_BYTES : REGBASE_POST_BASE * FP16_BYTES;
+    1674|     uint64_t qPostBaseNum = fBaseParams.hasRope ? ROPE_POST_BASE : REGBASE_POST_BASE;
+    1675|     uint64_t qPostBlockTotal = static_cast<uint64_t>(fBaseParams.qSize);
+    1676|     uint64_t qPostTailNumTmp = qPostBlockTotal % qPostBaseNum;
+    1677|     uint64_t qPostTailNum = qPostTailNumTmp == static_cast<uint64_t>(0) ? qPostBaseNum : qPostTailNumTmp;
+    1678|     uint64_t qPostBlockOuterTotal = (qPostBlockTotal + qPostBaseNum - static_cast<uint64_t>(1)) / qPostBaseNum;
+    1679|     uint64_t qPostBlockFactor = (qPostBlockOuterTotal + fBaseParams.blockOuter * AICV_RATIO_DEFAULT - 1) /
+    1680|                                 (fBaseParams.blockOuter * AICV_RATIO_DEFAULT);
+    1682|     uint64_t kPostBaseNum = postUbBaseSize / FP16_BYTES;
+    1683|     uint64_t kPostBlockTotal = static_cast<uint64_t>(fBaseParams.kSize);
+    1684|     uint64_t kPostTailNumTmp = kPostBlockTotal % kPostBaseNum;
+    1685|     uint64_t kPostTailNum = kPostTailNumTmp == static_cast<uint64_t>(0) ? kPostBaseNum : kPostTailNumTmp;
+    1686|     uint64_t kPostBlockOuterTotal = (kPostBlockTotal + kPostBaseNum - static_cast<uint64_t>(1)) / kPostBaseNum;
+    1687|     uint64_t kPostBlockFactor = (kPostBlockOuterTotal + fBaseParams.blockOuter * AICV_RATIO_DEFAULT - 1) /
+    1688|                                 (fBaseParams.blockOuter * AICV_RATIO_DEFAULT);
+    1690|     uint64_t vPostBaseNum = postUbBaseSize / FP16_BYTES;
+    1691|     uint64_t vPostBlockTotal = static_cast<uint64_t>(fBaseParams.vSize);
+    1692|     uint64_t vPostTailNumTmp = vPostBlockTotal % vPostBaseNum;
+    1693|     uint64_t vPostTailNum = vPostTailNumTmp == static_cast<uint64_t>(0) ? vPostBaseNum : vPostTailNumTmp;
+    1694|     uint64_t vPostBlockOuterTotal = (vPostBlockTotal + vPostBaseNum - static_cast<uint64_t>(1)) / vPostBaseNum;
+    1695|     uint64_t vPostBlockFactor = (vPostBlockOuterTotal + fBaseParams.blockOuter * AICV_RATIO_DEFAULT - 1) /
+    1696|                                 (fBaseParams.blockOuter * AICV_RATIO_DEFAULT);
+    1697|     if (fBaseParams.sinkOptional == NORMAL_TENSOR) {
+    1698|         uint64_t sinkPostBaseNum = postUbBaseSize / FP16_BYTES;
+    1699|         uint64_t sinkReduceAxis =
+    1700|             (fBaseParams.b - fBaseParams.tailZeroCount) * fBaseParams.s1SinkOuter * fBaseParams.s2SinkOuter;
+    1701|         uint64_t sinkPostTailNumTmp = sinkReduceAxis % sinkPostBaseNum;
+    1702|         uint64_t sinkPostTailNum =
+    1703|             sinkPostTailNumTmp == static_cast<uint64_t>(0) ? sinkPostBaseNum : sinkPostTailNumTmp;
+    1704|         uint64_t sinkPostBlockTotal = fBaseParams.n1;
+    1705|         uint64_t sinkPostBlockFactor = (fBaseParams.n1 + fBaseParams.blockOuter * AICV_RATIO_DEFAULT - 1) /
+    1706|                                        (fBaseParams.blockOuter * AICV_RATIO_DEFAULT);
+    1707|         postTilingData_->set_sinkReduceAxis(sinkReduceAxis);
+    1708|         postTilingData_->set_sinkPostBlockTotal(sinkPostBlockTotal);
+    1709|         postTilingData_->set_sinkPostBlockFactor(sinkPostBlockFactor);
+    1710|         postTilingData_->set_sinkPostTailNum(sinkPostTailNum);
+    1711|     }
+
+## Q18 entry_regbase.h ~217
+    205|            __gm__ uint8_t *softmax_in, __gm__ uint8_t *attention_in, __gm__ uint8_t *prefix,
+    206|            __gm__ uint8_t *actual_seq_qlen, __gm__ uint8_t *actual_seq_kvlen, __gm__ uint8_t *deqScaleQ,
+    207|            __gm__ uint8_t *deqScaleK, __gm__ uint8_t *deqScaleV, __gm__ uint8_t *deqScaleDy, __gm__ uint8_t *dsScale,
+    208|            __gm__ uint8_t *pScale, __gm__ uint8_t *queryRope, __gm__ uint8_t *keyRope, __gm__ uint8_t *sink,
+    209|            __gm__ uint8_t *dq, __gm__ uint8_t *dk, __gm__ uint8_t *dv, __gm__ uint8_t *dpse, __gm__ uint8_t *dqRope,
+    210|            __gm__ uint8_t *dkRope, __gm__ uint8_t *dsink, __gm__ uint8_t *workspace, __gm__ uint8_t *tiling_data)
+    211| {
+    212|     KERNEL_TASK_TYPE_DEFAULT(KERNEL_TYPE_MIX_AIC_1_2);
+    213|     TPipe pipeIn;
+    214|     SetMaskNorm();
+    215|     SetSysWorkspace(workspace);
+    216|     __gm__ uint8_t *user = GetUserWorkspace(workspace);
+    217|     constexpr static bool needDeterPrefix = NEED_DETER_PREFIX(deterType, isTnd);
+    218|     using fagTiling = FlashAttentionScoreGradTilingDataUs1s2Bbn2gs1s2Regbase<NEED_DETER(deterType),
+    219|         needDeterPrefix, isTnd, isTndSwizzle>;
+    220|     size_t offset = (size_t)(&((fagTiling *)0)->s1s2BNGS1S2BaseParams);
+    222|     const __gm__ fagTiling *__restrict tilingData = (const __gm__ fagTiling *__restrict)(tiling_data + offset);
+    223| #if (ORIG_DTYPE_QUERY == DT_FLOAT16)
+    224|     if constexpr (splitAxis == BN2GS1S2) {
+    225|         INVOKE_FAG_GENERAL_S1S2_BN2GS1S2_REGBASE_IMPL_FP16(
+    226|             half, float, half, isAttenMask, isPse, isDrop, isTnd, isBn2MultiBlk, deterType, isNEqual, isDNoEqual,
+    227|             isRope, isNzOut, isTndSwizzle, BN2GS1S2, S1TemplateType(s1TemplateType), S2TemplateType(s2TemplateType),
+    228|             DTemplateType(dTemplateType));
+    229|         return;
+
+## Q19 SetScheduleMode ~1933
+    1923|     } else {
+    1924|         numBlocks = CalcTschBlockDim(s1s2BNGS1S2SplitCoreParams_->get_blockOuter() * AICV_RATIO_DEFAULT,
+    1925|                                      fBaseParams.aicNum, fBaseParams.coreNum);
+    1926|     }
+    1927|     OP_CHECK_IF(numBlocks == 0,
+    1928|                 OP_LOGE("FlashAttentionScoreGradTilingNormalRegbase", "numBlocks is 0, aicNum is %lu, aivNum is %lu.",
+    1929|                         fBaseParams.aicNum, fBaseParams.coreNum),
+    1930|                 return ge::GRAPH_FAILED);
+    1931|     context_->SetBlockDim(numBlocks);
+    1933|     // 使用SyncAll，需要设置为batch mode模式，所有核同时启动，否则在多流方式下执行可能会卡死
+    1934|     if (fBaseParams.splitAxis != SplitAxisEnum::BN2 || !fBaseParams.isBn2MultiBlk ||
+    1935|         fBaseParams.layoutType != INPUT_FORMAT_TND) {
+    1936|         context_->SetScheduleMode(1);
+    1937|     }
+    1938|     return ge::GRAPH_SUCCESS;
+    1939| }
+    1941| void FlashAttentionScoreGradTilingNormalRegbase::GetParseS1S2OuterInfo(int64_t (*parseInfo)[ARRAY_LENGTH])
+    1942| {
+    1943|     std::vector<bool> invalidS1Array(fBaseParams.s1Outer, false);
+
+## Q19 isBn2MultiBlk ~1673
+    1658|                   const TndBaseInfo &tndBaseInfo)
+    1659| {
+    1660|     fBaseParams.isBn2 = (fBaseParams.s1 <= BN2_MAX_S && fBaseParams.s2 <= BN2_MAX_S) &&
+    1661|                         (fBaseParams.n1 == fBaseParams.n2) && (fBaseParams.d <= BN2_MAX_D) &&
+    1662|                         (fBaseParams.queryType != ge::DT_FLOAT) &&
+    1663|                         !(fBaseParams.queryType == ge::DT_FLOAT8_E5M2 ||
+    1664|                           fBaseParams.queryType == ge::DT_FLOAT8_E4M3FN || fBaseParams.queryType == ge::DT_HIFLOAT8) &&
+    1665|                         (fBaseParams.tailZeroCount == 0 && !tndBaseInfo.isSeqExistZero);
+    1667|     bool bnLimit = ((fBaseParams.b * fBaseParams.n1) >= BN2_MULTIBLK_BN_256) ||
+    1668|                    ((fBaseParams.b * fBaseParams.n1) >= BN2_MULTIBLK_BN_128 && (fBaseParams.s1 % ALIGN128 == 0) &&
+    1669|                     (fBaseParams.s2 % ALIGN128 == 0));
+    1670|     bool bnSparseLimit = bnLimit && (fBaseParams.layoutType != INPUT_FORMAT_TND) &&
+    1671|                          (fBaseParams.sparseMode != static_cast<uint32_t>(SparseMode::PREFIX)) &&
+    1672|                          (fBaseParams.sparseMode != static_cast<uint32_t>(SparseMode::PREFIX_COMPRESS));
+    1673|     fBaseParams.isBn2MultiBlk =
+    1674|         bnSparseLimit && (fBaseParams.s1 > BN2_MAX_S || fBaseParams.s2 > BN2_MAX_S) &&
+    1675|         (fBaseParams.s1 <= BN2_MULTIBLK_SEQ && fBaseParams.s2 <= BN2_MULTIBLK_SEQ) &&
+    1676|         (fBaseParams.n1 == fBaseParams.n2) && fBaseParams.d <= BN2_MAX_D && (fBaseParams.queryType != ge::DT_FLOAT) &&
+    1677|         (fBaseParams.d == fBaseParams.d1) &&
+    1678|         !(fBaseParams.queryType == ge::DT_FLOAT8_E5M2 || fBaseParams.queryType == ge::DT_FLOAT8_E4M3FN ||
+    1679|           fBaseParams.queryType == ge::DT_HIFLOAT8) &&
+    1680|         !fBaseParams.hasRope;
+    1681|     fBaseParams.isBn2 = fBaseParams.isBn2MultiBlk ? true : fBaseParams.isBn2; // 多基本块场景是原始bn2的子集
+    1682|     if (fBaseParams.isBn2 && !fBaseParams.isBn2MultiBlk) {
+    1683|         fBaseParams.isDeterministic = false;
+    1684|         if ((fBaseParams.layoutType == INPUT_FORMAT_TND && fBaseParams.d > ALIGN128) || fBaseParams.dropMaskOuter) {
+    1685|             fBaseParams.isBn2 = false;
+    1686|             fBaseParams.isDeterministic = (context_->GetDeterministic() == 1);
+    1687|         }
+    1688|     }
+
+## Q13 DETER_CAUSAL assign  FTS 'DETER_CAUSAL' total=17
+  op_host/arch35/flash_attention_score_grad_tiling_common_regbase.h:326:     DETER_CAUSAL = 3,
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:353:     const bool causalCond = params.deterSparseType == static_cast<uint32_t>(DeterSparseType::DETER_CAUSAL);
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:1223:         return static_cast<uint32_t>(DeterSparseType::DETER_CAUSAL);
+  op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp:1336:         fBaseParams.deterSparseType == static_cast<uint32_t>(DeterSparseType::DETER_CAUSAL)) {
+  op_host/arch35/flash_attention_score_grad_tiling_varlen_regbase.cpp:123:         if (fBaseParams.deterSparseType != static_cast<uint32_t>(DeterSparseType::DETER_CAUSAL)) {
+  op_kernel/arch35/deter.h:1709:     if constexpr (DETER_SPARSE_TYPE == DETER_CAUSAL) {
+  op_kernel/arch35/deter.h:1726:             if constexpr (DETER_SPARSE_TYPE == DETER_CAUSAL) {
+  op_kernel/arch35/deter.h:1911:         CalTNDDenseIndex<CUBE_BASEM, CUBE_BASEN, DETER_CAUSAL>(actualSeqQlenAddr, actualSeqKvlenAddr, prefix0, R02, b,
+  op_kernel/arch35/deter.h:1936:         CalTNDDenseIndex<CUBE_BASEM, CUBE_BASEN, DETER_CAUSAL>(actualSeqQlenAddr, actualSeqKvlenAddr, prefix1, R1, b, 1,
+  op_kernel/arch35/deter.h:1956:         CalTNDDenseIndex<CUBE_BASEM, CUBE_BASEN, DETER_CAUSAL>(actualSeqQlenAddr, actualSeqKvlenAddr, prefix2, R2, b, 1,
+  WINDOW op_host/arch35/flash_attention_score_grad_tiling_common_regbase.h:326
+    312|     pseSlopeN = 3
+    313| };
+    315| enum class SparseType : uint8_t {
+    316|     DENSE = 0,
+    317|     CASUAL = 1,
+    318|     BAND = 2,
+    319|     UNSUPPORTED = 3 // 超L2优化暂不支持sparse的场景
+    320| };
+    322| enum class DeterSparseType : uint32_t {
+    323|     NO_DETER = 0,  // 非确定性
+    324|     DETER_OLD = 1, // 确定性老实现方案
+    325|     DETER_DENSE = 2,
+    326|     DETER_CAUSAL = 3,
+    327|     DETER_BAND = 4
+    328| };
+    330| struct DeterPrefixData {
+    331|     std::vector<int64_t> prefix0 = {0};
+    332|     std::vector<int64_t> prefix1 = {0};
+    333|     std::vector<int64_t> prefix2 = {0};
+    334|     std::vector<int64_t> deterPrefix = {0};
+    335|     std::vector<int64_t> deterPrefixAlign = {0};
+    336|     std::vector<int64_t> mNewList = {};
+    337|     std::vector<int64_t> nNewList = {};
+    338|     std::vector<int64_t> pNewList = {};
+    339|     std::vector<int64_t> qNewList = {};
+    340| };
+
+## Q20 GET_TPL_TILING_KEY ~1892
+    1880|         context_,
+    1881|         "splitAxis[%d], inputDtype[%d], isTnd[%d], dropValue[%d], pseValue[%d], attenMaskCfg[%d], s1TemplateType[%d], "
+    1882|         "s2TemplateType[%d], dTemplateType[%u], isDeterministic[%d], nEqual[%d], isBn2MultiBlk[%d], dNoEqual[%d], "
+    1883|         "hasRope[%d], outDtype[%d], isNzOut[%d], isTndSwizzle[%d], isRegbasePlatformValue[%d]",
+    1884|         static_cast<int>(splitAxis), static_cast<int>(fBaseParams.inputDtype), isTnd, static_cast<int>(dropValue),
+    1885|         static_cast<int>(pseValue), static_cast<int>(attenMaskCfg), static_cast<int>(fBaseParams.s1TemplateType),
+    1886|         static_cast<int>(fBaseParams.s2TemplateType), static_cast<uint32_t>(fBaseParams.dTemplateType),
+    1887|         static_cast<int>(fBaseParams.deterSparseType), static_cast<int>(isDeterNEqual),
+    1888|         static_cast<int>(fBaseParams.isBn2MultiBlk), dNoEqual, static_cast<int>(fBaseParams.hasRope),
+    1889|         static_cast<int>(fBaseParams.outDtype), static_cast<int>(fBaseParams.isNzOut),
+    1890|         static_cast<uint8_t>(tndBaseInfo.isTndSwizzle), static_cast<int>(isRegbasePlatformValue));
+    1892|     uint64_t tilingKey = GET_TPL_TILING_KEY(
+    1893|         0, static_cast<uint8_t>(splitAxis), static_cast<uint8_t>(fBaseParams.inputDtype), static_cast<uint8_t>(isTnd),
+    1894|         static_cast<uint8_t>(dropValue), static_cast<uint8_t>(pseValue), static_cast<uint8_t>(attenMaskCfg),
+    1895|         static_cast<uint16_t>(fBaseParams.s1TemplateType), static_cast<uint16_t>(fBaseParams.s2TemplateType),
+    1896|         static_cast<uint16_t>(fBaseParams.dTemplateType), static_cast<uint8_t>(fBaseParams.deterSparseType),
+    1897|         static_cast<uint8_t>(isDeterNEqual), static_cast<uint8_t>(fBaseParams.isBn2MultiBlk),
+    1898|         static_cast<uint8_t>(dNoEqual), static_cast<uint8_t>(fBaseParams.hasRope),
+    1899|         static_cast<uint8_t>(fBaseParams.outDtype), static_cast<uint8_t>(fBaseParams.isNzOut),
+    1900|         static_cast<uint8_t>(tndBaseInfo.isTndSwizzle), static_cast<uint8_t>(isRegbasePlatformValue));
+    1902|     OP_LOGI(context_, "FAGTiling S1s2Bn2gs1s2 DoTiling success, tiling is %lu.", tilingKey);
+    1903|     return tilingKey;
+    1904| }
+
+## Q20 ARGS_DECL 49-130
+    1| /**
+    2|  * Copyright (c) 2025 Huawei Technologies Co., Ltd.
+    3|  * This program is free software, you can redistribute it and/or modify it under the terms and conditions of
+    4|  * CANN Open Software License Agreement Version 2.0 (the "License").
+    5|  * Please refer to the License for details. You may not use this file except in compliance with the License.
+    6|  * THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND, EITHER EXPRESS OR IMPLIED,
+    7|  * INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT, MERCHANTABILITY, OR FITNESS FOR A PARTICULAR PURPOSE.
+    8|  * See LICENSE in the root of the software repository for the full text of the License.
+    9|  */
+    11| /*!
+    12|  * \file flash_attention_score_grad_template_tiling_key.h
+    13|  * \brief
+    14|  */
+    16| #ifndef TEMPLATE_TILING_KEY_FAG_H_
+    17| #define TEMPLATE_TILING_KEY_FAG_H_
+    18| #include "ascendc/host_api/tiling/template_argument.h"
+    19| #include "flash_attention_score_grad_tiling_data_regbase.h"
+    21| // kernel通过宏定义隔离dtype编译tilingkey，降低耗时。tiling侧没有相关宏
+    22| #ifndef ORIG_DTYPE_QUERY
+    23| #define ORIG_DTYPE_QUERY (-1)
+    24| #endif
+    26| #define ASCENDC_TPL_3_BW 3
+    27| #define ASCENDC_TPL_4_BW 4
+    28| #define ASCENDC_TPL_8_BW 8
+    29| #define ASCENDC_TPL_10_BW 10
+    30| #define ASCENDC_TPL_12_BW 12
+    32| using FagTilingWithTemplateFFFF =
+    33|     optiling::fag::FlashAttentionScoreGradTilingDataUs1s2Bbn2gs1s2Regbase<false, false, false, false>;
+    34| using FagTilingWithTemplateFFTT =
+    35|     optiling::fag::FlashAttentionScoreGradTilingDataUs1s2Bbn2gs1s2Regbase<false, false, true, true>;
+    36| using FagTilingWithTemplateFFTF =
+    37|     optiling::fag::FlashAttentionScoreGradTilingDataUs1s2Bbn2gs1s2Regbase<false, false, true, false>;
+    39| using FagTilingWithTemplateTFFF =
+    40|     optiling::fag::FlashAttentionScoreGradTilingDataUs1s2Bbn2gs1s2Regbase<true, false, false, false>;
+    41| using FagTilingWithTemplateTFTF =
+    42|     optiling::fag::FlashAttentionScoreGradTilingDataUs1s2Bbn2gs1s2Regbase<true, false, true, false>;
+    43| using FagTilingWithTemplateTTTF =
+    44|     optiling::fag::FlashAttentionScoreGradTilingDataUs1s2Bbn2gs1s2Regbase<true, true, true, false>;
+    45| using FagTilingWithTemplateTTTT =
+    46|     optiling::fag::FlashAttentionScoreGradTilingDataUs1s2Bbn2gs1s2Regbase<true, true, true, true>;
+    48| // 可表示的tilingkey范围为64bit，注意不能超过限制
+    49| ASCENDC_TPL_ARGS_DECL(FlashAttentionScoreGrad, // 算子唯一标识，可以opType保持一致
+    50|                                                // bit: 0 IsRegbasePlatformValue
+    51|                       ASCENDC_TPL_BOOL_DECL(IsEmptyTensor, 0, 1),
+    52|                       // bit: 3-1 SplitAxis
+    53|                       //      0: BN2GS1S2
+    54|                       //      1: BN2
+    55|                       //      5: BN2S2
+    56|                       ASCENDC_TPL_UINT_DECL(SplitAxis, ASCENDC_TPL_3_BW, ASCENDC_TPL_UI_LIST, 0, 1, 5),
+    57|                       // bit: 6-4 InputDType
+    58|                       //      1: FLOAT32
+    59|                       //      2: BFLOAT16
+    60|                       //      3: FLOAT16_PRECISION
+    61|                       //      4: FP8_E5M2
+    62|                       //      5: FP8_E4M3FN
+    63|                       //      6: HIFP8
+    64|                       ASCENDC_TPL_UINT_DECL(InputDType, ASCENDC_TPL_3_BW, ASCENDC_TPL_UI_LIST, 0, 1, 2, 3, 4, 5, 6),
+    65|                       // bit: 7 IsTnd
+    66|                       //      0: DISABLE
+    67|                       //      1: ENABLE
+    68|                       ASCENDC_TPL_BOOL_DECL(IsTnd, 0, 1),
+    69|                       // bit: 8 DropValue
+    70|                       //      0: DISABLE
+    71|                       //      1: ENABLE
+    72|                       ASCENDC_TPL_BOOL_DECL(IsDrop, 0, 1),
+    73|                       // bit: 9 PseValue
+    74|                       //      0: DISABLE
+    75|                       //      1: ENABLE
+    76|                       ASCENDC_TPL_BOOL_DECL(IsPse, 0, 1),
+    77|                       // bit: 10 AttenMaskCfg
+    78|                       //      0: DISABLE
+    79|                       //      1: ENABLE
+    80|                       ASCENDC_TPL_BOOL_DECL(IsAttenMask, 0, 1),
+    81|                       // bit: 18-11 S1TemplateType
+    82|                       ASCENDC_TPL_UINT_DECL(S1TemplateNum, ASCENDC_TPL_8_BW, ASCENDC_TPL_UI_LIST, 0, 64, 128, 512),
+    83|                       // bit: 28-19 S2TemplateType
+    84|                       ASCENDC_TPL_UINT_DECL(S2TemplateNum, ASCENDC_TPL_10_BW, ASCENDC_TPL_UI_LIST, 0, 128, 256, 512),
+    85|                       // bit: 40-29 DTemplateType
+    86|                       ASCENDC_TPL_UINT_DECL(DTemplateNum, ASCENDC_TPL_12_BW, ASCENDC_TPL_UI_LIST, 0, 64, 128, 192, 256,
+    87|                                             768),
+    88|                       // bit: 41-44 DeterSparseType
+    89|                       // 0: NO_DETER
+    90|                       // 1: DETER_OLD
+    91|                       // 2: DETER_DENSE
+    92|                       // 3: DETER_CAUSAL
+    93|                       // 4: DETER_BAND
+    94|                       ASCENDC_TPL_UINT_DECL(DeterType, ASCENDC_TPL_4_BW, ASCENDC_TPL_UI_LIST, 0, 1, 2, 3, 4),
+    95|                       // bit: 45 is N1 N2 equal
+    96|                       // 0: DISABLE
+    97|                       // 1: ENABLE
+    98|                       ASCENDC_TPL_BOOL_DECL(IsNEqual, 0, 1),
+    99|                       // bit: 46 IsBn2MultiBlk
+    100|                       //      0: DISABLE
+    101|                       //      1: ENABLE
+    102|                       ASCENDC_TPL_BOOL_DECL(IsBn2MultiBlk, 0, 1),
+    103|                       // bit: 47 DNoEqual
+    104|                       //      0: DISABLE
+    105|                       //      1: ENABLE
+    106|                       ASCENDC_TPL_BOOL_DECL(IsDNoEqual, 0, 1),
+    107|                       // bit: 48 IsRope
+    108|                       //      0: DISABLE
+    109|                       //      1: ENABLE
+    110|                       ASCENDC_TPL_BOOL_DECL(IsRope, 0, 1),
+    111|                       // bit: 51-49 OutDType
+    112|                       //      1: FLOAT32
+    113|                       //      2: BFLOAT16
+    114|                       //      3: FLOAT16_PRECISION
+    115|                       ASCENDC_TPL_UINT_DECL(OutDType, ASCENDC_TPL_3_BW, ASCENDC_TPL_UI_LIST, 0, 1, 2, 3),
+    116|                       // bit: 52 IsNzOut
+    117|                       //      0: DISABLE
+    118|                       //      1: ENABLE
+    119|                       ASCENDC_TPL_BOOL_DECL(IsNzOut, 0, 1),
+    120|                       // bit: 53 IsTndSwizzle
+    121|                       // 0: NoSwizzle
+    122|                       // 1: Enable TND Swizzle
+    123|                       ASCENDC_TPL_BOOL_DECL(IsTndSwizzle, 0, 1),
+    124|                       // bit: 54 IsRegbasePlatformValue
+    125|                       ASCENDC_TPL_BOOL_DECL(IsRegbase, 0, 1), );
+    127| ASCENDC_TPL_SEL(
+    129| #if (ORIG_DTYPE_QUERY == -1) || (ORIG_DTYPE_QUERY == DT_FLOAT16)

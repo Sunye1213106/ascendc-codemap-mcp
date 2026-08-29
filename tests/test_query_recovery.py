@@ -5,18 +5,19 @@ import sqlite3
 from pathlib import Path
 
 from tests.conftest import write_uo_fixture
-from ascendc_codemap_mcp.engine.query.sql import _recovery_tokens
+from ascendc_codemap_mcp.engine.query.sql import _ident_tokens, _recovery_tokens
 from ascendc_codemap_mcp.engine.query.typed import InvalidQuery, validate_plan
 from ascendc_codemap_mcp.service.control import status
 from ascendc_codemap_mcp.service.query import query
 
 
 def test_recovery_tokens_split_camel_snake_digits_abbrev() -> None:
-    assert "buffer" in _recovery_tokens("BufferNum")
-    assert "buffer" in _recovery_tokens("buffer_num")
+    assert "buffer" in _ident_tokens("BufferNum")
+    assert "num" in _ident_tokens("BufferNum")
+    assert "buffer" in _ident_tokens("buffer_num")
+    assert "buffer" in _ident_tokens("GetQBufNum") or "buf" in _ident_tokens("GetQBufNum")
+    assert "policy" in _ident_tokens("Policy4buff")
     assert "buffer" in _recovery_tokens("GetQBufNum")
-    assert "buffer" in _recovery_tokens("q_buf_num")
-    assert "policy" in _recovery_tokens("Policy4buff")
     assert "buffer" in _recovery_tokens("Policy4buff")
 
 
@@ -68,7 +69,7 @@ def _insert(
     )
 
 
-def test_name_miss_recovers_buffer_family(tmp_path: Path) -> None:
+def test_name_miss_points_to_search(tmp_path: Path) -> None:
     op = tmp_path / "toy_op"
     op.mkdir()
     dest = write_uo_fixture(op)
@@ -89,24 +90,20 @@ def test_name_miss_recovers_buffer_family(tmp_path: Path) -> None:
         conn.close()
     status(project=str(op), architecture="arch35")
 
-    def names_for(needle: str) -> tuple[str, str]:
-        data = (
-            query(
-                project=str(op),
-                architecture="arch35",
-                operation="find",
-                name=needle,
-            ).get("data")
-            or {}
-        )
-        text = str(data.get("text") or "")
-        return text, str(data.get("hint") or "")
-
     for needle in ("BufferNum", "buffer_num", "GetQBufNum"):
-        text, hint = names_for(needle)
-        assert "FooBuffer" in text
-        assert "Matches:" in text
-        assert "no ident" in hint.lower() or "showing" in hint.lower()
+        payload = query(
+            project=str(op),
+            architecture="arch35",
+            operation="find",
+            name=needle,
+        )
+        data = payload.get("data") or {}
+        text = str(data.get("text") or "")
+        hint = str(data.get("hint") or "")
+        assert "FooBuffer" not in text
+        assert payload.get("verdict") == "UNKNOWN" or data.get("completeness") == "UNKNOWN"
+        assert "search name=" in hint
+        assert "showing buffer" not in hint.lower()
         assert "**Dims**" not in text
 
 

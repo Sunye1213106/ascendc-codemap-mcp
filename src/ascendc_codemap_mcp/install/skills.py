@@ -21,7 +21,7 @@ Use MCP server `ascendc-codemap-mcp`. Identity: `codemap_discover` then `codemap
 已知文件 + 精确源码细节（卡片没列出的行）          → targeted Read
 ```
 
-不知道确切 ident：先 `codemap_query operation=find name=<片段>`（子串，或用 `*` `?` 通配）拿 Matches；miss 时同一次调用会按驼峰 / `_` / 数字 / 缩写再搜。再 `resolve` 其中真名。`resolve` 已有 `symbol=` 时多余的 `name=` 会被忽略。
+不知道确切 ident：先 `codemap_query operation=search name=<短语>` 扫源码行；`find name=` 只匹配 entity.name，0 就是 0，不会扩成 Buffer 家族。再 `resolve` / `contract` 其中真名。`resolve` 已有 `symbol=` 时多余的 `name=` 会被忽略。`dim=` 的 `legal_key_count` 是编进包的 key 数。
 
 CLI fallback (same engine): `ascendc-codemap-mcp query --codemap-id ID --symbol <ident>`.
 Returned Definition spans are usable evidence. If neighboring lines are absent, use codemap_evidence or targeted Read. Empty resolve lists **Dims**. UNKNOWN means the ident is absent on this operator — use those Dims. AMBIGUOUS is multiple definition bodies — pick one. **References** are file:line; expand with codemap_evidence. Kernel API Definition is the bottom layer. Do not call overview first. INVALID_QUERY prints `did you mean:` ready-made calls — resend one verbatim.

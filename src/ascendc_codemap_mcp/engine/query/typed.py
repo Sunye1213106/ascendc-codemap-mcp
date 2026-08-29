@@ -17,7 +17,7 @@ from ascendc_codemap_mcp.engine.passes.consumer_role import CONSUMER_ROLES
 from ascendc_codemap_mcp.engine.query.completeness import COMPLETE, UNKNOWN
 from ascendc_codemap_mcp.engine.query.predicate_ast import OPERATORS as AST_OPERATORS
 
-OPERATIONS = ("resolve", "contract", "impact", "entry", "find", "trace")
+OPERATIONS = ("resolve", "contract", "impact", "entry", "find", "search", "trace")
 PROJECTIONS = ("summary", "source", "locations")
 LAYERS = ("host", "kernel", "tiling", "template", "arch")
 ENTRY_ROLES = ("bailout", "guard_clause", "then_body")
@@ -68,6 +68,7 @@ _CONTRACT_FILTERS = _RESOLVE_FILTERS
 _IMPACT_FILTERS = frozenset({"symbol", "entity_id", "file", "line", "kind"})
 _ENTRY_FILTERS = frozenset({"layer", "entry_role", "function", "referenced_symbol"})
 _TRACE_FILTERS = frozenset({"from_symbol", "to_symbol", "relation"})
+_SEARCH_FILTERS = frozenset({"name", "file"})
 # `name` is a name-pattern discovery filter: substring, or glob when it holds
 # * / ?. It is the only filter that does not require knowing an exact ident.
 _FIND_COMMON = frozenset({"kind", "layer", "function", "name"})
@@ -112,6 +113,7 @@ _OP_FILTERS = {
     "impact": _IMPACT_FILTERS,
     "entry": _ENTRY_FILTERS,
     "trace": _TRACE_FILTERS,
+    "search": _SEARCH_FILTERS,
 }
 
 
@@ -197,7 +199,11 @@ def suggest_calls(
         and name_pat
         and "name" in illegal
     ):
-        out.append({"operation": "find", "name": name_pat})
+        if "*" in name_pat or "?" in name_pat:
+            out.append({"operation": "find", "name": name_pat})
+        else:
+            out.append({"operation": "search", "name": name_pat})
+            out.append({"operation": "find", "name": name_pat})
     for key in illegal:
         value = str(filled.get(key) or "").strip()
         if not value:
@@ -243,6 +249,8 @@ def legal_filters_for(operation: str, kind: str = "") -> list[str]:
         k = _norm_kind(kind)
         allowed = _FIND_BY_KIND.get(k, _FIND_COMMON | {"kind"})
         return sorted(allowed)
+    if op == "search":
+        return sorted(_SEARCH_FILTERS)
     return sorted(_OP_FILTERS.get(op, _RESOLVE_FILTERS))
 
 
@@ -311,6 +319,8 @@ def _has_concrete_seed(operation: str, filled: dict[str, str]) -> bool:
             or filled.get("referenced_value")
             or filled.get("operator")
         )
+    if operation == "search":
+        return bool(filled.get("name"))
     if operation == "entry":
         return True
     if operation == "trace":
@@ -355,6 +365,13 @@ def validate_plan(**kwargs: Any) -> QueryPlan:
         dropped.append("name")
     tokens = parsed_tokens(*filled.values())
     name_pattern = str(filled.get("name") or "")
+    if operation == "search" and not name_pattern:
+        raise InvalidQuery(
+            "search requires name",
+            legal_filters=sorted(_SEARCH_FILTERS),
+            parsed_tokens=tokens,
+            operation=operation,
+        )
     if operation == "find" and not kind and not name_pattern:
         raise InvalidQuery(
             "find requires kind, or name to discover idents",
@@ -539,6 +556,9 @@ def snapshot_has_ast(query: Any) -> bool:
 
 
 def execute(query: Any, plan: QueryPlan) -> dict[str, Any]:
+    if plan.operation == "search":
+        payload = query.query_search(plan, limit=plan.limit)
+        return _attach(query, payload, plan, unique_seed=False)
     if plan.operation == "find":
         if _AST_FILTERS & set(plan.filled) and not snapshot_has_ast(query):
             raise InvalidQuery(
