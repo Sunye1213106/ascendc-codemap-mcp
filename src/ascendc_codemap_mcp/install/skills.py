@@ -21,10 +21,10 @@ Use MCP server `ascendc-codemap-mcp`. Identity: `codemap_discover` then `codemap
 已知文件 + 精确源码细节（卡片没列出的行）          → targeted Read
 ```
 
-不知道确切 ident：先 `codemap_query operation=find name=<片段>`（子串，或用 `*` `?` 通配）拿 **Names**；miss 时同一次调用会按驼峰 / `_` / 数字 / 缩写再搜。再 `resolve` 其中真名。不要对 ident / 调用点做 grep。`resolve` 已有 `symbol=` 时多余的 `name=` 会被忽略。
+不知道确切 ident：先 `codemap_query operation=find name=<片段>`（子串，或用 `*` `?` 通配）拿 Matches；miss 时同一次调用会按驼峰 / `_` / 数字 / 缩写再搜。再 `resolve` 其中真名。`resolve` 已有 `symbol=` 时多余的 `name=` 会被忽略。
 
 CLI fallback (same engine): `ascendc-codemap-mcp query --codemap-id ID --symbol <ident>`.
-Query text is already Read. Empty resolve lists **Dims**. UNKNOWN means the ident is absent on this operator — use those Dims. AMBIGUOUS is multiple definition bodies, each with its own Source — pick one. **Used at** and **Call sites** on the card are already Read. Kernel API Source is the bottom layer. Do not call overview first. INVALID_QUERY prints `did you mean:` ready-made calls — resend one verbatim.
+Returned Definition spans are usable evidence. If neighboring lines are absent, use codemap_evidence or targeted Read. Empty resolve lists **Dims**. UNKNOWN means the ident is absent on this operator — use those Dims. AMBIGUOUS is multiple definition bodies — pick one. **References** are file:line; expand with codemap_evidence. Kernel API Definition is the bottom layer. Do not call overview first. INVALID_QUERY prints `did you mean:` ready-made calls — resend one verbatim.
 """
 
 

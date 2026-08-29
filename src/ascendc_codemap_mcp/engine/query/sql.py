@@ -10,10 +10,11 @@ audit helpers that truly need the in-memory graph stay on
 from __future__ import annotations
 
 import json
+import math
 import re
 import sqlite3
 import threading
-from collections import OrderedDict, deque
+from collections import Counter, OrderedDict, deque
 from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
@@ -2426,55 +2427,119 @@ def _recovery_tokens(pattern: str) -> list[str]:
     return [token for _, token in scored[:6]]
 
 
-def _name_discovery_key(
-    hit: dict[str, Any], pattern: str, *, architecture: str = ""
-) -> tuple[Any, ...]:
-    """Exact leaf, then located operator files, then kind, then token match.
+_SALIENCE_KIND = {
+    EntityKind.TILING_KEY.value: 8,
+    EntityKind.TILING_FIELD.value: 8,
+    EntityKind.CONTRACT.value: 6,
+    EntityKind.PREDICATE.value: 6,
+    EntityKind.TYPE.value: 3,
+    EntityKind.BUFFER.value: 3,
+    EntityKind.KERNEL.value: 3,
+    EntityKind.FUNCTION.value: 2,
+    EntityKind.METHOD.value: 1,
+}
+_KIND_MERGE_PREF = [
+    EntityKind.TILING_KEY.value,
+    EntityKind.CONTRACT.value,
+    EntityKind.TILING_FIELD.value,
+    EntityKind.TYPE.value,
+    EntityKind.KERNEL.value,
+    EntityKind.FUNCTION.value,
+    EntityKind.BUFFER.value,
+    EntityKind.METHOD.value,
+    EntityKind.VARIABLE.value,
+]
+_MATCH_LABEL = {
+    100: "exact",
+    90: "canonical",
+    75: "token",
+    60: "glob",
+    50: "substring",
+    30: "abbrev",
+}
 
-    Fileless catalog types and ../common macros otherwise crowd out the
-    operator's own camelCase idents for a short fragment.
-    """
+
+def _is_glob_pattern(pattern: str) -> bool:
+    return "*" in str(pattern or "") or "?" in str(pattern or "")
+
+
+def _match_quality(pattern: str, name: str) -> int:
+    """Deterministic match tier. A glob's stripped core is not an exact leaf."""
     needle = _needle_core(pattern)
-    name = str(hit.get("name") or "")
+    if not needle:
+        return 50
     leaf = _last_ident(name).lower()
+    tokens = _ident_tokens(name)
+    glob = _is_glob_pattern(pattern)
+    if glob:
+        return 60 if needle in leaf or needle in name.lower() else 50
+    if leaf == needle:
+        return 100
+    if needle in tokens:
+        return 75
+    if needle in leaf or needle in name.lower():
+        return 50
+    return 30
+
+
+def _locality_score(file: str, architecture: str = "") -> int:
+    text = str(file or "").replace("\\", "/").lower()
+    if not text.strip():
+        return -20
+    blob = f"/{text.strip('/')}/"
+    if "/common/" in blob:
+        return -10
+    if "/op_host/" in blob or "/op_kernel/" in blob:
+        return 20
+    if architecture and f"/{architecture.strip().lower()}/" in blob:
+        return 10
+    return 0
+
+
+def _find_score(
+    hit: dict[str, Any],
+    pattern: str,
+    *,
+    architecture: str = "",
+    total: int = 1,
+    freq: dict[str, int] | None = None,
+) -> float:
+    name = str(hit.get("name") or "")
     kind = str(hit.get("kind") or "")
     file = str(hit.get("file") or "")
-    tokens = _ident_tokens(name)
-    exact_leaf = 0 if needle and leaf == needle else 1
-    best_tok = 0
-    token_tier = 5
-    if needle:
-        for t in tokens:
-            if t == needle:
-                token_tier = min(token_tier, 1)
-                best_tok = max(best_tok, len(t))
-            elif t.startswith(needle):
-                token_tier = min(token_tier, 2)
-                best_tok = max(best_tok, len(t))
-            elif len(t) >= 3 and needle.startswith(t):
-                token_tier = min(token_tier, 3)
-                best_tok = max(best_tok, len(t))
-        if token_tier == 5 and (leaf.startswith(needle) or needle in leaf or needle in name.lower()):
-            token_tier = 4
-            best_tok = max(best_tok, len(needle))
-    located = 0 if file.strip() and int(hit.get("line_start") or hit.get("line") or 0) > 0 else 1
+    leaf = _last_ident(name).lower()
+    quality = _match_quality(pattern, name)
+    loc = _locality_score(file, architecture)
+    sal = _SALIENCE_KIND.get(kind, 0)
+    freq = freq or {}
+    df = int(freq.get(leaf) or 1)
+    idf = math.log((max(int(total), 1) + 1) / max(df, 1))
+    generic = -15 if df > max(3, int(total) * 0.02) and len(leaf) <= 8 else 0
+    located = 4 if file.strip() and int(hit.get("line_start") or hit.get("line") or 0) > 0 else 0
+    return quality + loc + sal + idf * 4 + generic + located
+
+
+def _name_discovery_key(
+    hit: dict[str, Any],
+    pattern: str,
+    *,
+    architecture: str = "",
+    total: int = 1,
+    freq: dict[str, int] | None = None,
+) -> tuple[Any, ...]:
+    """Higher-salience, operator-local, rare names first. Glob is not exact leaf."""
     return (
-        exact_leaf,
-        located,
-        _arch_file_rank(file, architecture),
-        _DISCOVERY_KIND_RANK.get(kind, 5),
-        -best_tok,
-        token_tier,
-        len(leaf),
-        leaf,
-        kind,
+        -_find_score(
+            hit, pattern, architecture=architecture, total=total, freq=freq
+        ),
+        _last_ident(str(hit.get("name") or "")).lower(),
+        str(hit.get("kind") or ""),
     )
 
 
 def _collapse_by_name(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """One row per (name, kind): a name list, not a site list."""
-    out: list[dict[str, Any]] = []
-    seen: set[tuple[str, str]] = set()
+    """One row per identity: same leaf at the same span, kinds merged."""
+    filtered: list[dict[str, Any]] = []
     for hit in hits:
         name = str(hit.get("name") or "")
         kind = str(hit.get("kind") or "")
@@ -2486,11 +2551,43 @@ def _collapse_by_name(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
             continue
         if is_include_guard(kind, name, hit.get("data")):
             continue
-        key = (name.lower(), kind)
-        if key in seen:
+        filtered.append(hit)
+    groups: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
+    order: list[tuple[str, str, int]] = []
+    for hit in filtered:
+        name = str(hit.get("name") or "")
+        leaf = _last_ident(name).lower()
+        file = str(hit.get("file") or "").replace("\\", "/")
+        line = int(hit.get("line_start") or hit.get("line") or 0)
+        key = (leaf, file, line) if file and line > 0 else (leaf, "", 0)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(hit)
+    located_leaves = {key[0] for key in groups if key[1]}
+    out: list[dict[str, Any]] = []
+    for key in order:
+        leaf, file, _line = key
+        if not file and leaf in located_leaves:
             continue
-        seen.add(key)
-        out.append(hit)
+        members = groups[key]
+        members.sort(
+            key=lambda hit: (
+                _KIND_MERGE_PREF.index(str(hit.get("kind") or ""))
+                if str(hit.get("kind") or "") in _KIND_MERGE_PREF
+                else 50,
+                str(hit.get("kind") or ""),
+            )
+        )
+        primary = dict(members[0])
+        kinds: list[str] = []
+        for member in members:
+            kind = str(member.get("kind") or "")
+            if kind and kind not in kinds:
+                kinds.append(kind)
+        if kinds:
+            primary["kinds"] = kinds
+        out.append(primary)
     compile_vars = {
         str(hit.get("name") or "").lower()
         for hit in out
@@ -2598,6 +2695,7 @@ class UoSqlQuery:
         self._launch_cache: dict[tuple[str, int], dict[str, Any]] = {}
         self._edges_cache: dict[str, list[dict[str, Any]]] | None = None
         self._named_fields_cache: dict[str, list[dict[str, Any]]] | None = None
+        self._idf_cache: tuple[int, dict[str, int]] | None = None
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -2605,6 +2703,24 @@ class UoSqlQuery:
 
         # Thread-local connection owned by reader.close_uo_connections / QueryCache.drop.
         yield shared_uo(self.product)
+
+    def _ident_frequencies(self) -> tuple[int, dict[str, int]]:
+        if self._idf_cache is not None:
+            return self._idf_cache
+        freq: dict[str, int] = {}
+        total = 0
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT name FROM entity WHERE IFNULL(name, '') != ''"
+            ).fetchall()
+        for (name,) in rows:
+            leaf = _last_ident(str(name or "")).lower()
+            if not leaf:
+                continue
+            freq[leaf] = freq.get(leaf, 0) + 1
+            total += 1
+        self._idf_cache = (max(total, 1), freq)
+        return self._idf_cache
 
     def _accel_ready(self, conn: sqlite3.Connection) -> bool:
         """Whether this product carries the leaf-name inverted index."""
@@ -2632,6 +2748,7 @@ class UoSqlQuery:
         self._engine = None
         self._accel = None
         self._launch_cache = {}
+        self._idf_cache = None
 
     def __enter__(self):
         return self
@@ -6825,13 +6942,33 @@ class UoSqlQuery:
                         recovered_via = token
                         break
             rank_pattern = recovered_via or name_pattern
+            total_ents, freq = self._ident_frequencies()
+            if not _is_glob_pattern(rank_pattern):
+                best_q = max(
+                    (_match_quality(rank_pattern, str(hit.get("name") or "")) for hit in hits),
+                    default=0,
+                )
+                if best_q >= 100:
+                    hits = [
+                        hit
+                        for hit in hits
+                        if _match_quality(rank_pattern, str(hit.get("name") or "")) >= 75
+                    ]
+            for hit in hits:
+                quality = _match_quality(rank_pattern, str(hit.get("name") or ""))
+                hit["match"] = _MATCH_LABEL.get(quality, "substring")
             hits.sort(
                 key=lambda hit: _name_discovery_key(
-                    hit, rank_pattern, architecture=self._architecture
+                    hit,
+                    rank_pattern,
+                    architecture=self._architecture,
+                    total=total_ents,
+                    freq=freq,
                 )
             )
             page = _round_robin_by_file(hits, limit=max(1, int(limit)))
             total = len(hits)
+            kind_counts = Counter(str(hit.get("kind") or "") or "OTHER" for hit in hits)
         else:
             total = len(hits)
             page = hits[: max(1, int(limit))]
@@ -6847,6 +6984,11 @@ class UoSqlQuery:
         }
         if discovery:
             payload["projection"] = "locations"
+            payload["kind_groups"] = [
+                {"kind": kind, "count": n}
+                for kind, n in kind_counts.most_common()
+                if kind
+            ]
             if page:
                 if recovered_via:
                     hint = (

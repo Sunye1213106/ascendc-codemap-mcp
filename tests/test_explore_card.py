@@ -32,6 +32,7 @@ def test_render_explore_markdown_groups_source_by_file_and_caps() -> None:
     )
 
     payload = {
+        "operation": "contract",
         "shape": "name",
         "completeness": "COMPLETE",
         "cards": [
@@ -67,11 +68,12 @@ def test_render_explore_markdown_groups_source_by_file_and_caps() -> None:
         },
     }
     text = render_explore_markdown(payload, verdict="ANSWERED", layer="template")
-    assert "**Flow**" in text
-    assert "**Source**" in text
-    assert "**Impact**" in text
-    assert "### op_kernel/key.h" in text
-    assert "### op_host/tiling.cpp" in text
+    assert "**Contract**" in text
+    assert "**Flow**" not in text
+    assert "**Impact**" not in text
+    assert "**Used at**" not in text
+    assert "op_kernel/key.h" in text
+    assert "op_host/tiling.cpp" in text
     assert text.count("GET_TPL_TILING_KEY") == 1
     assert "do not read" not in text.lower()
     assert len(text) < 8_000
@@ -171,6 +173,7 @@ def test_explore_text_has_no_human_coaching() -> None:
     from ascendc_codemap_mcp.engine.query.explore import render_explore_markdown
 
     payload = {
+        "operation": "contract",
         "completeness": "COMPLETE",
         "cards": [
             {
@@ -208,7 +211,7 @@ def test_explore_text_has_no_human_coaching() -> None:
     assert "already read" not in low
     assert "op_host/tiling.cpp" in text
     assert "GET_TPL_TILING_KEY" in text
-    assert "if constexpr (IS_PSE)" in text
+    assert "op_kernel/vec.h" in text
 
 
 def test_index_markdown_lists_dim_names() -> None:
@@ -322,7 +325,7 @@ def test_explore_returns_markdown_without_flattening(tmp_path: Path) -> None:
     data = body.get("data") or {}
     text = str(data.get("text") or "")
     assert text
-    assert "**Source**" in text or "IsPse" in text
+    assert "**Definition**" in text or "**Source**" in text or "IsPse" in text
     assert "proof" not in data
     assert len(text) < 8_000
     dumped = str(body)
@@ -334,6 +337,7 @@ def test_check_macros_omitted_from_flow_and_impact() -> None:
 
     text = render_explore_markdown(
         {
+            "operation": "contract",
             "shape": "name",
             "completeness": "COMPLETE",
             "cards": [{"name": "PostTiling", "kind": "METHOD", "file": "op_host/tiling.cpp", "line": 80}],
@@ -354,7 +358,7 @@ def test_check_macros_omitted_from_flow_and_impact() -> None:
     assert "CheckLogLevel" not in text
     assert "OP_CHECK" not in text
     assert "GetTilingKey" in text
-    assert "flash_attention_score_grad" in text
+    assert "vec.h" in text
 
 
 def test_clip_source_is_contiguous_for_line_end(tmp_path: Path) -> None:

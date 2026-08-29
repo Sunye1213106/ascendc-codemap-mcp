@@ -146,7 +146,7 @@ def test_name_discovery_lists_idents_without_source(tmp_path: Path) -> None:
     text = str(data.get("text") or "")
     assert payload.get("verdict") == "ANSWERED"
     assert "QL1BuffSelector" in text and "KL1BuffSelector" in text
-    assert "**Names**" in text
+    assert "Matches:" in text
     assert len(text) < 2000
 
 

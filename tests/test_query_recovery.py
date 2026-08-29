@@ -105,7 +105,7 @@ def test_name_miss_recovers_buffer_family(tmp_path: Path) -> None:
     for needle in ("BufferNum", "buffer_num", "GetQBufNum"):
         text, hint = names_for(needle)
         assert "FooBuffer" in text
-        assert "**Names**" in text
+        assert "Matches:" in text
         assert "no ident" in hint.lower() or "showing" in hint.lower()
         assert "**Dims**" not in text
 
@@ -168,9 +168,8 @@ def test_type_definition_and_use_are_not_ambiguous(tmp_path: Path) -> None:
     text = str(data.get("text") or "")
     assert data.get("completeness") != "AMBIGUOUS"
     assert data.get("unresolved_reason") != "MULTIPLE_SEEDS"
-    assert "**Used at**" in text
+    assert "**References**" in text
     assert "kernel.h" in text
-    assert "conditional_t" in text
 
     filtered = query(
         project=str(op),
@@ -181,7 +180,7 @@ def test_type_definition_and_use_are_not_ambiguous(tmp_path: Path) -> None:
     )
     ftext = str((filtered.get("data") or {}).get("text") or "")
     assert "conditional_t" in ftext
-    src_block = ftext.split("**Used at**")[0] if "**Used at**" in ftext else ftext
+    src_block = ftext.split("**References**")[0] if "**References**" in ftext else ftext
     assert "kernel.h" in src_block
 
 

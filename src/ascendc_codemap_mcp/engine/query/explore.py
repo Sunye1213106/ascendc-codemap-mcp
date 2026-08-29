@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Contract card renderer: Flow + Source-by-file + Impact.
+"""Operation-specific agent cards. One semantic fact, one representation.
 
-Seed resolution is typed (operation + filters). Completeness is independent
-of how the seed was found. MCP text is one agent card. No human asides.
+find → candidates; resolve → definition + references; contract → host /
+tiling-key / kernel; impact → affected locations. Completeness is independent
+of how the seed was found. No human asides.
 """
 from __future__ import annotations
 
@@ -62,6 +63,17 @@ _VALIDATION_NAMES = frozenset(
     }
 )
 _TPL_BOILER = ("ASCENDC_TPL_ARGS_DECL", "ASCENDC_TPL_SEL", "ASCENDC_TPL_ARGS_SEL")
+_KIND_MERGE_PREF = [
+    EntityKind.TILING_KEY.value,
+    EntityKind.CONTRACT.value,
+    EntityKind.TILING_FIELD.value,
+    EntityKind.TYPE.value,
+    EntityKind.KERNEL.value,
+    EntityKind.FUNCTION.value,
+    EntityKind.BUFFER.value,
+    EntityKind.METHOD.value,
+    EntityKind.VARIABLE.value,
+]
 
 
 def _is_validation_name(name: str) -> bool:
@@ -115,6 +127,64 @@ def _is_noise_name(name: str) -> bool:
 def _is_tpl_boilerplate(snippet: str) -> bool:
     text = str(snippet or "")
     return any(tok in text for tok in _TPL_BOILER)
+
+
+def _is_tpl_machinery(name: str) -> bool:
+    leaf = _last_ident(name)
+    return leaf.startswith("ASCENDC_TPL_") or leaf == "GET_TPL_TILING_KEY"
+
+
+def _is_unrelated_type_neighbor(seed_name: str, row: dict[str, Any]) -> bool:
+    seed_leaf = _last_ident(seed_name).lower()
+    leaf = _last_ident(str(row.get("name") or "")).lower()
+    if leaf and leaf == seed_leaf:
+        return False
+    kind = str(row.get("kind") or "").upper()
+    if kind == EntityKind.TYPE.value and leaf.endswith("type"):
+        return True
+    return _is_tpl_machinery(str(row.get("name") or ""))
+
+
+def _merge_canonical_identities(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Same leaf at the same span is one identity, not AMBIGUOUS."""
+    groups: dict[tuple[str, str, int], list[dict[str, Any]]] = {}
+    order: list[tuple[str, str, int]] = []
+    for card in cards:
+        if not isinstance(card, dict):
+            continue
+        file, line, name, _ = _site_line(card)
+        leaf = _last_ident(name).lower()
+        file_n = file.replace("\\", "/")
+        key = (leaf, file_n, line) if file and line > 0 else (leaf, "", 0)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(card)
+    located_leaves = {key[0] for key in groups if key[1]}
+    out: list[dict[str, Any]] = []
+    for key in order:
+        leaf, file, _line = key
+        if not file and leaf in located_leaves:
+            continue
+        members = groups[key]
+        members.sort(
+            key=lambda card: (
+                _KIND_MERGE_PREF.index(str(card.get("kind") or ""))
+                if str(card.get("kind") or "") in _KIND_MERGE_PREF
+                else 50,
+                str(card.get("kind") or ""),
+            )
+        )
+        primary = dict(members[0])
+        kinds: list[str] = []
+        for member in members:
+            kind = str(member.get("kind") or "")
+            if kind and kind not in kinds:
+                kinds.append(kind)
+        if kinds:
+            primary["kinds"] = kinds
+        out.append(primary)
+    return out or cards
 
 
 def _clip_source(
@@ -560,6 +630,245 @@ def cut_explore_text(text: str) -> str:
     return cut.rstrip() + note
 
 
+def _card_kinds(row: dict[str, Any]) -> str:
+    kinds = row.get("kinds")
+    if isinstance(kinds, list) and kinds:
+        return " · ".join(str(k) for k in kinds if k)
+    return str(row.get("kind") or "")
+
+
+def _loc(row: dict[str, Any]) -> str:
+    file, line, name, _ = _site_line(row)
+    if file and line:
+        return f"{name} ({file}:{line})" if name else f"{file}:{line}"
+    return name or file or "?"
+
+
+def _useful_rows(rows: Any, seed_name: str) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name") or "")
+        if _is_validation_name(name) or _is_noise_name(name) or _is_tpl_machinery(name):
+            continue
+        if _is_unrelated_type_neighbor(seed_name, row):
+            continue
+        if not _has_loc(row):
+            continue
+        out.append(row)
+    return _dedup_rows(out)
+
+
+def _render_find_markdown(payload: dict[str, Any]) -> list[str]:
+    cards = [c for c in (payload.get("cards") or []) if isinstance(c, dict)]
+    total = int(payload.get("total") or len(cards))
+    lines = [f"Matches: {total}", "", "Top candidates:"]
+    for index, row in enumerate(cards, 1):
+        file, line, name, _ = _site_line(row)
+        kind_s = _card_kinds(row)
+        where = f"{file}:{line}" if file and line else file
+        lines.append(f"{index}. {name}")
+        bits = [part for part in (kind_s, where) if part]
+        if bits:
+            lines.append("   " + " · ".join(bits))
+        match = str(row.get("match") or "")
+        if match:
+            lines.append(f"   match: {match}")
+    lines.append("")
+    groups = [g for g in (payload.get("kind_groups") or []) if isinstance(g, dict)]
+    if not groups:
+        counts: dict[str, int] = {}
+        for row in cards:
+            kind = str(row.get("kind") or "OTHER")
+            counts[kind] = counts.get(kind, 0) + 1
+        groups = [
+            {"kind": kind, "count": n}
+            for kind, n in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        ]
+    if groups:
+        lines.append("Groups:")
+        lines.append(
+            " · ".join(f"{g.get('kind')} {g.get('count')}" for g in groups if g.get("kind"))
+        )
+        lines.append("")
+    if total > len(cards):
+        lines.append("Refine with kind= / file= or a tighter name=")
+        lines.append("")
+    op_sites = [r for r in (payload.get("operation_sites") or []) if isinstance(r, dict)]
+    if op_sites:
+        lines.append("**Call sites**")
+        for row in op_sites:
+            file, line, _, _ = _site_line(row)
+            if file and line:
+                lines.append(f"- {file}:{line}")
+        site_total = int(payload.get("operation_sites_total") or len(op_sites))
+        if payload.get("operation_sites_truncated"):
+            lines.append(f"(showing {len(op_sites)} of {site_total})")
+        lines.append("")
+    elif not _is_name_list(payload) and cards:
+        lines.append("**Call sites**")
+        seen: set[tuple[str, int]] = set()
+        for row in cards:
+            file, line, _, _ = _site_line(row)
+            if not file or line <= 0 or (file, line) in seen:
+                continue
+            seen.add((file, line))
+            lines.append(f"- {file}:{line}")
+        lines.append("")
+    hint = str(payload.get("hint") or "")
+    if hint and (
+        "no ident" in hint.lower()
+        or "showing" in hint.lower()
+        or "already listed" in hint.lower()
+    ):
+        lines.extend([hint, ""])
+    return lines
+
+
+def _render_resolve_markdown(payload: dict[str, Any], *, projection: str) -> list[str]:
+    cards = [c for c in (payload.get("cards") or []) if isinstance(c, dict)]
+    primary = cards[0] if cards else {}
+    seed_name = str(primary.get("name") or "")
+    lines: list[str] = []
+    candidates = [c for c in (payload.get("candidates") or []) if isinstance(c, dict)]
+    cand_src = [c for c in (payload.get("candidate_sources") or []) if isinstance(c, dict)]
+    if candidates:
+        lines.append("**Candidates** (resolve one)")
+        for cand in candidates:
+            kind = str(cand.get("kind") or "")
+            file = str(cand.get("file") or "")
+            suffix = f"  {kind}" + (f"  {file}" if file else "")
+            lines.append(f"- {cand.get('name')}{suffix}")
+        lines.append("")
+    if cand_src:
+        lines.append("**Definition**")
+        for row in cand_src:
+            file = str(row.get("file") or "")
+            if file:
+                lines.append(f"{FILE_SECTION_PREFIX}{file}")
+            for no, text in _snippet_rows(str(row.get("snippet") or ""), int(row.get("line") or 0)):
+                lines.append(f"{no}|  {text}")
+        lines.append("")
+    elif primary and str(projection or payload.get("projection") or "summary") != "locations":
+        file, line, name, snippet = _site_line(primary)
+        if file:
+            src = _render_source(
+                [{"file": file, "line": line, "name": name, "snippet": snippet}],
+                tight=False,
+            )
+            lines.extend(["**Definition**" if ln == "**Source**" else ln for ln in src])
+    used = _dedup_rows(r for r in (payload.get("used_at") or []) if isinstance(r, dict))
+    used = [
+        row
+        for row in used
+        if not _is_unrelated_type_neighbor(seed_name, row) and not _is_tpl_machinery(str(row.get("name") or ""))
+    ]
+    if used:
+        lines.append("**References**")
+        counts: dict[str, int] = {}
+        for row in used:
+            file, _line, _, _ = _site_line(row)
+            if file:
+                counts[file] = counts.get(file, 0) + 1
+        if len(used) <= 8:
+            for row in used:
+                file, line, _, _ = _site_line(row)
+                if file and line:
+                    lines.append(f"- {file}:{line}")
+        else:
+            for file, n in list(counts.items())[:8]:
+                lines.append(f"- {file} · {n} refs")
+            lines.append(f"{len(used)} references across {len(counts)} files")
+        lines.append("")
+    dim_names = [str(n).strip() for n in (payload.get("dim_names") or []) if str(n).strip()]
+    if dim_names and not seed_name:
+        lines.append("**Dims**")
+        lines.append("- " + ", ".join(dim_names))
+        lines.append("")
+    hint = str(payload.get("hint") or "")
+    if hint:
+        lines.extend([hint, ""])
+    return lines
+
+
+def _render_contract_markdown(payload: dict[str, Any]) -> list[str]:
+    contract = payload.get("contract") if isinstance(payload.get("contract"), dict) else {}
+    cards = [c for c in (payload.get("cards") or []) if isinstance(c, dict)]
+    seed = contract.get("seed") if isinstance(contract.get("seed"), dict) else (cards[0] if cards else {})
+    seed_name = str(seed.get("name") or "")
+    producers = _useful_rows(contract.get("producers") or [], seed_name)
+    consumers = _useful_rows(contract.get("consumers") or [], seed_name)
+    if not producers:
+        for card in cards:
+            extras = card.get("extras") if isinstance(card.get("extras"), dict) else {}
+            producers.extend(
+                _useful_rows(extras.get("writers") or card.get("writers") or [], seed_name)
+            )
+        producers = _dedup_rows(producers)
+    if not consumers:
+        for card in cards:
+            extras = card.get("extras") if isinstance(card.get("extras"), dict) else {}
+            consumers.extend(
+                _useful_rows(extras.get("readers") or card.get("readers") or [], seed_name)
+            )
+        consumers = _dedup_rows(consumers)
+    lines = ["**Contract**", ""]
+    if producers:
+        lines.append("Host")
+        for row in producers[:3]:
+            file, line, name, snippet = _site_line(row)
+            lines.append(f"{name} ({file}:{line})" if file and line else name)
+            if snippet:
+                rows = _snippet_rows(snippet, line)
+                if rows:
+                    pick = next(
+                        (pair for pair in rows if seed_name and seed_name in pair[1]),
+                        rows[0],
+                    )
+                    lines.append(f"{pick[0]}|  {pick[1]}")
+        lines.append("        │")
+        lines.append("        ▼")
+    file, line, name, _ = _site_line(seed)
+    lines.append("TilingKey")
+    lines.append(f"{name} · {file}:{line}" if file and line else name)
+    if consumers:
+        lines.append("        │")
+        lines.append("        ▼")
+        lines.append("Kernel")
+        seed_file, seed_line, _, _ = _site_line(seed if isinstance(seed, dict) else {})
+        for row in consumers[:8]:
+            cfile, cline, cname, _ = _site_line(row)
+            if cfile and cline and (cfile, cline) == (seed_file, seed_line):
+                continue
+            if cfile and cline:
+                lines.append(f"  {cfile}:{cline}")
+            elif cname:
+                lines.append(f"  {cname}")
+    lines.append("")
+    hint = str(payload.get("hint") or "")
+    if hint:
+        lines.extend([hint, ""])
+    return lines
+
+
+def _render_impact_markdown(payload: dict[str, Any]) -> list[str]:
+    contract = payload.get("contract") if isinstance(payload.get("contract"), dict) else {}
+    cards = [c for c in (payload.get("cards") or []) if isinstance(c, dict)]
+    seed_name = str((cards[0] if cards else {}).get("name") or "")
+    producers = _useful_rows(contract.get("producers") or [], seed_name)
+    consumers = _useful_rows(contract.get("consumers") or [], seed_name)
+    lines = ["**Impact**"]
+    if producers:
+        lines.append("- writes: " + ", ".join(_loc(r) for r in producers[:8]))
+    if consumers:
+        lines.append("- reads: " + ", ".join(_loc(r) for r in consumers[:8]))
+    if not producers and not consumers:
+        lines.append("(no located writers/readers)")
+    lines.append("")
+    return lines
+
+
 def render_explore_markdown(
     payload: dict[str, Any],
     *,
@@ -577,182 +886,26 @@ def render_explore_markdown(
         )
         if part
     )
-    lines: list[str] = []
-    if header:
-        lines.extend([header, ""])
-
-    contract = payload.get("contract") if isinstance(payload.get("contract"), dict) else {}
-    cards = [c for c in (payload.get("cards") or []) if isinstance(c, dict)]
-    seed = contract.get("seed") if isinstance(contract.get("seed"), dict) else (cards[0] if cards else {})
-    producers = [r for r in (contract.get("producers") or []) if isinstance(r, dict)]
-    consumers = [r for r in (contract.get("consumers") or []) if isinstance(r, dict)]
-    producers = [r for r in producers if not _is_validation_name(str(r.get("name") or ""))]
-    consumers = [r for r in consumers if not _is_validation_name(str(r.get("name") or ""))]
-    if not producers:
-        for card in cards:
-            producers.extend(r for r in (card.get("writers") or []) if isinstance(r, dict))
-            extras = card.get("extras") if isinstance(card.get("extras"), dict) else {}
-            producers.extend(r for r in (extras.get("writers") or []) if isinstance(r, dict))
-    if not consumers:
-        for card in cards:
-            consumers.extend(r for r in (card.get("readers") or []) if isinstance(r, dict))
-            extras = card.get("extras") if isinstance(card.get("extras"), dict) else {}
-            consumers.extend(r for r in (extras.get("readers") or []) if isinstance(r, dict))
-    # A row with no file:line is not evidence. Printing it as a dependency step
-    # padded the chain with field names the caller cannot go look at.
-    producers = _dedup_rows(
-        r
-        for r in producers
-        if not _is_noise_name(str(r.get("name") or "")) and _has_loc(r)
-    )
-    consumers = _dedup_rows(
-        r
-        for r in consumers
-        if not _is_noise_name(str(r.get("name") or "")) and _has_loc(r)
-    )
-
-    def loc(row: dict[str, Any]) -> str:
-        file, line, name, _ = _site_line(row)
-        if file and line:
-            return f"{name} ({file}:{line})" if name else f"{file}:{line}"
-        return name or file or "?"
-
-    proj = str(projection or payload.get("projection") or "summary")
-    show_flow = proj != "source"
-    show_source = proj != "locations"
-    show_impact = proj == "summary"
-
-    flow: list[str] = ["**Flow** (Host → TilingKey → Kernel)", ""]
-    step = 1
-    for row in producers[:6]:
-        flow.append(f"{step}. {loc(row)}  writes")
-        step += 1
-        flow.append("   ↓")
-    if seed:
-        flow.append(f"{step}. {loc(seed)}")
-        step += 1
-    if consumers:
-        flow.append("   ↓")
-        for row in consumers[:6]:
-            flow.append(f"{step}. {loc(row)}  reads")
-            step += 1
-    if (producers or consumers) and show_flow:
-        lines.extend(flow)
-        lines.append("")
-
-    sites: list[dict[str, Any]] = []
-    seen: set[tuple[str, int]] = set()
-
-    def add_site(row: dict[str, Any] | None) -> None:
-        if not isinstance(row, dict):
-            return
-        file, line, name, snippet = _site_line(row)
-        if not file:
-            return
-        key = (file, line)
-        if key in seen:
-            return
-        seen.add(key)
-        sites.append({"file": file, "line": line, "name": name, "snippet": snippet})
-
-    add_site(seed)
-    for row in cards:
-        add_site(row)
-    for row in producers:
-        add_site(row)
-    for row in consumers:
-        add_site(row)
-    for row in payload.get("sel_sites") or []:
-        if isinstance(row, dict):
-            add_site(row)
-
+    op = str(payload.get("operation") or "")
+    if _is_name_list(payload) or op == "find":
+        body = _render_find_markdown(payload)
+    elif op == "contract":
+        body = _render_contract_markdown(payload)
+    elif op == "impact":
+        body = _render_impact_markdown(payload)
+    else:
+        body = _render_resolve_markdown(payload, projection=projection)
+    extra: list[str] = []
     dim_cov = payload.get("dim_coverage")
     if isinstance(dim_cov, dict) and dim_cov:
-        lines.append("**Dim**")
+        extra.append("**Dim**")
         for dim, values in dim_cov.items():
             shown = values if isinstance(values, list) else [values]
-            lines.append(f"- {dim}: {{{', '.join(str(v) for v in shown)}}}")
+            extra.append(f"- {dim}: {{{', '.join(str(v) for v in shown)}}}")
         if payload.get("legal_key_count") not in (None, ""):
-            lines.append(f"- legal_key_count: {payload.get('legal_key_count')}")
-        lines.append("")
-
-    candidates = [c for c in (payload.get("candidates") or []) if isinstance(c, dict)]
-    if candidates:
-        lines.append("**Candidates** (resolve one)")
-        for cand in candidates:
-            kind = str(cand.get("kind") or "")
-            file = str(cand.get("file") or "")
-            suffix = f"  {kind}" + (f"  {file}" if file else "")
-            lines.append(f"- {cand.get('name')}{suffix}")
-        lines.append("")
-
-    dim_names = [
-        str(name).strip()
-        for name in (payload.get("dim_names") or [])
-        if str(name).strip()
-    ]
-    if dim_names:
-        lines.append("**Dims**")
-        lines.append("- " + ", ".join(dim_names))
-        lines.append("")
-
-    cand_src = [c for c in (payload.get("candidate_sources") or []) if isinstance(c, dict)]
-    if cand_src:
-        lines.append("**Source**")
-        for row in cand_src:
-            file = str(row.get("file") or "")
-            if file:
-                lines.append(f"{FILE_SECTION_PREFIX}{file}")
-            for no, text in _snippet_rows(str(row.get("snippet") or ""), int(row.get("line") or 0)):
-                lines.append(f"{no}|  {text}")
-        lines.append("")
-    elif _is_name_list(payload):
-        lines.append("**Names**")
-        for row in cards:
-            file, line, name, _ = _site_line(row)
-            where = f"  {file}:{line}" if file and line else (f"  {file}" if file else "")
-            lines.append(f"- {name}  {row.get('kind') or ''}{where}".rstrip())
-        lines.append("")
-        op_sites = [r for r in (payload.get("operation_sites") or []) if isinstance(r, dict)]
-        if op_sites:
-            lines.append("**Call sites**")
-            for row in op_sites:
-                file, line, _, _ = _site_line(row)
-                if file and line:
-                    lines.append(f"- {file}:{line}")
-            total = int(payload.get("operation_sites_total") or len(op_sites))
-            if payload.get("operation_sites_truncated"):
-                lines.append(f"(showing {len(op_sites)} of {total})")
-            lines.append("")
-    elif sites and show_source:
-        lines.extend(_render_source(sites, tight=_is_site_list(payload)))
-
-    used_at = [r for r in (payload.get("used_at") or []) if isinstance(r, dict)]
-    if used_at:
-        lines.append("**Used at**")
-        for row in used_at:
-            file, line, name, snippet = _site_line(row)
-            if file:
-                lines.append(f"{FILE_SECTION_PREFIX}{file}")
-            if snippet:
-                for no, text in _snippet_rows(snippet, line):
-                    lines.append(f"{no}|  {text}")
-            elif line:
-                lines.append(f"{line}|  {name}")
-        lines.append("")
-
-    if (producers or consumers) and show_impact:
-        # Label by the relation the graph holds. Calling every producer a "host
-        # writer" mislabelled kernel-side writers and host-side readers alike.
-        lines.append("**Impact**")
-        if producers:
-            lines.append("- writes: " + ", ".join(loc(r) for r in producers[:8]))
-        if consumers:
-            lines.append("- reads: " + ", ".join(loc(r) for r in consumers[:8]))
-        lines.append("")
-    if payload.get("hint"):
-        lines.extend([str(payload.get("hint")), ""])
-
+            extra.append(f"- legal_key_count: {payload.get('legal_key_count')}")
+        extra.append("")
+    lines = ([header, ""] if header else []) + extra + body
     return cut_explore_text("\n".join(lines).rstrip() + "\n")
 
 
@@ -887,7 +1040,16 @@ def attach_explore_fields(
     cards = [c for c in cards if isinstance(c, dict)]
     if unique_seed:
         cards = _prefer_located_cards(cards)
-        payload["cards"] = cards
+    if str(payload.get("shape") or "") == "name" and unique_seed:
+        cards, aliases = _prefer_tiling_key_seed(cards, pattern)
+        if aliases:
+            payload["aliases"] = [
+                {"name": a.get("name"), "kind": a.get("kind")}
+                for a in aliases
+                if isinstance(a, dict)
+            ]
+    cards = _merge_canonical_identities(cards)
+    payload["cards"] = cards
     if not cards:
         payload.setdefault("completeness", UNKNOWN)
         payload["text"] = render_explore_markdown(payload, projection=projection)
@@ -904,16 +1066,7 @@ def attach_explore_fields(
         primary["line_end"] = payload.get("line_end") or primary.get("line_end")
         cards[0] = primary
         payload["cards"] = cards
-    if str(payload.get("shape") or "") == "name" and unique_seed:
-        cards, aliases = _prefer_tiling_key_seed(cards, pattern)
-        payload["cards"] = cards
-        if aliases:
-            payload["aliases"] = [
-                {"name": a.get("name"), "kind": a.get("kind")}
-                for a in aliases
-                if isinstance(a, dict)
-            ]
-        primary = cards[0]
+    if unique_seed:
         payload["count"] = len(cards)
     sites = _definition_site_candidates(cards)
     def_sites = [s for s in sites if _looks_like_definition(s)]

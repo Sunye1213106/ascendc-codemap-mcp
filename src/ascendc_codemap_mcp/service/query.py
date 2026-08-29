@@ -150,15 +150,21 @@ def _edges_truncated(payload: dict[str, Any]) -> bool:
 
 def _infer_verdict(payload: dict[str, Any], *, truncated: bool) -> str:
     completeness = str(payload.get("completeness") or "")
+    op = str(payload.get("operation") or "")
+    shape = str(payload.get("shape") or "")
+    is_find = op == "find" or shape == "find"
     if completeness == "UNKNOWN" or payload.get("error_code") == "INVALID_QUERY":
         return VERDICT_UNKNOWN
     if completeness == "INCOMPLETE" or completeness == "AMBIGUOUS":
         return VERDICT_PARTIAL
     if completeness == "COMPLETE":
-        return VERDICT_ANSWERED if not truncated else VERDICT_PARTIAL
+        # A truncated find is still a complete candidate list; Matches:/Groups
+        # tell the caller what was omitted. PARTIAL+COMPLETE is not a signal.
+        if truncated and not is_find:
+            return VERDICT_PARTIAL
+        return VERDICT_ANSWERED
     if not payload.get("ok"):
         return VERDICT_UNKNOWN
-    shape = str(payload.get("shape") or "")
     count = int(payload.get("count") or 0)
     if truncated or payload.get("truncated"):
         return VERDICT_PARTIAL
