@@ -10,19 +10,21 @@ from ascendc_codemap_mcp.constants import (
     AGENTS_MARK_END,
     SKILL_NAMES,
 )
+from ascendc_codemap_mcp.install.opencode import home as opencode_home
 
 _AGENTS_BODY = """# AscendC CodeMap MCP
 
-Use MCP server `ascendc-codemap-mcp`. Identity: `codemap_discover` then `codemap.id` (`p:<workspace>::op@arch`). Missing → `codemap_doctor` / `codemap_index`. Stale/dirty → `codemap_update`.
+Use MCP server `ascendc-codemap-mcp`. Identity: `codemap_discover` then `codemap.id` (`p:<workspace>::op@arch`), or pass project+architecture on `codemap_query`. Missing → `codemap_doctor` / `codemap_index`. Stale/dirty → `codemap_update`.
 
 ```text
-代码语义（谁写谁读 / 为什么走这条路 / 改了影响谁）  → codemap_explore
-已知文件 + 精确源码细节                            → targeted Read
-字面文本 / 正则 / 文档 / 配置                      → grep/read
-CodeMap 报 INCOMPLETE                              → 按它给的窗口做 targeted 源码兜底
+代码语义（谁写谁读 / 为什么走这条路 / 改了影响谁）  → 一次 codemap_query
+已知文件 + 精确源码细节（卡片没列出的行）          → targeted Read
 ```
 
-CLI fallback (same engine): `ascendc-codemap-mcp query --codemap-id ID "<ident|Dim=V|现象>"`.
+不知道确切 ident：先 `codemap_query operation=find name=<片段>`（子串，或用 `*` `?` 通配）拿 **Names**；miss 时同一次调用会按驼峰 / `_` / 数字 / 缩写再搜。再 `resolve` 其中真名。不要对 ident / 调用点做 grep。`resolve` 已有 `symbol=` 时多余的 `name=` 会被忽略。
+
+CLI fallback (same engine): `ascendc-codemap-mcp query --codemap-id ID --symbol <ident>`.
+Query text is already Read. Empty resolve lists **Dims**. UNKNOWN means the ident is absent on this operator — use those Dims. AMBIGUOUS is multiple definition bodies, each with its own Source — pick one. **Used at** and **Call sites** on the card are already Read. Kernel API Source is the bottom layer. Do not call overview first. INVALID_QUERY prints `did you mean:` ready-made calls — resend one verbatim.
 """
 
 
@@ -43,9 +45,10 @@ def _copy_skills(dest: Path) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     for name in SKILL_NAMES:
         body = (src / name / "SKILL.md").read_text(encoding="utf-8")
-        target = dest / f"ascendc-codemap-{name}" / "SKILL.md"
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(body, encoding="utf-8")
+        for folder in (f"ascendc-codemap-{name}", name):
+            target = dest / folder / "SKILL.md"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(body, encoding="utf-8")
 
 
 def _remove_skills(dest: Path) -> None:
@@ -54,9 +57,10 @@ def _remove_skills(dest: Path) -> None:
     import shutil
 
     for name in SKILL_NAMES:
-        path = dest / f"ascendc-codemap-{name}"
-        if path.is_dir():
-            shutil.rmtree(path)
+        for folder in (f"ascendc-codemap-{name}", name):
+            path = dest / folder
+            if path.is_dir():
+                shutil.rmtree(path)
 
 
 def _upsert_agents(path: Path) -> None:
@@ -104,7 +108,7 @@ def _client_skill_dir(client: str) -> Path | None:
         base = Path(os.environ.get("CODEX_HOME") or (home / ".codex"))
         return base / "skills"
     if client == "OpenCode":
-        return home / ".config" / "opencode" / "skills"
+        return opencode_home() / "skills"
     return None
 
 
@@ -114,7 +118,7 @@ def _client_agents_path(client: str) -> Path | None:
         base = Path(os.environ.get("CODEX_HOME") or (home / ".codex"))
         return base / "AGENTS.md"
     if client == "OpenCode":
-        return home / ".config" / "opencode" / "AGENTS.md"
+        return opencode_home() / "AGENTS.md"
     return None
 
 

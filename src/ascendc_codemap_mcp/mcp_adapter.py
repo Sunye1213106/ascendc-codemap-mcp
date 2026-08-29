@@ -5,18 +5,21 @@ from __future__ import annotations
 import asyncio
 import atexit
 import json
+import os
 import threading
 from collections.abc import Callable
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Literal
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.context import Context
 from mcp.server.mcpserver.resources.templates import ResourceSecurity
 from mcp.types import (
+    CallToolResult,
     Completion,
     PromptReference,
     ResourceTemplateReference,
+    TextContent,
     ToolAnnotations,
 )
 
@@ -32,11 +35,7 @@ from ascendc_codemap_mcp.service.control import (
 from ascendc_codemap_mcp.service.models import DoctorResult, Envelope
 from ascendc_codemap_mcp.service.query import (
     evidence as evidence_impl,
-    explore as explore_impl,
-    overview as overview_impl,
-    query_codemap as query_impl,
-    selection as selection_impl,
-    symbol as symbol_impl,
+    query as query_impl,
 )
 
 INSTRUCTIONS = """\
@@ -44,17 +43,19 @@ AscendC CodeMap is a semantic compiler graph for one operator + one architecture
 It answers what the code is, not what a previous agent thought.
 
 Workflow:
-1. codemap_discover (project= operator directory) → keep codemap.id (p:<workspace>::op@arch). op@arch is an alias; if it matches multiple workspaces, use the canonical id.
-2. Read resource codemap://map/{codemap_id} or call codemap_status
-3. If not indexed: codemap_doctor then codemap_index (minutes). Do not index on connect. If doctor.ok is false, follow doctor.next_steps (download CANN Toolkit .run, cann-extract, install LLVM 18). Do not run the .run installer.
-4. If stale or dirty: codemap_update. If state=needs_confirmation, ask the user before confirm_scope=true.
-5. Query with codemap_explore (ident / Dim=V / file:line / phenomenon). evidence_id or cursor continues a prior card.
-Typed tools remain as CLI/service primitives.
+1. If you have no codemap.id: codemap_discover (project= operator directory) or pass project+architecture on query. Identity is p:<workspace>::op@arch.
+2. If not indexed: codemap_doctor then codemap_index (minutes). Do not index on connect.
+3. If stale or dirty: codemap_update. Read state and updated; ok=true is not a rebuild.
+4. Query with codemap_query only. operation is an enum (default resolve). Do not call overview or symbol.
+
+Do not know the exact ident? Discover it first: codemap_query operation=find name=<fragment> (substring, or glob with * ?) returns a **Names** list ranked by match quality. A miss is recovered in the same call by splitting camelCase / snake_case / digits and expanding common abbreviations (Buf↔Buffer). Then resolve one of those names. Both steps are graph queries — do not fall back to grep because a word did not resolve. Extra name= on resolve is ignored when symbol= is already set.
+
+The query text is the answer: Flow, Source grouped by file (treat as already Read), **Used at** (other files, each with its own snippet), Impact locations, **Names**, **Call sites**, **Candidates**, or **Dims**. Empty resolve lists this operator's Dims. UNKNOWN means that ident is absent here — use those Dims; do not retry the same name. AMBIGUOUS is only multiple definition bodies, each with its own Source; pick one. A **Call sites** table under Names is already the site list — do not find kind=OPERATION again. Kernel API Source (InitBuffer / DataCopyPad) is the bottom layer. Do not Grep files already listed. file= without line filters Source to that file.
 
 Rules:
-- Never guess architecture. Never pass a natural-language sentence as a symbol.
-- Follow evidence[].id (span:...) with evidence[].snapshot_id as expected_snapshot_id. If coverage.truncated and next_cursor is set, pass next_cursor; nested neighbor samples are not a page.
-- update ok=true is not "graph refreshed". Read state and updated.
+- Never guess architecture. Pass identifiers, file+line, or closed filters — not a natural-language sentence.
+- INVALID_QUERY lists legal filters and a `did you mean:` set of ready-made calls; resend one of those verbatim instead of guessing or giving up.
+- Follow evidence[].id (span:...) with evidence[].snapshot_id as expected_snapshot_id when continuing.
 - Do not write patches into .uo. Do not use raw SQL/Cypher.
 """
 
@@ -95,6 +96,95 @@ atexit.register(runtime.shutdown)
 
 def _envelope(payload: dict[str, Any]) -> Envelope:
     return Envelope.model_validate(payload)
+
+
+_FOLLOWUP_KEYS = (
+    "ok",
+    "verdict",
+    "layer",
+    "error",
+    "error_code",
+    "next_cursor",
+    "legal_filters",
+    "parsed_tokens",
+    "operation",
+)
+_CODEMAP_FOLLOWUP = ("id", "snapshot_id", "architecture", "alias")
+
+
+def _agent_followup(payload: dict[str, Any]) -> dict[str, Any]:
+    """Handles the next tool call needs. Not a second copy of the answer."""
+    out: dict[str, Any] = {}
+    for key in _FOLLOWUP_KEYS:
+        value = payload.get(key)
+        if value in (None, ""):
+            continue
+        out[key] = value
+    if "ok" not in out:
+        out["ok"] = bool(payload.get("ok", False))
+    handle = payload.get("codemap")
+    if isinstance(handle, dict):
+        keep = {key: handle[key] for key in _CODEMAP_FOLLOWUP if handle.get(key) not in (None, "")}
+        if keep:
+            out["codemap"] = keep
+    return out
+
+
+def _query_result(payload: dict[str, Any]) -> CallToolResult:
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    text = str((data or {}).get("text") or "")
+    followup = _agent_followup(payload)
+    if payload.get("error_code") == "INVALID_QUERY":
+        hint = str((data or {}).get("hint") or payload.get("error") or "")
+        legal = payload.get("legal_filters") or (data or {}).get("legal_filters") or []
+        tokens = payload.get("parsed_tokens") or (data or {}).get("parsed_tokens") or []
+        text = (
+            f"INVALID_QUERY: {hint}\n"
+            f"legal filters: {', '.join(str(x) for x in legal) or '(none)'}\n"
+            f"parsed tokens: {', '.join(str(x) for x in tokens) or '(none)'}"
+        )
+        followup["legal_filters"] = list(legal)
+        followup["parsed_tokens"] = list(tokens)
+    elif not text:
+        err = str(payload.get("error_code") or "").strip()
+        msg = str(payload.get("error") or "").strip()
+        text = f"{err}: {msg}".strip(": ").strip() or json.dumps(followup, ensure_ascii=False)
+    return CallToolResult(
+        content=[TextContent(type="text", text=text)],
+        structured_content=followup,
+    )
+
+
+_explore_result = _query_result
+
+DEFAULT_MCP_TOOLS = (
+    "codemap_query",
+    "codemap_evidence",
+    "codemap_doctor",
+    "codemap_index",
+    "codemap_update",
+    "codemap_discover",
+)
+
+
+def listed_tool_names() -> set[str] | None:
+    raw = str(os.environ.get("ASCENDC_CODEMAP_MCP_TOOLS") or "").strip()
+    if raw in {"*", "all"}:
+        return None
+    if not raw:
+        return set(DEFAULT_MCP_TOOLS)
+    names: set[str] = set()
+    for part in raw.split(","):
+        name = part.strip()
+        if not name:
+            continue
+        if name in {"index_operator", "update_operator"} or name.startswith(
+            "codemap_"
+        ):
+            names.add(name)
+        else:
+            names.add(f"codemap_{name}")
+    return names
 
 
 def _doctor(payload: dict[str, Any]) -> DoctorResult:
@@ -153,69 +243,70 @@ def codemap_status(
     )
 
 
-@mcp.tool(title="Explore CodeMap", annotations=READ, structured_output=True)
-def codemap_explore(
-    codemap_id: str,
-    query: str = "",
+@mcp.tool(title="Query CodeMap", annotations=READ, structured_output=True)
+def codemap_query(
+    operation: Literal["resolve", "contract", "impact", "entry", "find", "trace"] = "resolve",
+    codemap_id: str = "",
+    project: str = "",
+    architecture: str = "",
+    symbol: str = "",
+    name: str = "",
+    entity_id: str = "",
     file: str = "",
     line: int = 0,
     line_end: int = 0,
-    evidence_id: str = "",
+    kind: str = "",
+    layer: str = "",
+    callee: str = "",
+    referenced_symbol: str = "",
+    referenced_value: str = "",
+    literal: str = "",
+    operator: str = "",
+    dim: str = "",
+    value: str = "",
+    relation: str = "",
+    consumer_role: str = "",
+    from_symbol: str = "",
+    to_symbol: str = "",
+    entry_role: str = "",
+    function: str = "",
+    projection: Literal["summary", "source", "locations"] = "summary",
     cursor: str = "",
     limit: int = 8,
     expected_snapshot_id: str = "",
-) -> Envelope:
-    """Unified contract card. Pass one identifier, Dim=V, file+line, a phenomenon phrase, or evidence_id/cursor to continue."""
-    return _envelope(
-        explore_impl(
+) -> CallToolResult:
+    """Typed graph query. resolve/contract/impact need an exact ident (symbol). Do not know the ident? find with name= (substring, or glob with * ?) lists matching idents. find with kind= enumerates sites, e.g. kind=OPERATION callee=Foo for every call site. Identity is codemap_id or project+architecture."""
+    return _query_result(
+        query_impl(
+            operation=operation,
             codemap_id=codemap_id,
-            query=query,
+            project=project,
+            architecture=architecture,
+            symbol=symbol,
+            name=name,
+            entity_id=entity_id,
             file=file,
             line=line,
             line_end=line_end,
-            evidence_id=evidence_id,
+            kind=kind,
+            layer=layer,
+            callee=callee,
+            referenced_symbol=referenced_symbol,
+            referenced_value=referenced_value,
+            literal=literal,
+            operator=operator,
+            dim=dim,
+            value=value,
+            relation=relation,
+            consumer_role=consumer_role,
+            from_symbol=from_symbol,
+            to_symbol=to_symbol,
+            entry_role=entry_role,
+            function=function,
+            projection=projection,
             cursor=cursor,
             limit=limit,
             expected_snapshot_id=expected_snapshot_id,
-        )
-    )
-
-
-@mcp.tool(title="CodeMap overview", annotations=READ, structured_output=True)
-def codemap_overview(
-    codemap_id: str,
-    limit: int = 8,
-    cursor: str = "",
-) -> Envelope:
-    """Index of what this CodeMap can answer: launch phases, dim names, tiling data names."""
-    return _envelope(overview_impl(codemap_id=codemap_id, limit=limit, cursor=cursor))
-
-
-@mcp.tool(title="CodeMap symbol", annotations=READ, structured_output=True)
-def codemap_symbol(
-    codemap_id: str,
-    symbol: str,
-    limit: int = 8,
-    cursor: str = "",
-) -> Envelope:
-    """Look up one identifier (e.g. IsPse, deterBandScheduleMode): definition, host writers, kernel readers. Not a sentence."""
-    return _envelope(
-        symbol_impl(codemap_id=codemap_id, symbol=symbol, limit=limit, cursor=cursor)
-    )
-
-
-@mcp.tool(title="CodeMap selection", annotations=READ, structured_output=True)
-def codemap_selection(
-    codemap_id: str,
-    dim: str,
-    value: str = "",
-    limit: int = 8,
-    cursor: str = "",
-) -> Envelope:
-    """Template-admissible values for a tiling dim. dim='IsPse' lists the dim; dim='IsPse' and value='1' is Name=Value."""
-    return _envelope(
-        selection_impl(
-            codemap_id=codemap_id, dim=dim, value=value, limit=limit, cursor=cursor
         )
     )
 
@@ -298,34 +389,6 @@ async def codemap_update(
     return _envelope(payload)
 
 
-@mcp.tool(title="Query CodeMap (compat)", annotations=READ, structured_output=True)
-def query_codemap(
-    codemap_id: str = "",
-    project: str = "",
-    architecture: str = "",
-    pattern: str = "",
-    file: str = "",
-    line: int = 0,
-    line_end: int = 0,
-    limit: int = 8,
-    cursor: str = "",
-) -> Envelope:
-    """Compatibility facade. Prefer codemap_explore. Requires codemap_id, or project AND architecture together."""
-    return _envelope(
-        query_impl(
-            codemap_id=codemap_id,
-            project=project,
-            architecture=architecture,
-            pattern=pattern,
-            file=file,
-            line=line,
-            line_end=line_end,
-            limit=limit,
-            cursor=cursor,
-        )
-    )
-
-
 @mcp.tool(title="Index operator (compat)", annotations=WRITE_ADDITIVE, structured_output=True)
 async def index_operator(project: str, architecture: str, ctx: Context) -> Envelope:
     """Compatibility alias for codemap_index."""
@@ -382,16 +445,16 @@ def map_resource(codemap_id: str) -> str:
 @mcp.prompt(
     name="query_operator",
     title="Query an operator CodeMap",
-    description="Explore a CodeMap for one codemap_id.",
+    description="Query a CodeMap for one codemap_id.",
 )
 def query_operator(codemap_id: str, focus: str = "") -> str:
     extra = f" Focus: {focus}." if str(focus or "").strip() else ""
     return (
         f"Query AscendC CodeMap `{codemap_id}` with MCP tools on server {SERVER_NAME}."
         f"{extra}\n"
-        "Use codemap_status first (freshness). Then codemap_explore with one "
-        "identifier, Dim=V, file+line, or a phenomenon phrase. Continue with "
-        "evidence_id or cursor. completeness=COMPLETE is the only finished answer."
+        "Use codemap_query with operation=resolve and a symbol, or file+line. "
+        "find needs kind. The returned source is already Read — do not open those files again. "
+        "completeness=COMPLETE is the only finished answer."
     )
 
 
@@ -456,3 +519,17 @@ async def handle_completion(ref, argument, context):
 
 def create_server() -> MCPServer:
     return mcp
+
+
+_orig_list_tools = mcp._tool_manager.list_tools
+
+
+def _filtered_list_tools():
+    tools = _orig_list_tools()
+    allow = listed_tool_names()
+    if allow is None:
+        return tools
+    return [tool for tool in tools if getattr(tool, "name", "") in allow]
+
+
+mcp._tool_manager.list_tools = _filtered_list_tools

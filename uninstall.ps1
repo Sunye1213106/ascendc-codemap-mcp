@@ -1,12 +1,11 @@
-# AscendC CodeMap MCP installer (Windows)
+# AscendC CodeMap MCP uninstaller (Windows)
 #
 # Usage:
-#   .\install.ps1                      # OpenCode (default)
-#   .\install.ps1 opencode|cursor|claude|codex|all
-#   .\install.ps1 uninstall-opencode
-#   .\uninstall.ps1 opencode
-#   $env:SKIP_PIP=1; .\install.ps1 opencode
-#   $env:PYTHON="C:\Python312\python.exe"; .\install.ps1 opencode
+#   .\uninstall.ps1                 # OpenCode (default)
+#   .\uninstall.ps1 opencode|cursor|claude|codex|all
+#
+# Removes only this product's MCP entry and skills. Does not glob other
+# agents/plugins (Pilot leftovers, cannbot-auth.js, …).
 param(
   [Parameter(Position = 0)]
   [string]$Platform = "opencode"
@@ -14,7 +13,14 @@ param(
 
 $ErrorActionPreference = "Stop"
 $BundleRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$SkipPip = $env:SKIP_PIP
+Set-Location $BundleRoot
+
+if ($Platform -like "uninstall-*") {
+  $Platform = $Platform.Substring("uninstall-".Length)
+}
+if ($Platform -notin @("opencode", "cursor", "claude", "codex", "all")) {
+  throw "Usage: .\uninstall.ps1 opencode|cursor|claude|codex|all"
+}
 
 function Get-PythonExe {
   if (-not [string]::IsNullOrWhiteSpace($env:PYTHON)) {
@@ -30,8 +36,7 @@ function Get-PythonExe {
 }
 
 function Stop-LeftoverCodeMapMcp {
-  # Kill leftover stdio/HTTP MCP servers only — never the install/uninstall
-  # CLI that is about to run (its CommandLine also contains the product name).
+  # Kill leftover stdio/HTTP MCP servers only — never this uninstall CLI.
   $exclude = '\b(install|uninstall|doctor|index|update|query|status|discover|cann-extract|extract-cann)\b'
   $stopped = 0
   Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
@@ -49,29 +54,12 @@ function Stop-LeftoverCodeMapMcp {
   return $stopped
 }
 
-if ($Platform -like "uninstall-*") {
-  $plat = $Platform.Substring("uninstall-".Length)
-  $un = Join-Path $BundleRoot "uninstall.ps1"
-  if (-not (Test-Path -LiteralPath $un)) { throw "Missing uninstall.ps1 at $un" }
-  & $un $plat
-  exit $LASTEXITCODE
-}
-
-if ($Platform -notin @("opencode", "cursor", "claude", "codex", "all")) {
-  throw "Usage: .\install.ps1 opencode|cursor|claude|codex|all"
-}
+Write-Host "Uninstalling AscendC CodeMap MCP ($Platform)"
+[void](Stop-LeftoverCodeMapMcp)
 
 $Python = Get-PythonExe
+& $Python -m ascendc_codemap_mcp uninstall --host $Platform
+if ($LASTEXITCODE -ne 0) { throw "ascendc_codemap_mcp uninstall failed" }
 
-if ($SkipPip -ne "1") {
-  [void](Stop-LeftoverCodeMapMcp)
-  & $Python -m pip install -e $BundleRoot
-  if ($LASTEXITCODE -ne 0) { throw "pip install -e failed" }
-}
-
-& $Python -m ascendc_codemap_mcp install --host $Platform
-if ($LASTEXITCODE -ne 0) { throw "ascendc_codemap_mcp install failed" }
-
-Write-Host "Installed AscendC CodeMap MCP ($Platform)"
-Write-Host "Keep this checkout; pip -e installs point at it. Fully quit and reopen the Host."
+Write-Host "Uninstalled $Platform"
 exit 0

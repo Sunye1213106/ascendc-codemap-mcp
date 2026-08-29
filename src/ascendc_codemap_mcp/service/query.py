@@ -57,8 +57,6 @@ _PAGE_KEYS = (
     "sel_sites",
     "nearby",
     "template_blocks",
-    "dim_names",
-    "tiling_data_names",
     "phases",
     "neighbors",
     "hits",
@@ -152,7 +150,7 @@ def _edges_truncated(payload: dict[str, Any]) -> bool:
 
 def _infer_verdict(payload: dict[str, Any], *, truncated: bool) -> str:
     completeness = str(payload.get("completeness") or "")
-    if completeness == "UNKNOWN" or payload.get("empty_reason") == "nl_or_multi_token":
+    if completeness == "UNKNOWN" or payload.get("error_code") == "INVALID_QUERY":
         return VERDICT_UNKNOWN
     if completeness == "INCOMPLETE" or completeness == "AMBIGUOUS":
         return VERDICT_PARTIAL
@@ -185,6 +183,7 @@ def query_fingerprint(
     file: str = "",
     line: int = 0,
     line_end: int = 0,
+    extra: str = "",
 ) -> str:
     blob = json.dumps(
         {
@@ -193,6 +192,7 @@ def query_fingerprint(
             "f": str(file or ""),
             "l": int(line or 0),
             "le": int(line_end or 0),
+            "x": str(extra or ""),
         },
         separators=(",", ":"),
         sort_keys=True,
@@ -257,7 +257,9 @@ def paginate(
 ) -> tuple[dict[str, Any], dict[str, Any], str | None]:
     page = max(1, min(int(limit or 8), 32))
     key, rows = _primary_list(payload)
-    total_hint = int(payload.get("count") or payload.get("total") or 0)
+    # `count` is the page, `total` is the population. Reading count first made
+    # every paged set answer look complete.
+    total_hint = int(payload.get("total") or payload.get("count") or 0)
     nested_trunc = _edges_truncated(payload)
     if key is None:
         total = total_hint
@@ -315,6 +317,7 @@ def _run_query(
     engine: str = "",
     expected_snapshot_id: str = "",
     evidence_id: str = "",
+    plan: Any = None,
 ) -> dict[str, Any]:
     if runtime.is_building(ref.id) or not runtime.locks.try_read(ref.id):
         return _building(ref)
@@ -378,6 +381,7 @@ def _run_query(
             file=file,
             line=line,
             line_end=line_end,
+            extra=str(getattr(plan, "operation", "") or ""),
         )
         try:
             decoded = decode_cursor(cursor)
@@ -410,13 +414,35 @@ def _run_query(
         offset = int(decoded.get("o") or 0)
         fetch_limit = page + offset
         with runtime.cache.open(product) as query:
-            payload = query.agent_query(
-                pattern=str(pattern or ""),
-                file=str(file or ""),
-                line=int(line or 0),
-                line_end=int(line_end or 0),
-                limit=fetch_limit,
-            )
+            if plan is not None:
+                from ascendc_codemap_mcp.engine.query.typed import (
+                    InvalidQuery,
+                    execute,
+                    invalid_payload,
+                )
+
+                try:
+                    payload = execute(query, plan)
+                except InvalidQuery as exc:
+                    return fail(
+                        str(exc),
+                        error_code="INVALID_QUERY",
+                        extra={
+                            "codemap": handle,
+                            "data": invalid_payload(exc),
+                            "legal_filters": exc.legal_filters,
+                            "parsed_tokens": exc.parsed_tokens,
+                            "operation": exc.operation,
+                        },
+                    )
+            else:
+                payload = query.agent_query(
+                    pattern=str(pattern or ""),
+                    file=str(file or ""),
+                    line=int(line or 0),
+                    line_end=int(line_end or 0),
+                    limit=fetch_limit,
+                )
         payload, coverage, nxt = paginate(
             payload,
             limit=page,
@@ -430,6 +456,28 @@ def _run_query(
         truncated = bool(coverage.get("truncated"))
         verdict = _infer_verdict(payload, truncated=truncated)
         layer = _infer_layer(payload)
+        text = str(payload.get("text") or "")
+        if text or engine in {"codemap_query", "codemap_evidence"}:
+            from ascendc_codemap_mcp.engine.query.explore import render_explore_markdown
+
+            if not text:
+                payload["text"] = render_explore_markdown(
+                    payload, verdict=verdict, layer=layer
+                )
+            else:
+                header = "  ".join(
+                    part
+                    for part in (
+                        f"verdict: {verdict}" if verdict else "",
+                        f"layer: {layer}" if layer else "",
+                    )
+                    if part
+                )
+                if header and not text.startswith("verdict:"):
+                    payload["text"] = header + "\n\n" + text
+                elif header and text.startswith("verdict:"):
+                    rest = text.split("\n", 1)[-1].lstrip("\n")
+                    payload["text"] = header + "\n\n" + rest
         extra = {
             "engine": engine or "codemap_query",
             "shape": payload.get("shape"),
@@ -457,70 +505,6 @@ def _run_query(
         return body
     finally:
         runtime.locks.release_read(ref.id)
-
-
-def overview(
-    *,
-    codemap_id: str = "",
-    project: str = "",
-    architecture: str = "",
-    limit: int = 8,
-    cursor: str = "",
-) -> dict[str, Any]:
-    ref = _need_ref(codemap_id=codemap_id, project=project, architecture=architecture)
-    if not is_ref(ref):
-        return ref  # type: ignore[return-value]
-    return _run_query(ref, limit=limit, cursor=cursor, engine="codemap_overview")
-
-
-def symbol(
-    *,
-    codemap_id: str = "",
-    project: str = "",
-    architecture: str = "",
-    symbol: str,
-    limit: int = 8,
-    cursor: str = "",
-) -> dict[str, Any]:
-    ref = _need_ref(codemap_id=codemap_id, project=project, architecture=architecture)
-    if not is_ref(ref):
-        return ref  # type: ignore[return-value]
-    name = str(symbol or "").strip()
-    if not name:
-        return fail("symbol is required", error_code="SYMBOL_REQUIRED")
-    return _run_query(
-        ref, pattern=name, limit=limit, cursor=cursor, engine="codemap_symbol"
-    )
-
-
-def selection(
-    *,
-    codemap_id: str = "",
-    project: str = "",
-    architecture: str = "",
-    dim: str = "",
-    value: str = "",
-    limit: int = 8,
-    cursor: str = "",
-) -> dict[str, Any]:
-    ref = _need_ref(codemap_id=codemap_id, project=project, architecture=architecture)
-    if not is_ref(ref):
-        return ref  # type: ignore[return-value]
-    dim_s = str(dim or "").strip()
-    value_s = str(value or "").strip()
-    if not dim_s:
-        return fail("dim is required (e.g. IsPse)", error_code="DIM_REQUIRED")
-    if dim_s.startswith("Dim="):
-        pattern = dim_s
-    elif "=" in dim_s and not value_s:
-        pattern = dim_s
-    elif value_s:
-        pattern = f"{dim_s}={value_s}"
-    else:
-        pattern = f"Dim={dim_s}"
-    return _run_query(
-        ref, pattern=pattern, limit=limit, cursor=cursor, engine="codemap_selection"
-    )
 
 
 def evidence(
@@ -561,62 +545,85 @@ def evidence(
     )
 
 
-def explore(
+def query(
     *,
     codemap_id: str = "",
     project: str = "",
     architecture: str = "",
-    query: str = "",
-    pattern: str = "",
+    operation: str = "resolve",
+    symbol: str = "",
+    name: str = "",
+    entity_id: str = "",
     file: str = "",
     line: int = 0,
     line_end: int = 0,
-    evidence_id: str = "",
-    cursor: str = "",
+    kind: str = "",
+    layer: str = "",
+    callee: str = "",
+    referenced_symbol: str = "",
+    referenced_value: str = "",
+    literal: str = "",
+    operator: str = "",
+    dim: str = "",
+    value: str = "",
+    relation: str = "",
+    consumer_role: str = "",
+    from_symbol: str = "",
+    to_symbol: str = "",
+    entry_role: str = "",
+    function: str = "",
+    projection: str = "summary",
     limit: int = 8,
+    cursor: str = "",
     expected_snapshot_id: str = "",
 ) -> dict[str, Any]:
-    """Single agent entry: ident / Dim=V / file:line / phenomenon / evidence page."""
-    ev = str(evidence_id or "").strip()
-    if ev:
-        return evidence(
-            codemap_id=codemap_id,
-            project=project,
-            architecture=architecture,
-            evidence_id=ev,
+    """Typed query: operation enum + closed filters. Default operation is resolve."""
+    from ascendc_codemap_mcp.engine.query.typed import (
+        InvalidQuery,
+        invalid_payload,
+        validate_plan,
+    )
+
+    try:
+        plan = validate_plan(
+            operation=operation,
+            projection=projection,
+            symbol=symbol,
+            name=name,
+            entity_id=entity_id,
             file=file,
             line=line,
             line_end=line_end,
+            kind=kind,
+            layer=layer,
+            callee=callee,
+            referenced_symbol=referenced_symbol,
+            referenced_value=referenced_value,
+            literal=literal,
+            operator=operator,
+            dim=dim,
+            value=value,
+            relation=relation,
+            consumer_role=consumer_role,
+            from_symbol=from_symbol,
+            to_symbol=to_symbol,
+            entry_role=entry_role,
+            function=function,
             limit=limit,
-            cursor=cursor,
-            expected_snapshot_id=expected_snapshot_id,
         )
-    return query_codemap(
-        codemap_id=codemap_id,
-        project=project,
-        architecture=architecture,
-        pattern=str(query or pattern or ""),
-        file=file,
-        line=line,
-        line_end=line_end,
-        limit=limit,
-        cursor=cursor,
-    )
-
-
-def query_codemap(
-    *,
-    project: str = "",
-    architecture: str = "",
-    pattern: str = "",
-    file: str = "",
-    line: int = 0,
-    line_end: int = 0,
-    codemap_id: str = "",
-    limit: int = 8,
-    cursor: str = "",
-) -> dict[str, Any]:
-    """Compatibility facade for the four historical query shapes."""
+    except InvalidQuery as exc:
+        payload = invalid_payload(exc)
+        return fail(
+            str(exc),
+            error_code="INVALID_QUERY",
+            extra={
+                "data": payload,
+                "legal_filters": exc.legal_filters,
+                "parsed_tokens": exc.parsed_tokens,
+                "did_you_mean": exc.did_you_mean,
+                "operation": exc.operation,
+            },
+        )
     ref = _need_ref(
         codemap_id=codemap_id,
         project=project,
@@ -627,12 +634,14 @@ def query_codemap(
         return ref  # type: ignore[return-value]
     return _run_query(
         ref,
-        pattern=pattern,
-        file=file,
-        line=line,
-        line_end=line_end,
+        pattern=plan.symbol or plan.callee or plan.dim,
+        file=plan.file,
+        line=plan.line,
+        line_end=plan.line_end,
         limit=limit,
         cursor=cursor,
-        flatten=True,
-        engine="query_codemap",
+        flatten=False,
+        engine="codemap_query",
+        expected_snapshot_id=expected_snapshot_id,
+        plan=plan,
     )

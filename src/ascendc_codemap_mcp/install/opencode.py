@@ -9,11 +9,18 @@ from ascendc_codemap_mcp.constants import PRODUCT_NAME
 from ascendc_codemap_mcp.install.jsonutil import command_is_ours, read_json, write_json
 
 
+def home() -> Path:
+    xdg = (os.environ.get("XDG_CONFIG_HOME") or "").strip()
+    if xdg:
+        return Path(xdg) / "opencode"
+    return Path.home() / ".config" / "opencode"
+
+
 def config_path() -> Path:
     custom = (os.environ.get("OPENCODE_CONFIG") or "").strip()
     if custom:
         return Path(custom).expanduser()
-    base = Path.home() / ".config" / "opencode"
+    base = home()
     jsonc = base / "opencode.jsonc"
     if jsonc.is_file():
         return jsonc
@@ -26,6 +33,7 @@ def _entry(command: list[str], env: dict[str, str]) -> dict[str, Any]:
         "command": command,
         "enabled": True,
         "environment": env,
+        "timeout": 120000,
     }
 
 

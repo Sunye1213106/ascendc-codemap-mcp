@@ -117,7 +117,6 @@ def discover(
         extra={
             "engine": "codemap_discover",
             "version": SERVER_VERSION,
-            "codemaps": rows,
             "count": len(rows),
             "hint": hint,
             "project": proj,

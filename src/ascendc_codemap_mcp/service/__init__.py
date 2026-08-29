@@ -11,12 +11,11 @@ from ascendc_codemap_mcp.service.control import (
     status,
     update_operator,
 )
+# Re-exported as run_query: a `query` attribute here would shadow the
+# ascendc_codemap_mcp.service.query submodule on attribute access.
 from ascendc_codemap_mcp.service.query import (
     evidence as query_evidence,
-    overview,
-    query_codemap,
-    selection,
-    symbol,
+    query as run_query,
 )
 from ascendc_codemap_mcp.service.runtime import cache_stats, shutdown
 
@@ -24,12 +23,9 @@ __all__ = [
     "cache_stats",
     "doctor",
     "index_operator",
-    "overview",
-    "query_codemap",
     "query_evidence",
-    "selection",
+    "run_query",
     "shutdown",
     "status",
-    "symbol",
     "update_operator",
 ]

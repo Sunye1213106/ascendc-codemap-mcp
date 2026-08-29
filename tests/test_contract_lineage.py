@@ -311,11 +311,43 @@ def test_completeness_false_complete_without_consumer() -> None:
     assert fence2["completeness"] == COMPLETE
 
 
-def test_phenomenon_tokens_split_camel() -> None:
-    from ascendc_codemap_mcp.engine.query.phenomenon import tokenize_phenomenon
+def test_predicate_ast_and_and_div() -> None:
+    from ascendc_codemap_mcp.engine.query.predicate_ast import parse_predicate
 
-    tokens = tokenize_phenomenon("empty output when seq length is zero")
-    assert "empty" in [t.lower() for t in tokens] or "output" in [t.lower() for t in tokens]
-    camel = tokenize_phenomenon("sValueZeroUnderLayout")
-    assert "sValueZeroUnderLayout" in camel
+    ast = parse_predicate("layout == TND && s == 0")
+    assert ast.op == "AND"
+    assert "EQ" in ast.operators()
+    assert "0" in ast.literals()
+    assert "layout" in ast.references()
+    assert "TND" in ast.enum_values()
+    div = parse_predicate("coreNum / 2")
+    assert ast.op != "DIV"
+    assert div.op == "DIV"
+    assert "2" in div.literals()
+    assert "coreNum" in div.references()
+
+
+def test_calls_are_per_site() -> None:
+    from ascendc_codemap_mcp.engine.ir.codemap import CodeMap
+    from ascendc_codemap_mcp.engine.ir.entity import EntityKind
+    from ascendc_codemap_mcp.engine.ir.relation import RelationKind
+
+    cm = CodeMap(op_name="toy", architecture="arch35")
+    caller = cm.upsert(EntityKind.FUNCTION, "Caller", attrs={"layer": "host"})
+    callee = cm.upsert(EntityKind.FUNCTION, "Callee", attrs={"layer": "host"})
+    r1 = cm.link(
+        RelationKind.CALLS,
+        caller.id,
+        callee.id,
+        attrs={"file": "op_host/a.cpp", "line": 10},
+    )
+    r2 = cm.link(
+        RelationKind.CALLS,
+        caller.id,
+        callee.id,
+        attrs={"file": "op_host/a.cpp", "line": 20},
+    )
+    assert r1.id != r2.id
+    calls = [r for r in cm.relations.values() if r.kind_name() == RelationKind.CALLS.value]
+    assert len(calls) == 2
 

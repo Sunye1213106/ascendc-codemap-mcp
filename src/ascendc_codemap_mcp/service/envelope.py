@@ -65,7 +65,8 @@ def envelope(
         out["evidence"] = evidence
     if coverage is not None:
         out["coverage"] = coverage
-    out["next_cursor"] = next_cursor
+    if next_cursor:
+        out["next_cursor"] = next_cursor
     if extra:
         for key, value in extra.items():
             if key not in out:

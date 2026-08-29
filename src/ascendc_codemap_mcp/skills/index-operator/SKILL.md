@@ -1,11 +1,11 @@
 ---
 name: index-operator
-description: Build an AscendC operator CodeMap. Use when the user asks to index an operator, or codemap_status / discover reports no .uo product.
+description: Build an AscendC operator CodeMap. Use when the user asks to index an operator, or discover reports no .uo product.
 ---
 
 # Index an operator
 
-Use MCP server `ascendc-codemap-mcp`. Tools: `codemap_doctor`, `codemap_index`, `codemap_status`, `codemap_discover`.
+Use MCP server `ascendc-codemap-mcp`. Tools: `codemap_doctor`, `codemap_index`, `codemap_discover`.
 
 ## When
 
@@ -22,7 +22,7 @@ If a `.uo` already exists and sources changed, use skill `update-operator` inste
    - Unpack without running the installer: `python -m ascendc_codemap_mcp cann-extract <run> --dest <codemap-checkout>/_cann/pkg` then the same command with `--fixup`.
    - Re-run `codemap_doctor`. Stop if it is still not `ok`.
 3. Call `codemap_index`. This can take minutes. Do not call it automatically on session start. Other queries against this id return `freshness=building` until it finishes.
-4. Read `codemap.id` from the result. Call `codemap_status` on that id. A partial product is valid; residuals stay unresolved. Do not patch `.uo` by hand.
+4. Read `codemap.id` from the index result. A partial product is valid; residuals stay unresolved. Do not patch `.uo` by hand.
 
 ## Stop
 

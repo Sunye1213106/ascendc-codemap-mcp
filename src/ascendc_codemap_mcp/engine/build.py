@@ -43,6 +43,7 @@ from ascendc_codemap_mcp.engine.passes.compile_policy import enrich_compile_poli
 from ascendc_codemap_mcp.engine.passes.workspace_abi import enrich_workspace_abi
 from ascendc_codemap_mcp.engine.passes.consumer_role import enrich_consumer_roles
 from ascendc_codemap_mcp.engine.passes.entry_path import enrich_entry_paths
+from ascendc_codemap_mcp.engine.passes.predicate_ast import enrich_predicate_ast
 from ascendc_codemap_mcp.engine.passes.contracts import enrich_contracts
 from ascendc_codemap_mcp.engine.passes.tiling_kernel_reads import rebuild_verified_tiling_reads
 from ascendc_codemap_mcp.engine.passes.tiling_registration import enrich_tiling_registrations
@@ -54,7 +55,7 @@ from ascendc_codemap_mcp.engine.timing import log as _tlog, timing_enabled
 # Same-process reuse between analyze (commit=False) and commit. Avoids paying
 # the full source-enrichment stack twice in one uo-init run.
 _COMPILE_MEM: dict[str, dict[str, Any]] = {}
-ANALYZE_CACHE_VERSION = 2
+ANALYZE_CACHE_VERSION = 3
 
 
 def _cache_key(op_root: Path, op_name: str, architecture: str) -> str:
@@ -297,6 +298,7 @@ def compile_codemap(
             ("workspace_abi", enrich_workspace_abi, {}),
             ("consumer_roles", enrich_consumer_roles, {}),
             ("entry_paths", enrich_entry_paths, {"needs_host_ir": True}),
+            ("predicate_ast", enrich_predicate_ast, {"needs_irs": True}),
             ("contracts", enrich_contracts, {}),
             # After root-trace purge: host TilingContext APIs are not kernel ops.
             ("tiling_context_apis", enrich_tiling_context_apis, {"needs_host_ir": True}),

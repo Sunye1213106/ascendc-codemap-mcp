@@ -31,7 +31,7 @@ class RelationKind(str, Enum):
     SELECTS = "SELECTS"
     LAUNCHES = "LAUNCHES"
 
-    # Configuration-contract edges. CALLS is site-collapsed (kind|src|dst);
+    # Configuration-contract edges. CALLS is per-site (kind|src|dst|file:line).
     # CALLS_UNDER_GUARD carries a guard BRANCH as src so each predicate is distinct.
     CALLS_UNDER_GUARD = "CALLS_UNDER_GUARD"
     MATERIALIZES_AS = "MATERIALIZES_AS"

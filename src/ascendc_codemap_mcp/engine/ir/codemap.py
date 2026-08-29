@@ -348,10 +348,36 @@ def _eid(kind: str, name: str, *extra: str) -> str:
     return f"E_{kind}_{digest}"
 
 
-def _rid(kind: str, src: str, dst: str) -> str:
-    raw = f"{kind}|{src}|{dst}"
+def calls_site_key(attrs: dict[str, Any] | None) -> str:
+    """File:line[:col] identity for one CALLS site. Empty when the site is unknown."""
+    if not attrs:
+        return ""
+    file = str(attrs.get("file") or "").replace("\\", "/")
+    line = int(attrs.get("line") or 0)
+    col = int(attrs.get("column") or 0)
+    if not file or line <= 0:
+        return ""
+    if col > 0:
+        return f"{file}:{line}:{col}"
+    return f"{file}:{line}"
+
+
+def _rid(kind: str, src: str, dst: str, *extra: str) -> str:
+    raw = "|".join([kind, src, dst, *[p for p in extra if p]])
     digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
     return f"R_{kind}_{digest}"
+
+
+def relation_id(
+    kind: str,
+    src: str,
+    dst: str,
+    *,
+    attrs: dict[str, Any] | None = None,
+) -> str:
+    """Stable relation id. CALLS include the call site so intra-function repeats stay distinct."""
+    extra = calls_site_key(attrs) if str(kind) == RelationKind.CALLS.value else ""
+    return _rid(kind, src, dst, extra) if extra else _rid(kind, src, dst)
 
 
 class _NotifyMap(dict):
@@ -739,8 +765,8 @@ class CodeMap:
         confidence: float = 1.0,
     ) -> Relation:
         kind_name = kind.value if isinstance(kind, RelationKind) else str(kind)
-        rid = _rid(kind_name, src, dst)
         stamped = self._stamp_attrs(dict(attrs or {}))
+        rid = relation_id(kind_name, src, dst, attrs=stamped)
         existing = self.relations.get(rid)
         if existing is None:
             rel = Relation(
@@ -1099,16 +1125,20 @@ class CodeMap:
                 callee_name,
                 attrs={"layer": "host", "provenance": "clang_walk"},
             )
-            rel = cm.link(
+            site_line = int(getattr(site, "line", 0) or 0)
+            site_col = int(getattr(site, "column", 0) or 0)
+            call_attrs: dict[str, Any] = {"provenance": "clang_walk"}
+            if site_line > 0:
+                call_attrs["file"] = site_file
+                call_attrs["line"] = site_line
+                if site_col > 0:
+                    call_attrs["column"] = site_col
+            cm.link(
                 RelationKind.CALLS,
                 caller.id,
                 callee.id,
-                attrs={"provenance": "clang_walk"},
+                attrs=call_attrs,
             )
-            site_line = int(getattr(site, "line", 0) or 0)
-            if site_line > 0:
-                rel.attrs["file"] = site_file
-                rel.attrs["line"] = site_line
 
         from ascendc_codemap_mcp.engine.passes.guarded_calls import ingest_guarded_calls
 

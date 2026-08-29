@@ -19,9 +19,8 @@ from ascendc_codemap_mcp.service.query import (
     encode_cursor,
     evidence,
     paginate,
-    query_codemap,
+    query,
     query_fingerprint,
-    symbol,
 )
 
 
@@ -93,7 +92,7 @@ def test_mcp_worker_threads_can_query_in_parallel(tmp_path: Path, monkeypatch) -
     def worker() -> None:
         try:
             for _ in range(25):
-                card = symbol(codemap_id="toy_op@arch35", symbol="IsPse")
+                card = query(codemap_id="toy_op@arch35", symbol="IsPse")
                 assert card.get("ok") is True
                 ev_id = (card.get("evidence") or [{}])[0].get("id") or "span:e1"
                 around = evidence(codemap_id="toy_op@arch35", evidence_id=ev_id)
@@ -112,16 +111,16 @@ def test_query_sees_new_snapshot_after_product_replace(tmp_path: Path) -> None:
     op = tmp_path / "toy_op"
     op.mkdir()
     product = write_uo_fixture(op, symbol="IsPse", revision="abc123")
-    first = symbol(project=str(op), architecture="arch35", symbol="IsPse")
+    first = query(project=str(op), architecture="arch35", symbol="IsPse")
     assert first.get("ok") is True
     sid1 = first["codemap"]["snapshot_id"]
     runtime.cache.drop(product)
     write_uo_fixture(op, symbol="IsFoo", revision="def456", entity_id="e2")
-    second = symbol(project=str(op), architecture="arch35", symbol="IsFoo")
+    second = query(project=str(op), architecture="arch35", symbol="IsFoo")
     assert second.get("ok") is True
     assert int(second.get("data", {}).get("count") or 0) >= 1
     assert second["codemap"]["snapshot_id"] != sid1
-    old = symbol(project=str(op), architecture="arch35", symbol="IsPse")
+    old = query(project=str(op), architecture="arch35", symbol="IsPse")
     assert int((old.get("data") or old).get("count") or 0) == 0
 
 
@@ -129,14 +128,44 @@ def test_drop_releases_sqlite_handle_for_replace(tmp_path: Path) -> None:
     op = tmp_path / "toy_op"
     op.mkdir()
     product = write_uo_fixture(op)
-    query_codemap(project=str(op), architecture="arch35", pattern="IsPse")
+    query(project=str(op), architecture="arch35", symbol="IsPse")
     assert open_handle_count(product) >= 1
     runtime.cache.drop(product)
     assert open_handle_count(product) == 0
     product.unlink()
     write_uo_fixture(op, symbol="Other", revision="zzz")
-    payload = symbol(project=str(op), architecture="arch35", symbol="Other")
+    payload = query(project=str(op), architecture="arch35", symbol="Other")
     assert payload.get("ok") is True
+
+
+def test_shutdown_releases_sqlite_handle_for_unlink(tmp_path: Path) -> None:
+    op = tmp_path / "toy_op"
+    op.mkdir()
+    product = write_uo_fixture(op)
+    query(project=str(op), architecture="arch35", symbol="IsPse")
+    assert open_handle_count(product) >= 1
+    runtime.shutdown()
+    assert open_handle_count(product) == 0
+    product.unlink()
+    write_uo_fixture(op, symbol="Other", revision="zzz")
+    payload = query(project=str(op), architecture="arch35", symbol="Other")
+    assert payload.get("ok") is True
+
+
+def test_idle_close_releases_sqlite_handle_for_unlink(tmp_path: Path, monkeypatch) -> None:
+    import time
+
+    monkeypatch.setenv("ASCENDC_CODEMAP_SQLITE_IDLE_SEC", "0.15")
+    op = tmp_path / "toy_op"
+    op.mkdir()
+    product = write_uo_fixture(op)
+    query(project=str(op), architecture="arch35", symbol="IsPse")
+    assert open_handle_count(product) >= 1
+    deadline = time.time() + 2.0
+    while time.time() < deadline and open_handle_count(product) > 0:
+        time.sleep(0.05)
+    assert open_handle_count(product) == 0
+    product.unlink()
 
 
 def test_alias_is_ambiguous_across_workspaces(tmp_path: Path) -> None:
@@ -148,7 +177,7 @@ def test_alias_is_ambiguous_across_workspaces(tmp_path: Path) -> None:
     write_uo_fixture(pr)
     status(project=str(main), architecture="arch35")
     status(project=str(pr), architecture="arch35")
-    payload = symbol(codemap_id="flash_attention_score_grad@arch35", symbol="IsPse")
+    payload = query(codemap_id="flash_attention_score_grad@arch35", symbol="IsPse")
     assert payload.get("ok") is False
     assert payload.get("error_code") == "AMBIGUOUS_CODEMAP_ID"
     assert len(payload.get("candidates") or []) == 2
@@ -159,7 +188,7 @@ def test_alias_is_ambiguous_across_workspaces(tmp_path: Path) -> None:
         registry=runtime.registry,
     )
     assert getattr(one, "project", None) == main.resolve()
-    typed = symbol(codemap_id=one.id, symbol="IsPse")
+    typed = query(codemap_id=one.id, symbol="IsPse")
     assert typed.get("ok") is True
 
 
@@ -167,16 +196,16 @@ def test_cursor_rejects_other_snapshot_and_query(tmp_path: Path) -> None:
     op = tmp_path / "toy_op"
     op.mkdir()
     write_uo_fixture(op)
-    first = symbol(project=str(op), architecture="arch35", symbol="IsPse")
+    first = query(project=str(op), architecture="arch35", symbol="IsPse")
     sid = first["codemap"]["snapshot_id"]
-    fp = query_fingerprint(engine="codemap_symbol", pattern="IsPse")
+    fp = query_fingerprint(engine="codemap_query", pattern="IsPse")
     other = encode_cursor(8, snapshot="cm:deadbeefdeadbeef", query=fp)
-    miss = symbol(
+    miss = query(
         project=str(op), architecture="arch35", symbol="IsPse", cursor=other
     )
     assert miss.get("error_code") == "SNAPSHOT_CHANGED"
     wrong_q = encode_cursor(8, snapshot=sid, query="not-this-query")
-    mismatch = symbol(
+    mismatch = query(
         project=str(op), architecture="arch35", symbol="IsPse", cursor=wrong_q
     )
     assert mismatch.get("error_code") == "CURSOR_MISMATCH"
@@ -213,7 +242,7 @@ def test_evidence_snapshot_epoch(tmp_path: Path) -> None:
     op = tmp_path / "toy_op"
     op.mkdir()
     write_uo_fixture(op)
-    card = symbol(project=str(op), architecture="arch35", symbol="IsPse")
+    card = query(project=str(op), architecture="arch35", symbol="IsPse")
     ev = card["evidence"][0]
     ok = evidence(
         codemap_id="toy_op@arch35",

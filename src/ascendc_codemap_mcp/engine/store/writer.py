@@ -35,6 +35,21 @@ def vacuum_uo_enabled(dest: Path) -> bool:
     return not Path(dest).exists()
 
 
+def operator_root_from_product(dest: Path) -> Path | None:
+    """`.uo` → arch → `.ascendc-codemap` → operator directory.
+
+    Must not walk one more parent: that is the domain folder (`attention/`)
+    and would pull sibling operators into `source_line`.
+    """
+    try:
+        path = Path(dest)
+        if path.parents[1].name != ".ascendc-codemap":
+            return None
+        return path.parents[2]
+    except IndexError:
+        return None
+
+
 class _PathBase:
     """Rewrites every spelling of a location into one operator-relative form.
 
@@ -55,18 +70,17 @@ class _PathBase:
     #: `../../common/include`); past that a path is a different checkout.
     ANCESTOR_LEVELS = 3
 
-    __slots__ = ("rules", "op_seg", "active")
+    __slots__ = ("rules", "op_seg", "active", "op_dir")
 
     def __init__(self, dest: Path) -> None:
         self.rules: list[tuple[str, str]] = []
         self.op_seg = ""
         self.active = False
-        try:
-            if dest.parents[1].name != ".ascendc-codemap":
-                return
-            op_dir = dest.parents[2]
-        except IndexError:
+        self.op_dir: Path | None = None
+        op_dir = operator_root_from_product(dest)
+        if op_dir is None:
             return
+        self.op_dir = op_dir
 
         def key(path: Path) -> str:
             return str(path).replace("\\", "/").rstrip("/").lower() + "/"
@@ -768,7 +782,7 @@ def write_codemap(
 
         # Same derivation `_PathBase` used above; if there is no operator tree
         # to be relative to there is none to index either.
-        op_root = dest.parents[3] if path_base.active else None
+        op_root = path_base.op_dir if path_base.active else None
 
         accel_stats: dict[str, Any] = {}
         # source_line first: it is the only record of how long each file is, and

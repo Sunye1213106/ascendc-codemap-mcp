@@ -165,11 +165,11 @@ def build_source_line(
     skipped: they cannot be a valid citation for this product, and they roughly
     halve the index.
 
-    Shared code beside the operator (`../common/...`) is indexed too, but only
-    the files the graph actually references. Walking the sibling tree would pull
-    in every other operator in the domain; leaving it out entirely meant every
-    entity in shared code was uncitable, which reads as "no such code" rather
-    than "not indexed".
+    Shared code beside the operator lives in a sibling `common/` directory
+    (`../common/...`). That tree is indexed in full (foreign `archNN/` still
+    skipped). Other `../` and CANN headers are indexed only when the graph
+    cites them — walking the whole domain folder would pull in sibling
+    operators.
     """
     # Dropped rather than emptied so an older product picks up the current
     # schema: an in-place upgrade of a table built before `id` existed would
@@ -192,11 +192,16 @@ def build_source_line(
             for part in rel_parts
         )
 
+    seen: set[str] = set()
+
     def index(path: Path, rel: str) -> bool:
+        if rel in seen:
+            return False
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             return False
+        seen.add(rel)
         for no, line in enumerate(text.splitlines(), start=1):
             if line.strip():
                 rows.append((rel, no, line))
@@ -210,6 +215,21 @@ def build_source_line(
             continue
         if index(path, rel.as_posix()):
             files += 1
+
+    common = root.parent / "common"
+    if common.is_dir():
+        for path in sorted(common.rglob("*")):
+            if not path.is_file() or path.suffix.lower() not in SOURCE_SUFFIXES:
+                continue
+            try:
+                under = path.relative_to(common)
+            except ValueError:
+                continue
+            rel = "../common/" + under.as_posix()
+            if skip(tuple(rel.split("/"))):
+                continue
+            if index(path, rel):
+                files += 1
 
     for rel in _referenced_outside_paths(conn):
         if skip(tuple(rel.split("/"))):

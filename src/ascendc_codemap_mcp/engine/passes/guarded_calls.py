@@ -16,6 +16,7 @@ from ascendc_codemap_mcp.engine.ir.codemap import CodeMap
 from ascendc_codemap_mcp.engine.ir.entity import Entity, EntityKind
 from ascendc_codemap_mcp.engine.ir.evidence import SOURCE_CLANG_AST
 from ascendc_codemap_mcp.engine.ir.relation import RelationKind
+from ascendc_codemap_mcp.engine.query.predicate_ast import annotate_attrs
 from ascendc_codemap_mcp.engine.source_layout import host_ir_keeps_file, is_other_arch_path
 
 _IDENT_RE = re.compile(r"\b([A-Za-z_]\w*)\b")
@@ -209,6 +210,7 @@ def ingest_guarded_calls(
                     "branch_kind": str(_pc_field(pc, "kind", "if") or "if"),
                     "function": fn_name,
                     "provenance": "clang_call_guard",
+                    **annotate_attrs(gtext),
                 },
                 file=guard_file,
                 line=guard_line,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import threading
@@ -37,25 +38,67 @@ class Registry:
 
     ``op@arch`` is an alias. If two workspaces share an alias, resolving the
     alias returns ``AMBIGUOUS_CODEMAP_ID`` instead of overwriting.
+
+    Puts are also written to ``ASCENDC_CODEMAP_CACHE_DIR/registry.json`` so a
+    new MCP process can resolve ``p:<ws>::op@arch`` without a prior discover.
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._by_id: dict[str, CodemapRef] = {}
         self._alias: dict[str, list[str]] = {}
+        self._loaded = False
+
+    def _load_unlocked(self) -> None:
+        if self._loaded:
+            return
+        self._loaded = True
+        path = registry_path()
+        if not path.is_file():
+            return
+        try:
+            blob = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        rows = blob if isinstance(blob, list) else (blob.get("codemaps") or [])
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            ref = _ref_from_row(row)
+            if ref is None:
+                continue
+            self._by_id[ref.id] = ref
+            ids = self._alias.setdefault(ref.alias, [])
+            if ref.id not in ids:
+                ids.append(ref.id)
+
+    def _persist_unlocked(self) -> None:
+        path = registry_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            rows = [_ref_to_row(ref) for ref in self._by_id.values()]
+            path.write_text(
+                json.dumps({"codemaps": rows}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError:
+            return
 
     def put(self, ref: CodemapRef) -> CodemapRef:
         with self._lock:
+            self._load_unlocked()
             self._by_id[ref.id] = ref
             alias = ref.alias
             ids = self._alias.setdefault(alias, [])
             if ref.id not in ids:
                 ids.append(ref.id)
+            self._persist_unlocked()
         return ref
 
     def lookup(self, codemap_id: str) -> CodemapRef | list[CodemapRef] | None:
         key = str(codemap_id or "").strip()
         with self._lock:
+            self._load_unlocked()
             hit = self._by_id.get(key)
             if hit is not None:
                 return hit
@@ -75,12 +118,54 @@ class Registry:
 
     def all(self) -> list[CodemapRef]:
         with self._lock:
+            self._load_unlocked()
             return list(self._by_id.values())
 
     def clear(self) -> None:
         with self._lock:
             self._by_id.clear()
             self._alias.clear()
+            self._loaded = True
+
+
+def registry_path() -> Path:
+    raw = str(os.environ.get("ASCENDC_CODEMAP_CACHE_DIR") or "").strip()
+    root = Path(raw).expanduser() if raw else Path.home() / ".cache" / "ascendc-codemap-mcp"
+    return root / "registry.json"
+
+
+def _ref_to_row(ref: CodemapRef) -> dict[str, str]:
+    return {
+        "id": ref.id,
+        "alias": ref.alias,
+        "project": str(ref.project),
+        "architecture": ref.architecture,
+        "op_name": ref.op_name,
+        "path": str(ref.product) if ref.product else "",
+    }
+
+
+def _ref_from_row(row: dict[str, Any]) -> CodemapRef | None:
+    project_s = str(row.get("project") or "").strip()
+    product_s = str(row.get("path") or "").strip()
+    op_name = str(row.get("op_name") or "").strip()
+    arch = str(row.get("architecture") or "").strip()
+    cid = str(row.get("id") or "").strip()
+    if not cid or not op_name or not arch or not project_s:
+        return None
+    project = Path(project_s)
+    product = Path(product_s) if product_s else None
+    if product is not None and not product.is_file():
+        product = None
+    if not project.exists() and product is None:
+        return None
+    return CodemapRef(
+        id=cid,
+        project=project,
+        architecture=arch,
+        op_name=op_name,
+        product=product,
+    )
 
 
 def project_token(project: str | Path) -> str:

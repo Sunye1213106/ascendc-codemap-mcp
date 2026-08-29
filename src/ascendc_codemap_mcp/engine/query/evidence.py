@@ -177,7 +177,18 @@ _KIND_FACTS: dict[str, tuple[str, ...]] = {
     ),
     EntityKind.EVENT.value: ("identity", "scope", "event_type", "mechanism", "cross_core"),
     EntityKind.QUEUE.value: ("identity", "scope", "type_name", "tposition", "memory_space"),
-    EntityKind.BRANCH.value: ("predicate", "condition", "branch_kind", "layer", "function", "dimensions"),
+    EntityKind.BRANCH.value: (
+        "predicate",
+        "condition",
+        "branch_kind",
+        "layer",
+        "function",
+        "dimensions",
+        "operators",
+        "literals",
+        "references",
+        "enum_values",
+    ),
     EntityKind.KERNEL.value: ("source_signature", "variants"),
     EntityKind.INPUT.value: (
         "dtype",
@@ -197,11 +208,16 @@ _KIND_FACTS: dict[str, tuple[str, ...]] = {
     EntityKind.COMPILE_VAR.value: ("value", "value_expr", "origin", "layer"),
     EntityKind.PREDICATE.value: (
         "predicate_role",
+        "entry_role",
         "class",
         "priority",
         "arch_expr",
         "is_capable_file",
         "is_capable_line",
+        "operators",
+        "literals",
+        "references",
+        "enum_values",
     ),
 }
 
@@ -458,6 +474,23 @@ def is_tque_api_name(name: str) -> bool:
 
 def is_flag_sync_api_name(name: str) -> bool:
     return is_flag_sync(name)
+
+
+_CATALOG_KIND_ALIAS = {
+    "tque": EntityKind.QUEUE.value,
+    "tbuf": EntityKind.BUFFER.value,
+    "tpipe": EntityKind.PIPE.value,
+    "setflag": EntityKind.EVENT.value,
+    "waitflag": EntityKind.EVENT.value,
+    "crosscoresetflag": EntityKind.EVENT.value,
+    "crosscorewaitflag": EntityKind.EVENT.value,
+}
+
+
+def catalog_kind_alias(name: str) -> str | None:
+    """Map a CANN catalog ident (TQue, SetFlag) onto the graph kind to search."""
+    leaf = str(name or "").replace(".", "::").split("::")[-1].strip().lower()
+    return _CATALOG_KIND_ALIAS.get(leaf)
 
 
 def field_edge_kinds() -> frozenset[str]:

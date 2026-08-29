@@ -31,6 +31,7 @@ from ascendc_codemap_mcp.engine.pipe_lifetime import (
 from ascendc_codemap_mcp.engine.query.evidence import (
     USEFUL_EDGE_KINDS,
     bucket_hits,
+    catalog_kind_alias,
     field_edge_kinds,
     is_flag_sync_api_name,
     is_kernel_api_name,
@@ -89,7 +90,6 @@ _PROTECTED_PAYLOAD_KEYS = frozenset(
         "tiling_data_names",
         "shape",
         "total_matched",
-        "edges",
         "host",
         "kernel",
         "flow",
@@ -97,22 +97,20 @@ _PROTECTED_PAYLOAD_KEYS = frozenset(
         "related",
         "impact",
         "enclosing",
-        "snippet",
         "seeds",
         "match",
         "match_note",
         "text_hits",
         "text_hits_total",
         "text_hits_complete",
-        "contract",
         "completeness",
-        "proof",
         "impact_sinks",
         "entry",
         "checks",
         "unresolved_reason",
         "unresolved_reasons",
         "windows",
+        "text",
     }
 )
 PACKING_RHS_TRIM = 400
@@ -254,6 +252,13 @@ _OCCUPANCY_IDENT_RE = re.compile(
     re.IGNORECASE,
 )
 _WRITER_SKIP_KINDS = {EntityKind.INPUT.value, EntityKind.OUTPUT.value}
+_KERNEL_READER_KINDS = {
+    RelationKind.READS.value,
+    RelationKind.BINDS.value,
+    RelationKind.SELECTS.value,
+    RelationKind.CALLS_UNDER_GUARD.value,
+    RelationKind.MATERIALIZES_AS.value,
+}
 _LEGACY_KIND_MAP: dict[str, set[str]] = {
     "Variable": {"VARIABLE", "COMPILE_VAR", "MACRO"},
     "Input": {"INPUT"},
@@ -630,19 +635,21 @@ def _definition_rank(kind: str, name: str, eid: str, facts: dict[str, Any] | Non
 
 
 def _arch_file_rank(file: str, architecture: str) -> int:
-    """Prefer ``op_kernel/archNN/`` over unscoped warehouse-root cpp/apt."""
+    """Prefer operator op_host/op_kernel (arch-scoped first) over ../common."""
     text = str(file or "").replace("\\", "/").lower()
     arch = str(architecture or "").strip().lower()
     if not text:
-        return 3
+        return 4
     blob = f"/{text.strip('/')}/"
+    if "/common/" in blob:
+        return 3
     if arch and f"/{arch}/" in blob:
         return 0
-    if arch and (blob.startswith("/op_kernel/") or "/op_kernel/" in blob):
-        return 2
-    if arch and (blob.startswith("/op_host/") or "/op_host/" in blob):
-        return 2
-    return 1
+    if "/op_host/" in blob or blob.startswith("/op_host/"):
+        return 1
+    if "/op_kernel/" in blob or blob.startswith("/op_kernel/"):
+        return 1
+    return 2
 
 
 def _is_occupancy_ident(name: str) -> bool:
@@ -743,7 +750,23 @@ def _definition_sites_from_hits(
         if key in seen:
             continue
         seen.add(key)
-        sites.append({"file": file, "line": line, "kind": kind, "name": name})
+        facts = hit.get("facts") if isinstance(hit.get("facts"), dict) else {}
+        attrs = hit.get("attrs") if isinstance(hit.get("attrs"), dict) else {}
+        data = hit.get("data") if isinstance(hit.get("data"), dict) else {}
+        cpp_kind = str(
+            facts.get("cpp_kind") or attrs.get("cpp_kind") or data.get("cpp_kind") or ""
+        )
+        sites.append(
+            {
+                "file": file,
+                "line": line,
+                "line_end": int(hit.get("line_end") or line),
+                "kind": kind,
+                "name": name,
+                "snippet": str(hit.get("snippet") or ""),
+                "cpp_kind": cpp_kind,
+            }
+        )
     complete = len(sites) <= int(limit)
     return sites[: max(0, int(limit))], complete
 
@@ -1067,6 +1090,34 @@ def _drop_redundant_type_hashes(hits: list[dict[str, Any]]) -> list[dict[str, An
             and str(hit.get("name") or "").lower() in src_names
         )
     ]
+
+
+def _round_robin_by_file(hits: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+    """Keep rank order, but do not let one file fill the page."""
+    buckets: dict[str, list[dict[str, Any]]] = {}
+    order: list[str] = []
+    for hit in hits:
+        file = str(hit.get("file") or "").replace("\\", "/") or "(unknown)"
+        if file not in buckets:
+            buckets[file] = []
+            order.append(file)
+        buckets[file].append(hit)
+    out: list[dict[str, Any]] = []
+    depth = 0
+    cap = max(1, int(limit))
+    while len(out) < cap:
+        progressed = False
+        for file in order:
+            bucket = buckets[file]
+            if depth < len(bucket):
+                out.append(bucket[depth])
+                progressed = True
+                if len(out) >= cap:
+                    break
+        if not progressed:
+            break
+        depth += 1
+    return out
 
 
 def _diversify_by_file(
@@ -2058,6 +2109,7 @@ def _clip_snippets(payload: dict[str, Any], *, max_lines: int) -> None:
         "readers",
         "fields",
         "phases",
+        "cards",
     ):
         rows = payload.get(key)
         if isinstance(rows, list):
@@ -2065,6 +2117,12 @@ def _clip_snippets(payload: dict[str, Any], *, max_lines: int) -> None:
     field = payload.get("field")
     if isinstance(field, dict):
         _clip_hit_snippets([field], max_lines=max_lines)
+    contract = payload.get("contract")
+    if isinstance(contract, dict):
+        for key in ("producers", "consumers", "impact_sinks", "binds", "kernel_repr", "entry"):
+            rows = contract.get(key)
+            if isinstance(rows, list):
+                _clip_hit_snippets(rows, max_lines=max_lines)
 
 
 def _clip_relationships(payload: dict[str, Any], *, max_rels: int = MAX_REL_HOPS) -> None:
@@ -2248,6 +2306,220 @@ def _downgrade_coverage_after_clip(payload: dict[str, Any]) -> None:
         cov["completeness"] = "siblings_checked"
         cov["answerable"] = True
     payload["coverage"] = cov
+
+
+#: An include guard is named after its own header. The `#ifndef` / `#define`
+#: pair gets indexed (as MACRO or as the BRANCH it opens) but carries no
+#: semantics, so it must never outrank a real seed for a fuzzy needle.
+_INCLUDE_GUARD_RE = re.compile(r"^_*[A-Z][A-Z0-9_]*_(?:H|HH|HPP|HXX|INC)_*$")
+
+
+def is_include_guard(kind: str, name: str, data: Any = None) -> bool:
+    ident = str(name or "").rsplit("::", 1)[-1]
+    if not _INCLUDE_GUARD_RE.fullmatch(ident):
+        return False
+    if isinstance(data, dict):
+        body = str(data.get("value") or data.get("body") or "").strip()
+        if body:
+            return False
+    return True
+
+
+_CAMEL_TOKEN_RE = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|[0-9]+")
+_DISCOVERY_KIND_RANK = {
+    EntityKind.TILING_KEY.value: 0,
+    EntityKind.TILING_FIELD.value: 0,
+    EntityKind.TYPE.value: 1,
+    EntityKind.FUNCTION.value: 2,
+    EntityKind.METHOD.value: 2,
+    EntityKind.KERNEL.value: 2,
+    EntityKind.BUFFER.value: 2,
+    EntityKind.MACRO.value: 3,
+    EntityKind.VARIABLE.value: 4,
+    EntityKind.FIELD.value: 4,
+    EntityKind.OPERATION.value: 5,
+    EntityKind.BRANCH.value: 6,
+    EntityKind.PREDICATE.value: 6,
+    EntityKind.COMPILE_VAR.value: 7,
+    EntityKind.CONTRACT.value: 7,
+}
+
+
+def _needle_core(pattern: str) -> str:
+    return str(pattern or "").replace("*", "").replace("?", "").replace("%", "").strip().lower()
+
+
+def _ident_tokens(name: str) -> list[str]:
+    leaf = _last_ident(name)
+    out: list[str] = []
+    for chunk in re.split(r"[^A-Za-z0-9]+", leaf):
+        if not chunk:
+            continue
+        out.extend(t.lower() for t in (_CAMEL_TOKEN_RE.findall(chunk) or [chunk]) if t)
+    return out
+
+
+# Ident recovery is lexical, not embedding: the name table is small and the
+# caller needs a real ident, not a nearest neighbor. Split camel / snake /
+# digits, expand a few C++ abbreviations, then LIKE.
+_RECOVERY_STOP = frozenset(
+    {
+        "get",
+        "set",
+        "the",
+        "has",
+        "is",
+        "for",
+        "and",
+        "not",
+        "num",
+        "len",
+        "max",
+        "min",
+        "all",
+        "val",
+        "tmp",
+        "new",
+        "old",
+    }
+)
+_ABBREV_TO_FULL = {
+    "buf": "buffer",
+    "buff": "buffer",
+    "ptr": "pointer",
+    "cnt": "count",
+    "idx": "index",
+    "cfg": "config",
+    "ctx": "context",
+    "msg": "message",
+    "sel": "selector",
+}
+_FULL_TO_ABBREV = {
+    full: short
+    for short, full in _ABBREV_TO_FULL.items()
+    if len(short) >= 4
+}
+
+
+def _recovery_tokens(pattern: str) -> list[str]:
+    """Tokens to retry after a name-discovery miss. Longest first, no dups."""
+    core = str(pattern or "").replace("*", "").replace("?", "").replace("%", "").strip()
+    if not core:
+        return []
+    core_l = core.lower()
+    seen: set[str] = set()
+    scored: list[tuple[int, str]] = []
+    for token in _ident_tokens(core):
+        if token.isdigit() or token in _RECOVERY_STOP:
+            continue
+        full = _ABBREV_TO_FULL.get(token, token)
+        for cand in (full, token):
+            if len(cand) < 4 or cand == core_l or cand in seen:
+                continue
+            seen.add(cand)
+            scored.append((len(cand), cand))
+        short = _FULL_TO_ABBREV.get(full, "")
+        if short and short != core_l and short not in seen:
+            seen.add(short)
+            scored.append((len(short), short))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [token for _, token in scored[:6]]
+
+
+def _name_discovery_key(
+    hit: dict[str, Any], pattern: str, *, architecture: str = ""
+) -> tuple[Any, ...]:
+    """Exact leaf, then located operator files, then kind, then token match.
+
+    Fileless catalog types and ../common macros otherwise crowd out the
+    operator's own camelCase idents for a short fragment.
+    """
+    needle = _needle_core(pattern)
+    name = str(hit.get("name") or "")
+    leaf = _last_ident(name).lower()
+    kind = str(hit.get("kind") or "")
+    file = str(hit.get("file") or "")
+    tokens = _ident_tokens(name)
+    exact_leaf = 0 if needle and leaf == needle else 1
+    best_tok = 0
+    token_tier = 5
+    if needle:
+        for t in tokens:
+            if t == needle:
+                token_tier = min(token_tier, 1)
+                best_tok = max(best_tok, len(t))
+            elif t.startswith(needle):
+                token_tier = min(token_tier, 2)
+                best_tok = max(best_tok, len(t))
+            elif len(t) >= 3 and needle.startswith(t):
+                token_tier = min(token_tier, 3)
+                best_tok = max(best_tok, len(t))
+        if token_tier == 5 and (leaf.startswith(needle) or needle in leaf or needle in name.lower()):
+            token_tier = 4
+            best_tok = max(best_tok, len(needle))
+    located = 0 if file.strip() and int(hit.get("line_start") or hit.get("line") or 0) > 0 else 1
+    return (
+        exact_leaf,
+        located,
+        _arch_file_rank(file, architecture),
+        _DISCOVERY_KIND_RANK.get(kind, 5),
+        -best_tok,
+        token_tier,
+        len(leaf),
+        leaf,
+        kind,
+    )
+
+
+def _collapse_by_name(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One row per (name, kind): a name list, not a site list."""
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for hit in hits:
+        name = str(hit.get("name") or "")
+        kind = str(hit.get("kind") or "")
+        if not name:
+            continue
+        if str(kind) == EntityKind.FILE.value:
+            continue
+        if any(ch in name for ch in " =<>!&|"):
+            continue
+        if is_include_guard(kind, name, hit.get("data")):
+            continue
+        key = (name.lower(), kind)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(hit)
+    compile_vars = {
+        str(hit.get("name") or "").lower()
+        for hit in out
+        if str(hit.get("kind") or "") == EntityKind.COMPILE_VAR.value
+    }
+    if compile_vars:
+        out = [
+            hit
+            for hit in out
+            if not (
+                str(hit.get("kind") or "") == EntityKind.CONTRACT.value
+                and str(hit.get("name") or "").lower() in compile_vars
+            )
+        ]
+    return out
+
+
+def _name_pattern_to_like(pattern: str) -> str:
+    """Glob (* ?) when the caller wrote one, otherwise substring.
+
+    `_` stays a LIKE single-char wildcard, which still matches the literal `_`
+    that idents are full of, so patterns need no escaping.
+    """
+    text = str(pattern or "").strip()
+    if not text:
+        return "%"
+    if "*" in text or "?" in text:
+        return text.replace("*", "%").replace("?", "_")
+    return f"%{text}%"
 
 
 def _fit_payload(payload: dict[str, Any], *, max_chars: int = MAX_PAYLOAD_CHARS) -> dict[str, Any]:
@@ -3367,20 +3639,28 @@ class UoSqlQuery:
         ]
         readers: list[dict[str, Any]] = []
         writers: list[dict[str, Any]] = []
+        seen_readers: set[str] = set()
         with self._connect() as conn:
             for rel in edges:
                 src_id = str(rel.get("src") or "")
                 dst_id = str(rel.get("dst") or "")
-                if rel.get("kind") == RelationKind.READS.value and dst_id == fid:
-                    row = self._entity_row(conn, src_id)
-                    hit = self._hit(row, why="kernel_reader", with_snippet=False) if row else None
-                    if hit:
-                        readers.append(hit)
-                if rel.get("kind") in {RelationKind.WRITES.value, RelationKind.DERIVES.value} and dst_id == fid:
+                rkind = str(rel.get("kind") or "")
+                if rkind in {RelationKind.WRITES.value, RelationKind.DERIVES.value} and dst_id == fid:
                     row = self._entity_row(conn, src_id)
                     hit = self._hit(row, why="host_writer", with_snippet=False) if row else None
                     if hit and str(hit.get("kind") or "") not in _WRITER_SKIP_KINDS:
                         writers.append(hit)
+                if rkind in _KERNEL_READER_KINDS:
+                    other = src_id if dst_id == fid else dst_id if src_id == fid else ""
+                    if not other or other == fid:
+                        continue
+                    row = self._entity_row(conn, other)
+                    hit = self._hit(row, why="kernel_reader", with_snippet=False) if row else None
+                    hid = str((hit or {}).get("id") or "")
+                    if hit and hid and hid not in seen_readers:
+                        if str(hit.get("kind") or "") not in _WRITER_SKIP_KINDS:
+                            seen_readers.add(hid)
+                            readers.append(hit)
         for hit in writers[:12]:
             stmt = _read_statement(
                 self._op_root, str(hit.get("file") or ""), int(hit.get("line_start") or 0)
@@ -5068,7 +5348,7 @@ class UoSqlQuery:
         line_end: int = 0,
         limit: int = 8,
     ) -> dict[str, Any]:
-        """Agent-facing query: name card, Dim=V cover, file:line, or index."""
+        """Agent-facing resolve helper: name card, dim cover, file:line, or index."""
         path = str(file or "").strip()
         line_n = int(line or 0)
         if path and line_n:
@@ -5079,14 +5359,8 @@ class UoSqlQuery:
         text = str(pattern or "").strip()
         if not text:
             return self.query_index(limit=limit)
-        from ascendc_codemap_mcp.engine.query.explore import (
-            attach_explore_fields,
-            phenomenon_payload,
-            should_use_phenomenon,
-        )
+        from ascendc_codemap_mcp.engine.query.explore import attach_explore_fields
 
-        if should_use_phenomenon(text):
-            return _fit_payload(phenomenon_payload(self, text, limit=limit))
         if "=" in text:
             payload = self.query_cover(text, limit=limit)
             return _fit_payload(attach_explore_fields(self, payload, pattern=text))
@@ -5100,19 +5374,32 @@ class UoSqlQuery:
             attach_query_hints(payload, needle, count=0, mode="name")
             return _fit_payload(payload)
         hits = self._exact_name_hits(needle, limit=max(int(limit) * 16, 64))
-        catalog_ident = (not hits) and self._is_ascendc_catalog_ident(needle)
-        if not hits and not catalog_ident:
+        kind_alias = catalog_kind_alias(needle)
+        if not hits and kind_alias:
+            hits = self._hits_by_kind(kind_alias, limit=max(int(limit) * 16, 64))
+        if not hits:
             hits = self._prefix_name_hits(needle, limit=max(int(limit) * 16, 64))
-        if not hits and not catalog_ident:
+        if not hits:
             located = self.aggregate_locate(needle, limit=max(int(limit), 8))
             hits = list(located.get("locations") or [])
         recall_samples: list[dict[str, Any]] = []
         recall_total = 0
-        if not hits and not catalog_ident:
+        if not hits:
             hits, recall_samples, recall_total = self._recall_name_hits(
                 needle, limit=max(int(limit), 8)
             )
         by_kind: dict[str, dict[str, Any]] = {}
+        # An include guard only answers a query that spelled it out in full.
+        if not is_include_guard("", needle):
+            filtered = [
+                hit
+                for hit in hits
+                if not is_include_guard(
+                    str(hit.get("kind") or ""), str(hit.get("name") or ""), hit.get("data")
+                )
+            ]
+            if filtered or not hits:
+                hits = filtered
         ranked = sorted(
             hits,
             key=lambda hit: _agent_sort_key(hit, needle, architecture=self._architecture),
@@ -5368,6 +5655,8 @@ class UoSqlQuery:
             "count": len(cards),
             "coverage": _name_card_coverage(coverage),
         }
+        if not cards:
+            payload["dim_names"] = self._declared_dim_names()
         if recall_total:
             payload["match"] = "recall_scan"
             payload["text_hits"] = recall_samples
@@ -5421,6 +5710,19 @@ class UoSqlQuery:
                 limit=max(int(limit), 8),
             )
             return self._hits_from_rows(conn, rows, why="name_card", with_snippet=True)
+
+    def _hits_by_kind(self, kind: str, *, limit: int) -> list[dict[str, Any]]:
+        want = str(kind or "").strip()
+        if not want:
+            return []
+        with self._connect() as conn:
+            rows = self._select_entities(
+                conn,
+                kinds=[want],
+                extra_where=_ASCENDC_CATALOG_SQL,
+                limit=max(int(limit), 8),
+            )
+            return self._hits_from_rows(conn, rows, why="kind_alias", with_snippet=True)
 
     def _prefix_name_hits(self, needle: str, *, limit: int) -> list[dict[str, Any]]:
         ident = str(needle or "").strip()
@@ -6000,8 +6302,6 @@ class UoSqlQuery:
         if match.get("dim_only"):
             payload["dim_only"] = match.get("dim_only")
             payload["cover_kind"] = "dim_list"
-            payload["declared_coverage"] = match.get("declared_coverage") or {}
-            payload["product_coverage"] = match.get("product_coverage") or {}
             payload["ok"] = True
         if matched > 0:
             payload["template_blocks"] = list(match.get("template_blocks") or [])[:TEMPLATE_BLOCK_EXEMPLARS]
@@ -6151,9 +6451,14 @@ class UoSqlQuery:
                 "ok": False,
                 "shape": "around",
                 "error": "around_needs_file_line",
-                "hint": "Pass --file and --line from a previous card.",
+                "hint": "Pass file and line from a previous card.",
             }
-        window, _win_cut = _statement_window(self._op_root, path, start)
+        if end > start:
+            resolved = _resolve_source_path(self._op_root, path)
+            chosen = _read_line_range(resolved, start, end) if resolved is not None else []
+            window = "\n".join(_numbered_lines(start, chosen)) if chosen else ""
+        else:
+            window, _win_cut = _statement_window(self._op_root, path, start)
         seed_cap = AROUND_SEED_LIMIT
         seeds = self._around_seed_hits(path, start, end or start, limit=seed_cap)
         enclosing = [hit for hit in seeds if _encloses_line(hit, start)]
@@ -6162,6 +6467,10 @@ class UoSqlQuery:
         else:
             seeds = seeds[:1]
         compact_seeds = [_compact_around_hit(hit, snippet=False) for hit in seeds]
+        if window and compact_seeds:
+            compact_seeds[0]["snippet"] = window
+            compact_seeds[0]["line"] = start
+            compact_seeds[0]["line_end"] = end
         seed_ids = [str(hit.get("id") or "") for hit in seeds if hit.get("id")]
         neighbors = self._around_one_hop(seed_ids)
         impact: dict[str, Any] = {}
@@ -6219,10 +6528,92 @@ class UoSqlQuery:
         attach_query_hints(payload, path, count=int(payload.get("count") or 0), mode="around")
         return _fit_payload(payload)
 
-    def query_index(self, *, limit: int = 8) -> dict[str, Any]:
-        launch = self.aggregate_kernel_launch(limit=max(int(limit), 8))
+    def count_call_sites(self, name: str) -> int:
+        """How many OPERATION entities call this ident. 0 when it is not called.
+
+        A resolve card shows the definition; this is what tells the caller that
+        the definition is not the whole answer.
+        """
+        ident = str(name or "").rsplit("::", 1)[-1].strip()
+        if not ident:
+            return 0
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) FROM entity e
+                WHERE e.kind = ?
+                  AND (e.name = ? COLLATE NOCASE
+                       OR e.name LIKE '%::' || ? COLLATE NOCASE
+                       OR IFNULL(json_extract(e.data, '$.callee'), '') = ? COLLATE NOCASE)
+                """,
+                (EntityKind.OPERATION.value, ident, ident, ident),
+            ).fetchone()
+        return int(row[0] or 0) if row else 0
+
+    def list_call_sites(
+        self, name: str, *, limit: int = 8
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Located OPERATION rows for this ident, unique by file:line."""
+        ident = str(name or "").rsplit("::", 1)[-1].strip()
+        if not ident:
+            return [], 0
+        total = self.count_call_sites(ident)
+        cap = max(int(limit), 8)
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT e.file, e.line_start, e.name
+                FROM entity e
+                WHERE e.kind = ?
+                  AND (e.name = ? COLLATE NOCASE
+                       OR e.name LIKE '%::' || ? COLLATE NOCASE
+                       OR IFNULL(json_extract(e.data, '$.callee'), '') = ? COLLATE NOCASE)
+                  AND IFNULL(e.file, '') != ''
+                  AND e.line_start > 0
+                ORDER BY e.file, e.line_start, e.id
+                LIMIT ?
+                """,
+                (EntityKind.OPERATION.value, ident, ident, ident, max(cap * 4, 32)),
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        seen: set[tuple[str, int]] = set()
+        for row in rows:
+            file = _norm_file(str(row[0] or ""))
+            line = int(row[1] or 0)
+            if not file or line <= 0:
+                continue
+            key = (file, line)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({"file": file, "line": line, "name": str(row[2] or ident)})
+            if len(out) >= cap:
+                break
+        return out, total
+
+    def _hits_by_name_like(self, pattern: str, *, fetch: int) -> list[dict[str, Any]]:
+        text = str(pattern or "").strip()
+        if not text:
+            return []
+        with self._connect() as conn:
+            rows = self._select_entities(
+                conn,
+                extra_where="e.name COLLATE NOCASE LIKE ?",
+                params=[_name_pattern_to_like(text)],
+                limit=max(int(fetch), 8),
+                order="e.file, e.line_start, e.id",
+            )
+            return self._hits_from_rows(
+                conn,
+                rows,
+                why="find",
+                with_snippet=False,
+                require_span_for_branch=False,
+            )
+
+    def _declared_dim_names(self) -> list[str]:
         dim_names: list[str] = []
-        tiling_data: list[str] = []
+        seen_dims: set[str] = set()
         with self._connect() as conn:
             dim_rows = conn.execute(
                 """
@@ -6231,22 +6622,26 @@ class UoSqlQuery:
                 ORDER BY name
                 """
             ).fetchall()
-            dim_names = []
-            seen_dims: set[str] = set()
-            for row in dim_rows:
-                name = str(row[0] or "")
-                if name in seen_dims or not _IDENT_NAME_RE.fullmatch(name):
-                    continue
-                if name.isdigit():
-                    continue
-                data = _parse_data(row[1] if len(row) > 1 else None)
-                attrs = data.get("attrs") if isinstance(data.get("attrs"), dict) else data
-                if not isinstance(attrs, dict):
-                    attrs = {}
-                if attrs.get("source_declared") is not True:
-                    continue
-                seen_dims.add(name)
-                dim_names.append(name)
+        for row in dim_rows:
+            name = str(row[0] or "")
+            if name in seen_dims or not _IDENT_NAME_RE.fullmatch(name):
+                continue
+            if name.isdigit():
+                continue
+            data = _parse_data(row[1] if len(row) > 1 else None)
+            attrs = data.get("attrs") if isinstance(data.get("attrs"), dict) else data
+            if not isinstance(attrs, dict):
+                attrs = {}
+            if attrs.get("source_declared") is not True:
+                continue
+            seen_dims.add(name)
+            dim_names.append(name)
+        return dim_names
+
+    def query_index(self, *, limit: int = 8) -> dict[str, Any]:
+        launch = self.aggregate_kernel_launch(limit=max(int(limit), 8))
+        dim_names = self._declared_dim_names()
+        with self._connect() as conn:
             tiling_data = [
                 str(row[0])
                 for row in conn.execute(
@@ -6295,6 +6690,352 @@ class UoSqlQuery:
             payload["hint"] = "Dim=<name> lists a dim. One identifier for a name card."
         attach_query_hints(payload, "", count=len(phases), mode="index")
         return _fit_payload(payload)
+
+    def query_find(self, plan: Any, *, limit: int = 8) -> dict[str, Any]:
+        from ascendc_codemap_mcp.engine.query.completeness import COMPLETE, UNKNOWN
+        from ascendc_codemap_mcp.engine.query.predicate_ast import (
+            ast_matches_literal,
+            ast_matches_operator,
+            ast_matches_symbol,
+            ast_matches_value,
+        )
+
+        kind = str(getattr(plan, "kind", "") or "")
+        name_pattern = str(getattr(plan, "name", "") or "")
+        # Name discovery ranks after fetch. A small page ordered by file never
+        # sees operator idents that sit behind common headers.
+        fetch = max(int(limit) * 8, 64)
+        if name_pattern and not kind:
+            fetch = max(fetch, 400)
+        where: list[str] = []
+        params: list[Any] = []
+        if name_pattern:
+            where.append("e.name COLLATE NOCASE LIKE ?")
+            params.append(_name_pattern_to_like(name_pattern))
+        layer = str(getattr(plan, "layer", "") or "")
+        if layer:
+            where.append("IFNULL(json_extract(e.data, '$.layer'), '') = ?")
+            params.append(layer)
+        function = str(getattr(plan, "function", "") or "")
+        if function:
+            where.append("IFNULL(json_extract(e.data, '$.function'), '') = ? COLLATE NOCASE")
+            params.append(function)
+        callee = str(getattr(plan, "callee", "") or "")
+        if callee:
+            where.append(
+                "(e.name = ? COLLATE NOCASE OR IFNULL(json_extract(e.data, '$.callee'), '') = ? COLLATE NOCASE"
+                " OR e.name LIKE '%::' || ? COLLATE NOCASE)"
+            )
+            params.extend([callee, callee, callee])
+        dim = str(getattr(plan, "dim", "") or "")
+        if dim:
+            where.append("e.name = ? COLLATE NOCASE")
+            params.append(dim)
+        referenced_value = str(getattr(plan, "referenced_value", "") or "")
+        if referenced_value:
+            where.append(
+                "("
+                "EXISTS (SELECT 1 FROM json_each(IFNULL(json_extract(e.data, '$.enum_values'), '[]'))"
+                "        WHERE value = ? OR value LIKE '%_' || ?)"
+                " OR EXISTS (SELECT 1 FROM json_each(IFNULL(json_extract(e.data, '$.literals'), '[]'))"
+                "            WHERE CAST(value AS TEXT) = ?)"
+                ")"
+            )
+            params.extend([referenced_value, referenced_value, referenced_value])
+        literal = str(getattr(plan, "literal", "") or "")
+        if literal:
+            lit_norm = literal
+            if literal.lstrip("-").isdigit():
+                from ascendc_codemap_mcp.engine.query.predicate_ast import _norm_int
+
+                lit_norm = _norm_int(literal)
+            where.append(
+                "EXISTS (SELECT 1 FROM json_each(IFNULL(json_extract(e.data, '$.literals'), '[]'))"
+                "        WHERE CAST(value AS TEXT) IN (?, ?))"
+            )
+            params.extend([literal, lit_norm])
+        operator = str(getattr(plan, "operator", "") or "").upper()
+        if operator:
+            where.append(
+                "EXISTS (SELECT 1 FROM json_each(IFNULL(json_extract(e.data, '$.operators'), '[]'))"
+                "        WHERE CAST(value AS TEXT) = ?)"
+            )
+            params.append(operator)
+        referenced_symbol = str(getattr(plan, "referenced_symbol", "") or "")
+        if referenced_symbol:
+            leaf = referenced_symbol.replace("::", ".").rsplit(".", 1)[-1]
+            where.append(
+                "EXISTS (SELECT 1 FROM json_each(IFNULL(json_extract(e.data, '$.references'), '[]'))"
+                "        WHERE CAST(value AS TEXT) IN (?, ?))"
+            )
+            params.extend([referenced_symbol, leaf])
+        extra = " AND ".join(where) if where else ""
+        with self._connect() as conn:
+            rows = self._select_entities(
+                conn,
+                kinds=[kind],
+                extra_where=extra,
+                params=params,
+                limit=fetch,
+                order="e.file, e.line_start, e.id",
+            )
+            kept: list[sqlite3.Row] = []
+            for row in rows:
+                data = _parse_data(_row_get(row, "data", "{}"))
+                if not isinstance(data, dict):
+                    data = {}
+                if getattr(plan, "referenced_symbol", "") and not ast_matches_symbol(
+                    data, str(plan.referenced_symbol)
+                ):
+                    continue
+                if getattr(plan, "referenced_value", "") and not ast_matches_value(
+                    data, str(plan.referenced_value)
+                ):
+                    continue
+                if getattr(plan, "literal", "") and not ast_matches_literal(data, str(plan.literal)):
+                    continue
+                if getattr(plan, "operator", "") and not ast_matches_operator(data, str(plan.operator)):
+                    continue
+                role = str(getattr(plan, "entry_role", "") or "")
+                if role and str(data.get("entry_role") or "") != role:
+                    continue
+                consumer = str(getattr(plan, "consumer_role", "") or "")
+                if consumer and str(data.get("consumer_role") or "") != consumer:
+                    continue
+                kept.append(row)
+            # Name discovery answers "what is this called"; it needs no source.
+            discovery = bool(name_pattern) and not kind
+            hits = self._hits_from_rows(
+                conn,
+                kept,
+                why="find",
+                with_snippet=not discovery,
+                require_span_for_branch=False,
+            )
+        recovered_via = ""
+        if discovery:
+            hits = _collapse_by_name(hits)
+            if not hits:
+                for token in _recovery_tokens(name_pattern):
+                    recovered = _collapse_by_name(
+                        self._hits_by_name_like(token, fetch=fetch)
+                    )
+                    if recovered:
+                        hits = recovered
+                        recovered_via = token
+                        break
+            rank_pattern = recovered_via or name_pattern
+            hits.sort(
+                key=lambda hit: _name_discovery_key(
+                    hit, rank_pattern, architecture=self._architecture
+                )
+            )
+            page = _round_robin_by_file(hits, limit=max(1, int(limit)))
+            total = len(hits)
+        else:
+            total = len(hits)
+            page = hits[: max(1, int(limit))]
+        payload: dict[str, Any] = {
+            "ok": bool(page),
+            "shape": "find",
+            "cards": page,
+            "count": len(page),
+            "total": total,
+            "truncated": total > len(page),
+            "completeness": COMPLETE if page else UNKNOWN,
+            "unresolved_reason": "" if page else "NO_SEED",
+        }
+        if discovery:
+            payload["projection"] = "locations"
+            if page:
+                if recovered_via:
+                    hint = (
+                        f"no ident {name_pattern}; showing {recovered_via}. "
+                        "resolve one of these idents"
+                    )
+                else:
+                    hint = (
+                        "name discovery: resolve one of these idents, "
+                        "or find kind=... to enumerate its sites"
+                    )
+                    leaf = _needle_core(name_pattern)
+                    exact_op = any(
+                        str(hit.get("kind") or "") == EntityKind.OPERATION.value
+                        and _last_ident(str(hit.get("name") or "")).lower() == leaf
+                        for hit in hits
+                    )
+                    if exact_op and leaf:
+                        sites, site_total = self.list_call_sites(
+                            _last_ident(name_pattern) or name_pattern, limit=limit
+                        )
+                        if sites:
+                            payload["operation_sites"] = sites
+                            payload["operation_sites_total"] = site_total
+                            payload["operation_sites_truncated"] = site_total > len(
+                                sites
+                            )
+                            hint = (
+                                f"call sites: {site_total} — already listed below"
+                                + (
+                                    f" (showing {len(sites)} of {site_total})"
+                                    if site_total > len(sites)
+                                    else ""
+                                )
+                            )
+                if total > len(page) and not recovered_via:
+                    hint = (
+                        f"showing {len(page)} of {total} names; "
+                        "tighten name= or raise limit. "
+                    ) + hint
+                payload["hint"] = hint
+            else:
+                tokens = _recovery_tokens(name_pattern)
+                payload["hint"] = f"no ident matches {name_pattern!r}" + (
+                    f"; split tokens: {', '.join(tokens)}" if tokens else ""
+                )
+        if not page:
+            if dim:
+                payload["dim_names"] = self._declared_dim_names()
+            elif callee:
+                payload["hint"] = (
+                    f"no OPERATION callee={callee}. "
+                    f"If that ident is a function, resolve it. "
+                    f"To list kernel API calls, find kind=OPERATION callee=<apiName>. "
+                    f"To discover names, find name={callee}"
+                )
+            elif not discovery:
+                payload["dim_names"] = self._declared_dim_names()
+                attach_query_hints(
+                    payload, name_pattern or callee or dim or kind, count=0, mode="name"
+                )
+        return payload
+
+    def query_entry(self, plan: Any, *, limit: int = 8) -> dict[str, Any]:
+        from ascendc_codemap_mcp.engine.query.completeness import COMPLETE, UNKNOWN
+
+        fetch = max(int(limit) * 8, 64)
+        where = ["IFNULL(json_extract(e.data, '$.predicate_role'), '') = 'entry_path'"]
+        params: list[Any] = []
+        role = str(getattr(plan, "entry_role", "") or "")
+        if role:
+            where.append("IFNULL(json_extract(e.data, '$.entry_role'), '') = ?")
+            params.append(role)
+        function = str(getattr(plan, "function", "") or "")
+        if function:
+            where.append("IFNULL(json_extract(e.data, '$.function'), '') = ? COLLATE NOCASE")
+            params.append(function)
+        layer = str(getattr(plan, "layer", "") or "")
+        if layer:
+            where.append("IFNULL(json_extract(e.data, '$.layer'), '') = ?")
+            params.append(layer)
+        with self._connect() as conn:
+            rows = self._select_entities(
+                conn,
+                kinds=[EntityKind.PREDICATE.value],
+                extra_where=" AND ".join(where),
+                params=params,
+                limit=fetch,
+                order="e.file, e.line_start, e.id",
+            )
+            hits = self._hits_from_rows(conn, rows, why="entry", with_snippet=True)
+        if getattr(plan, "referenced_symbol", ""):
+            from ascendc_codemap_mcp.engine.query.predicate_ast import ast_matches_symbol
+
+            hits = [
+                h
+                for h in hits
+                if ast_matches_symbol(h.get("facts") or {}, str(plan.referenced_symbol))
+            ]
+        total = len(hits)
+        page = hits[: max(1, int(limit))]
+        return {
+            "ok": bool(page),
+            "shape": "entry",
+            "cards": page,
+            "count": len(page),
+            "total": total,
+            "truncated": total > len(page),
+            "completeness": COMPLETE if page else UNKNOWN,
+            "unresolved_reason": "" if page else "NO_SEED",
+        }
+
+    def query_trace(self, plan: Any, *, limit: int = 8) -> dict[str, Any]:
+        from ascendc_codemap_mcp.engine.query.completeness import COMPLETE, UNKNOWN
+        from ascendc_codemap_mcp.engine.query.evidence import CLOSURE_EDGE_KINDS
+
+        src_name = str(getattr(plan, "from_symbol", "") or "")
+        dst_name = str(getattr(plan, "to_symbol", "") or "")
+        src_hits = self._exact_name_hits(src_name, limit=8)
+        dst_hits = self._exact_name_hits(dst_name, limit=8)
+        if not src_hits or not dst_hits:
+            return {
+                "ok": False,
+                "shape": "trace",
+                "cards": [],
+                "count": 0,
+                "completeness": UNKNOWN,
+                "unresolved_reason": "NO_SEED",
+                "path": [],
+            }
+        src_ids = {str(h.get("id") or "") for h in src_hits if h.get("id")}
+        dst_ids = {str(h.get("id") or "") for h in dst_hits if h.get("id")}
+        rel_kind = str(getattr(plan, "relation", "") or "")
+        kinds = (rel_kind,) if rel_kind else tuple(CLOSURE_EDGE_KINDS) + ("CALLS",)
+        placeholders = ",".join("?" for _ in kinds)
+        parent: dict[str, tuple[str, str]] = {}
+        found = ""
+        with self._connect() as conn:
+            queue: deque[str] = deque(src_ids)
+            seen: set[str] = set(src_ids)
+            while queue and len(seen) < 80:
+                cur = queue.popleft()
+                if cur in dst_ids:
+                    found = cur
+                    break
+                for row in conn.execute(
+                    f"""
+                    SELECT kind, src, dst FROM relation
+                    WHERE (src = ? OR dst = ?) AND kind IN ({placeholders})
+                    LIMIT 40
+                    """,
+                    (cur, cur, *kinds),
+                ):
+                    nxt = str(row["dst"] or "") if str(row["src"] or "") == cur else str(row["src"] or "")
+                    if not nxt or nxt in seen:
+                        continue
+                    seen.add(nxt)
+                    parent[nxt] = (cur, str(row["kind"] or ""))
+                    queue.append(nxt)
+                    if nxt in dst_ids:
+                        found = nxt
+                        queue.clear()
+                        break
+        if not found:
+            return {
+                "ok": False,
+                "shape": "trace",
+                "cards": [src_hits[0], dst_hits[0]],
+                "count": 2,
+                "completeness": UNKNOWN,
+                "unresolved_reason": "NO_PATH",
+                "path": [],
+            }
+        steps: list[dict[str, Any]] = []
+        cur = found
+        while cur not in src_ids and cur in parent:
+            prev, kind = parent[cur]
+            steps.append({"from": prev, "to": cur, "kind": kind})
+            cur = prev
+        steps.reverse()
+        return {
+            "ok": True,
+            "shape": "trace",
+            "cards": [src_hits[0], next((h for h in dst_hits if h.get("id") == found), dst_hits[0])],
+            "count": len(steps),
+            "completeness": COMPLETE if steps else COMPLETE,
+            "path": steps[: max(1, int(limit)) * 4],
+            "truncated": False,
+        }
 
     def legal_key_query(
         self,

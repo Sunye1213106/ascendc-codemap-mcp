@@ -27,7 +27,7 @@ from typing import Any
 
 from ascendc_codemap_mcp.engine.perf import TimeBudget, kernel_root_trace_budget_s
 from ascendc_codemap_mcp.engine.ids import buffer_site_id, make_id, operation_site_id, register_site_id
-from ascendc_codemap_mcp.engine.ir.codemap import CodeMap, _rid
+from ascendc_codemap_mcp.engine.ir.codemap import CodeMap, relation_id
 from ascendc_codemap_mcp.engine.ir.entity import EntityKind
 from ascendc_codemap_mcp.engine.ir.evidence import TRUST_ADVISORY
 from ascendc_codemap_mcp.engine.ir.relation import RelationKind
@@ -1367,7 +1367,7 @@ def _collapse_duplicate_type_hashes(codemap: CodeMap) -> dict[str, str]:
             continue
         rel.src = src
         rel.dst = dst
-        rid = _rid(rel.kind_name(), src, dst)
+        rid = relation_id(rel.kind_name(), src, dst, attrs=rel.attrs)
         rel.id = rid
         rebuilt[rid] = rel
     codemap.relations.clear()
@@ -1459,10 +1459,11 @@ def _link(
             "via": str(payload.get("via") or ""),
         }
     if candidate:
-        rid = _rid(
+        rid = relation_id(
             kind.value if isinstance(kind, RelationKind) else str(kind),
             src,
             dst,
+            attrs=payload,
         )
         existing = codemap.relations.get(rid)
         if existing is not None and str(existing.attrs.get("trust") or "") != TRUST_ADVISORY:

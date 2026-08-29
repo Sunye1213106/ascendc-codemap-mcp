@@ -6,20 +6,23 @@ from pathlib import Path
 
 from ascendc_codemap_mcp.service.control import status, update_operator
 from ascendc_codemap_mcp.service.identity import CodemapRef
-from ascendc_codemap_mcp.service.query import query_codemap
+from ascendc_codemap_mcp.service.query import query
 
 
 EXPECTED_TOOLS = [
     "codemap_discover",
-    "codemap_status",
-    "codemap_explore",
-    "codemap_overview",
-    "codemap_symbol",
-    "codemap_selection",
+    "codemap_query",
     "codemap_evidence",
     "codemap_doctor",
     "codemap_index",
     "codemap_update",
+]
+HIDDEN_TOOLS = [
+    "codemap_status",
+    "codemap_overview",
+    "codemap_symbol",
+    "codemap_selection",
+    "codemap_explore",
     "query_codemap",
     "index_operator",
     "update_operator",
@@ -66,27 +69,26 @@ def test_mcp_server_tool_names() -> None:
     names = _tool_names(create_server())
     for name in EXPECTED_TOOLS:
         assert name in names
-    assert names.index("codemap_explore") < names.index("codemap_symbol")
-    assert names.index("codemap_symbol") < names.index("query_codemap")
+    for name in HIDDEN_TOOLS:
+        assert name not in names
+    assert names.index("codemap_query") < names.index("codemap_index")
 
 
-def test_symbol_schema_requires_codemap_id_and_symbol() -> None:
+def test_query_schema_has_operation_enum() -> None:
     from ascendc_codemap_mcp.mcp_adapter import create_server
 
-    tool = _find_tool(create_server(), "codemap_symbol")
+    tool = _find_tool(create_server(), "codemap_query")
     schema = getattr(tool, "parameters", None) or getattr(tool, "input_schema", None)
     assert isinstance(schema, dict)
-    required = schema.get("required") or []
-    assert "codemap_id" in required
-    assert "symbol" in required
-    assert "project" not in required
-    assert "ctx" not in (schema.get("properties") or {})
-    out = getattr(tool, "output_schema", None) or {}
-    assert "ok" in (out.get("properties") or {})
+    props = schema.get("properties") or {}
+    op = props.get("operation") or {}
+    enum = op.get("enum") or []
+    assert "resolve" in enum
+    assert "find" in enum
+    assert "ctx" not in props
     ann = getattr(tool, "annotations", None)
     assert ann is not None
     assert ann.read_only_hint is True
-    assert ann.open_world_hint is False
 
 
 def test_index_tool_is_not_read_only() -> None:
@@ -103,7 +105,7 @@ def test_index_tool_is_not_read_only() -> None:
 
 
 def test_query_missing_architecture_is_structured_error(tmp_path: Path) -> None:
-    payload = query_codemap(project=str(tmp_path / "op"), pattern="IsPse")
+    payload = query(project=str(tmp_path / "op"), symbol="IsPse")
     assert payload["ok"] is False
     text = f"{payload.get('error') or ''} {payload.get('error_code') or ''}".lower()
     assert "architecture" in text or payload.get("error_code") in {
@@ -132,10 +134,11 @@ def test_inmemory_client_lists_tools() -> None:
             listed = await client.list_tools()
             tools = getattr(listed, "tools", listed)
             names = [getattr(t, "name", str(t)) for t in tools]
-            assert "codemap_symbol" in names
-            assert "codemap_status" in names
+            assert "codemap_query" in names
+            assert "codemap_discover" in names
+            assert "codemap_symbol" not in names
             result = await client.call_tool(
-                "query_codemap", {"pattern": "IsPse"}
+                "codemap_query", {"symbol": "IsPse"}
             )
             structured = getattr(result, "structured_content", None) or {}
             assert structured.get("ok") is False
@@ -297,3 +300,57 @@ def test_cli_help_mentions_http() -> None:
     assert "streamable-http" in text
     assert "serve" in text
     assert "cann-extract" in text
+
+
+def test_cli_query_reaches_service_query(monkeypatch) -> None:
+    # service/__init__ re-exports a `query` function that shadows the submodule;
+    # attribute access on the package used to raise AttributeError here.
+    from ascendc_codemap_mcp.cli import main
+    from ascendc_codemap_mcp.service import query as query_mod
+    import io
+    from contextlib import redirect_stdout
+
+    seen: dict[str, object] = {}
+
+    def fake_query(**kwargs):
+        seen.update(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr(query_mod, "query", fake_query)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        code = main(
+            [
+                "query",
+                "--codemap-id",
+                "p:1::Op@arch35",
+                "--operation",
+                "find",
+                "--kind",
+                "OPERATION",
+                "--callee",
+                "SyncAll",
+            ]
+        )
+    assert code == 0
+    assert seen["operation"] == "find"
+    assert seen["kind"] == "OPERATION"
+    assert seen["callee"] == "SyncAll"
+
+
+def test_cli_query_passes_symbol(monkeypatch) -> None:
+    from ascendc_codemap_mcp.cli import main
+    from ascendc_codemap_mcp.service import query as query_mod
+    import io
+    from contextlib import redirect_stdout
+
+    seen: dict[str, object] = {}
+
+    def fake_query(**kwargs):
+        seen.update(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr(query_mod, "query", fake_query)
+    with redirect_stdout(io.StringIO()):
+        assert main(["query", "--codemap-id", "p:1::Op@arch35", "--symbol", "IsDrop"]) == 0
+    assert seen["symbol"] == "IsDrop"

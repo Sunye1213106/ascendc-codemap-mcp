@@ -58,8 +58,10 @@ def write_uo_fixture(
 
 
 @pytest.fixture(autouse=True)
-def _reset_runtime() -> None:
+def _reset_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ASCENDC_CODEMAP_CACHE_DIR", str(tmp_path / ".codemap-cache"))
     runtime.registry.clear()
+    runtime.registry._loaded = False
     runtime.cache.close_all()
     close_uo_connections()
     yield

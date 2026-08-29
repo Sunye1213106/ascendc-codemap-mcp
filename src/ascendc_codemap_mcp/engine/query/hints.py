@@ -87,6 +87,29 @@ def search_needles(pattern: str) -> list[str]:
     return [text]
 
 
+def absent_ident_hint(pattern: str, dim_names: Iterable[str] | None = None) -> str:
+    tokens = identifier_tokens(pattern)
+    name = tokens[0] if tokens else (str(pattern or "").strip() or "this identifier")
+    dims = [str(d).strip() for d in (dim_names or []) if str(d).strip()]
+    if name and dims:
+        prefix = "".join(ch for ch in name if ch.isalpha())[:2].lower()
+        if prefix:
+            near = [d for d in dims if d[:2].lower() == prefix]
+            rest = [d for d in dims if d not in near]
+            dims = near + rest
+    if dims:
+        shown = ", ".join(dims[:12])
+        extra = f" (+{len(dims) - 12})" if len(dims) > 12 else ""
+        sample = dims[0]
+        return (
+            f"{name} is absent on this operator. Dims: {shown}{extra}. "
+            f"resolve(symbol={sample}) or find with dim={sample}."
+        )
+    return (
+        f"{name} is absent on this operator. Empty query lists this operator's Dims."
+    )
+
+
 def attach_query_hints(
     payload: dict[str, Any],
     pattern: str,
@@ -146,15 +169,15 @@ def attach_query_hints(
         )
         payload["suggested_retries"] = tokens[:4]
         payload["pattern_tokens"] = tokens
+    elif count == 0 and str(mode or "") == "index":
+        payload["empty_reason"] = payload.get("empty_reason") or "no_substring_match"
     elif count == 0:
         payload["empty_reason"] = payload.get("empty_reason") or "no_substring_match"
-        payload.setdefault(
-            "hint",
-            "Retry a shorter identifier, or Dim=<dimName> / Name=Value for coverage, "
-            "or --file --line from a previous card. "
-            "Empty is not proof the symbol is absent.",
-        )
-        if tokens:
+        dims = payload.get("dim_names") if isinstance(payload.get("dim_names"), list) else []
+        payload["hint"] = absent_ident_hint(text, dims)
+        if dims:
+            payload["suggested_retries"] = [str(d) for d in dims[:4]]
+        elif tokens:
             payload["suggested_retries"] = tokens[:4]
     if indexed is False:
         extra = "Template coverage prefers Dim=<dimName> or Name=Value (Dim=V); free-text is unindexed."

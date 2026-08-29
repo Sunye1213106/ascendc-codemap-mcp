@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import sys
 import threading
 from pathlib import Path
 from typing import Any, Iterable
@@ -15,6 +16,16 @@ _CONN_LOCK = threading.Lock()
 # worker pool; sqlite3 connections are not shareable across threads and must
 # not be used concurrently even with check_same_thread=False.
 _CONN: dict[tuple[str, int], sqlite3.Connection] = {}
+_IDLE_TIMERS: dict[str, threading.Timer] = {}
+_IDLE_GEN: dict[str, int] = {}
+
+
+def _idle_sec() -> float:
+    raw = str(os.environ.get("ASCENDC_CODEMAP_SQLITE_IDLE_SEC", "2") or "2").strip()
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 2.0
 
 
 def _product_key(path: str | Path) -> str:
@@ -22,7 +33,11 @@ def _product_key(path: str | Path) -> str:
 
 
 def _configure_readonly(conn: sqlite3.Connection) -> sqlite3.Connection:
-    """Read-only SQLite. Daemon holds one connection, so mmap is safe."""
+    """Read-only SQLite. Daemon holds one connection, so mmap is safe on POSIX.
+
+    Windows: mmap keeps a mapping that can survive ``close()`` and still block
+    DeleteFile / rename of the ``.uo``. Keep mmap off there.
+    """
     conn.row_factory = sqlite3.Row
     daemon = str(os.environ.get("UO_QUERY_DAEMON") or "").strip().lower() in {
         "1",
@@ -32,7 +47,10 @@ def _configure_readonly(conn: sqlite3.Connection) -> sqlite3.Connection:
     try:
         conn.execute("PRAGMA query_only = 1")
         conn.execute("PRAGMA cache_size = -32000" if daemon else "PRAGMA cache_size = -8000")
-        conn.execute("PRAGMA mmap_size = 67108864" if daemon else "PRAGMA mmap_size = 8388608")
+        if sys.platform == "win32":
+            conn.execute("PRAGMA mmap_size = 0")
+        else:
+            conn.execute("PRAGMA mmap_size = 67108864" if daemon else "PRAGMA mmap_size = 8388608")
         conn.execute("PRAGMA temp_store = MEMORY")
     except sqlite3.Error:
         pass
@@ -58,9 +76,12 @@ def shared_uo(path: str | Path) -> sqlite3.Connection:
     """Thread-local read-only connection for one ``.uo`` path.
 
     Opening an 80MB ``.uo`` per query was the Windows freeze: each connect
-    remapped the file. Reuse per thread, never across threads.
+    remapped the file. Reuse per thread, never across threads. Call
+    ``mark_uo_idle`` after the last in-flight query so Windows can delete
+    the file without waiting for process exit.
     """
     key = _product_key(path)
+    _cancel_idle(key)
     tid = threading.get_ident()
     slot = (key, tid)
     with _CONN_LOCK:
@@ -79,12 +100,54 @@ def shared_uo(path: str | Path) -> sqlite3.Connection:
 
 def _close_conn(conn: sqlite3.Connection) -> None:
     try:
+        conn.execute("PRAGMA mmap_size = 0")
+    except sqlite3.Error:
+        pass
+    try:
         conn.close()
     except sqlite3.ProgrammingError as exc:
         if "closed" not in str(exc).lower():
             raise
     except sqlite3.Error:
         pass
+
+
+def _cancel_idle(key: str) -> None:
+    with _CONN_LOCK:
+        timer = _IDLE_TIMERS.pop(key, None)
+        _IDLE_GEN[key] = _IDLE_GEN.get(key, 0) + 1
+    if timer is not None:
+        timer.cancel()
+
+
+def mark_uo_in_use(path: str | Path) -> None:
+    """A query is starting; do not idle-close this product."""
+    _cancel_idle(_product_key(path))
+
+
+def mark_uo_idle(path: str | Path) -> None:
+    """No in-flight query; close pooled handles after a short idle."""
+    key = _product_key(path)
+    delay = _idle_sec()
+    if delay <= 0:
+        close_uo_connections(key)
+        return
+    _cancel_idle(key)
+    with _CONN_LOCK:
+        gen = _IDLE_GEN.get(key, 0)
+
+    def fire() -> None:
+        with _CONN_LOCK:
+            if _IDLE_GEN.get(key) != gen:
+                return
+            _IDLE_TIMERS.pop(key, None)
+        close_uo_connections(key)
+
+    timer = threading.Timer(delay, fire)
+    timer.daemon = True
+    with _CONN_LOCK:
+        _IDLE_TIMERS[key] = timer
+    timer.start()
 
 
 def close_uo_connections(path: str | Path | None = None) -> None:
@@ -98,11 +161,21 @@ def close_uo_connections(path: str | Path | None = None) -> None:
         if path is None:
             items = list(_CONN.items())
             _CONN.clear()
+            timers = list(_IDLE_TIMERS.values())
+            _IDLE_TIMERS.clear()
+            _IDLE_GEN.clear()
         else:
             key = _product_key(path)
             items = [(slot, conn) for slot, conn in list(_CONN.items()) if slot[0] == key]
             for slot, _ in items:
                 _CONN.pop(slot, None)
+            timers = []
+            idle = _IDLE_TIMERS.pop(key, None)
+            if idle is not None:
+                timers.append(idle)
+            _IDLE_GEN[key] = _IDLE_GEN.get(key, 0) + 1
+    for timer in timers:
+        timer.cancel()
     errors: list[BaseException] = []
     for _, conn in items:
         try:
@@ -157,9 +230,12 @@ def open_uo(path: str | Path) -> sqlite3.Connection:
 
 
 def read_meta(path: str | Path) -> dict[str, str]:
-    conn = shared_uo(path)
-    rows = conn.execute("SELECT key, value FROM meta").fetchall()
-    return {str(r["key"]): str(r["value"]) for r in rows}
+    conn = open_uo(path)
+    try:
+        rows = conn.execute("SELECT key, value FROM meta").fetchall()
+        return {str(r["key"]): str(r["value"]) for r in rows}
+    finally:
+        _close_conn(conn)
 
 
 def read_codemap(
@@ -287,13 +363,16 @@ def load_view_blob(
     *,
     expand_legal_keys: bool = True,
 ) -> Any | None:
-    conn = shared_uo(path)
-    row = conn.execute(
-        "SELECT data FROM view_blob WHERE name = ?", (name,)
-    ).fetchone()
-    if row is None:
-        return None
-    blob = json.loads(row["data"])
+    conn = open_uo(path)
+    try:
+        row = conn.execute(
+            "SELECT data FROM view_blob WHERE name = ?", (name,)
+        ).fetchone()
+        if row is None:
+            return None
+        blob = json.loads(row["data"])
+    finally:
+        _close_conn(conn)
     if (
         expand_legal_keys
         and name == "tiling/legal_key_index.jsonl"
@@ -435,8 +514,11 @@ def load_view_blob_checked(
 
 
 def list_views(path: str | Path) -> list[str]:
-    conn = shared_uo(path)
-    return [str(r["name"]) for r in conn.execute("SELECT name FROM view_blob ORDER BY name")]
+    conn = open_uo(path)
+    try:
+        return [str(r["name"]) for r in conn.execute("SELECT name FROM view_blob ORDER BY name")]
+    finally:
+        _close_conn(conn)
 
 
 def find_uo_product(

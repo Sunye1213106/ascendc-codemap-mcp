@@ -104,7 +104,11 @@ def run(codemap: CodeMap, *, context: dict[str, Any] | None = None) -> CodeMap:
         attrs = {"layer": "host", "provenance": "clang_walk"}
         src = codemap.upsert(EntityKind.FUNCTION, caller, attrs=dict(attrs))
         dst = codemap.upsert(EntityKind.FUNCTION, callee, attrs=dict(attrs))
-        codemap.link(
-            RelationKind.CALLS, src.id, dst.id, attrs={"provenance": "clang_walk"}
-        )
+        site_file = str(getattr(site, "file", "") or "")
+        site_line = int(getattr(site, "line", 0) or 0)
+        call_attrs: dict[str, object] = {"provenance": "clang_walk"}
+        if site_file and site_line > 0:
+            call_attrs["file"] = site_file
+            call_attrs["line"] = site_line
+        codemap.link(RelationKind.CALLS, src.id, dst.id, attrs=call_attrs)
     return codemap

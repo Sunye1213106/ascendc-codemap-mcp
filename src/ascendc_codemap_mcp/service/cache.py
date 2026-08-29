@@ -104,9 +104,11 @@ class QueryCache:
 
     def acquire(self, product: str | Path) -> Any:
         from ascendc_codemap_mcp.engine.query.sql import UoSqlQuery
+        from ascendc_codemap_mcp.engine.store.reader import mark_uo_in_use
 
         path = Path(product).expanduser().resolve()
         key = str(path)
+        mark_uo_in_use(path)
         mtime = self._mtime(path)
         with self._lock:
             entry = self._entries.get(key)
@@ -129,12 +131,18 @@ class QueryCache:
 
     def release(self, product: str | Path) -> None:
         key = str(Path(product).expanduser().resolve())
+        idle = False
         with self._lock:
             entry = self._entries.get(key)
             if entry is None:
                 return
             if entry.inuse > 0:
                 entry.inuse -= 1
+            idle = entry.inuse == 0
+        if idle:
+            from ascendc_codemap_mcp.engine.store.reader import mark_uo_idle
+
+            mark_uo_idle(key)
 
     @contextmanager
     def open(self, product: str | Path) -> Iterator[Any]:

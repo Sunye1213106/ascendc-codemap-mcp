@@ -16,7 +16,8 @@ _NEW = (
     "engine/query/explore.py",
     "engine/query/closure.py",
     "engine/query/completeness.py",
-    "engine/query/phenomenon.py",
+    "engine/query/typed.py",
+    "engine/query/predicate_ast.py",
 )
 _FORBIDDEN = (
     "s1Inner",

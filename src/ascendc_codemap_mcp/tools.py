@@ -10,12 +10,12 @@ from ascendc_codemap_mcp.service.control import (
     status,
     update_operator,
 )
-from ascendc_codemap_mcp.service.query import query_codemap
+from ascendc_codemap_mcp.service.query import query
 
 __all__ = [
     "doctor",
     "index_operator",
-    "query_codemap",
+    "query",
     "status",
     "update_operator",
 ]

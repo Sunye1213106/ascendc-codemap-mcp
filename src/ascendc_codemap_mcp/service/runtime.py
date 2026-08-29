@@ -2,6 +2,7 @@
 """Process-wide CodeMap service runtime (registry, cache, locks, flags)."""
 from __future__ import annotations
 
+import atexit
 import threading
 
 from ascendc_codemap_mcp.service.cache import QueryCache
@@ -61,3 +62,6 @@ def shutdown() -> None:
     with _FLAG_LOCK:
         _BUILDING.clear()
         _BLOCKED.clear()
+
+
+atexit.register(shutdown)
