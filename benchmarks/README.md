@@ -2,6 +2,8 @@
 
 Q20 and related drivers live here. They are not MCP tools.
 
-- Run against a rebuilt `.uo` (identity/storage changes require re-index).
+- Dialect micro lives in `tests/test_dialect_benchmark.py` (fixture, always on).
+- Review-20 lives in `tests/test_review20_benchmark.py` (skips if FAG `.uo` is missing).
+- Legacy `_run_q20*.py` probes still run against a rebuilt `.uo`.
 - Result JSON/txt is gitignored.
-- Metrics of interest: `semantic_density`, internal-id tokens in Agent cards, Query working-tree reads (must stay 0).
+- Metrics: zero-hit rate, searches-to-first-useful-locator (Q-class ≤2), evidence calls (must stay 0).

@@ -894,32 +894,43 @@ def _useful_rows(rows: Any, seed_name: str) -> list[dict[str, Any]]:
 def _render_search_markdown(payload: dict[str, Any]) -> list[str]:
     cards = [c for c in (payload.get("cards") or []) if isinstance(c, dict)]
     total = int(payload.get("total") or len(cards))
-    lines = [f"Matches: {total}", ""]
     showing = len(cards)
-    if payload.get("truncated") and showing < total:
-        lines.append(f"showing {showing} of {total}")
-        lines.append("")
+    if total == 0 and not cards:
+        lines = ["0 matches", ""]
+        symbols = [s for s in (payload.get("symbols") or []) if isinstance(s, dict)]
+        if symbols:
+            lines.append("Symbols")
+            for row in symbols:
+                loc = _loc(row)
+                kind = str(row.get("kind") or "")
+                name = str(row.get("name") or "")
+                alias = str(row.get("matched_alias") or "")
+                lines.append(f"{loc}  {name}  {kind}".rstrip())
+                if alias:
+                    lines.append(f"  matched alias: {alias}")
+            lines.append("")
+        return lines
+    lines = [f"{total} matches", ""]
     for row in cards:
         file = str(row.get("file") or "")
         line = int(row.get("line") or row.get("line_start") or 0)
-        text = str(row.get("text") or row.get("snippet") or "").strip()
+        text = str(row.get("text") or row.get("snippet") or "").rstrip()
         loc = f"{file}:{line}" if file and line else (file or "?")
-        name = str(row.get("name") or "")
         kind = str(row.get("kind") or "")
-        if name:
-            lines.append(name)
-        if kind:
-            lines.append(kind)
-        lines.append(loc)
-        if text:
-            lines.append(text)
+        name = str(row.get("name") or "")
+        if kind or name:
+            extra = " ".join(p for p in (kind, name) if p)
+            lines.append(f"{loc}:{text}" if text else f"{loc}  {extra}")
+            if extra and text:
+                lines.append(f"  {extra}")
+        else:
+            lines.append(f"{loc}:{text}" if text else loc)
+    if showing < total:
         lines.append("")
-    hint = str(payload.get("hint") or "")
-    if hint:
-        lines.extend([hint, ""])
-    if not cards:
-        lines.append("UNKNOWN: no source line matched this phrase.")
-        lines.append("")
+        lines.append(f"showing {showing}/{total}")
+    cursor = str(payload.get("next_cursor") or "")
+    if cursor:
+        lines.append(f"next_cursor={cursor}")
     return lines
 
 
@@ -1000,6 +1011,95 @@ def _render_find_markdown(payload: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _render_facets(facets: dict[str, Any], *, projection: str = "summary") -> list[str]:
+    lines: list[str] = []
+    storage = facets.get("storage") if isinstance(facets.get("storage"), dict) else None
+    if storage:
+        lines.append("Storage")
+        for row in storage.get("backed_by") or []:
+            if not isinstance(row, dict):
+                continue
+            space = str(row.get("physical_space") or "")
+            name = str(row.get("name") or "")
+            lines.append(f"  backed by {name}" + (f"  {space}" if space else ""))
+        for typ in storage.get("instance_of") or []:
+            lines.append(f"  INSTANCE_OF {typ}")
+        lines.append("")
+    controls = facets.get("controls") if isinstance(facets.get("controls"), dict) else None
+    if controls:
+        lines.append("Controls")
+        for name in controls.get("controls") or []:
+            lines.append(f"  {name}")
+        for name in controls.get("materializes_as") or []:
+            lines.append(f"  → {name}")
+        lines.append("")
+    memory = facets.get("memory") if isinstance(facets.get("memory"), dict) else None
+    if memory:
+        total = int(memory.get("total") or 0)
+        resolved = int(memory.get("resolved") or 0)
+        lines.append("Memory")
+        if total:
+            lines.append(f"{resolved}/{total} transfers resolved")
+        flows = memory.get("flows") if isinstance(memory.get("flows"), dict) else {}
+        for key, n in list(flows.items())[:8]:
+            lines.append(f"  {key}   ×{n}")
+        unresolved = int(memory.get("unresolved") or 0)
+        if unresolved:
+            lines.append(f"{unresolved} unresolved endpoints")
+        lines.append("")
+    used = facets.get("used_by") if isinstance(facets.get("used_by"), dict) else None
+    if used:
+        lines.append("Used by")
+        items = list(used.items())
+        if str(projection or "") == "locations":
+            for name, n in items[:20]:
+                lines.append(f"  {name} ×{n}")
+        else:
+            for name, n in items[:8]:
+                lines.append(f"  {name} ×{n}")
+        lines.append("")
+    return lines
+
+
+def _render_site_markdown(payload: dict[str, Any], *, projection: str) -> list[str]:
+    file = str(payload.get("file") or "")
+    line = int(payload.get("line") or 0)
+    snippet = str(payload.get("snippet") or "")
+    lines: list[str] = []
+    if file and line:
+        lines.append(f"{file}:{line}")
+        lines.append("")
+    if snippet:
+        lines.append("Source")
+        for no, text in _snippet_rows(snippet, line):
+            lines.append(f"{no}|  {text}")
+        lines.append("")
+    site_rows = [c for c in (payload.get("cards") or payload.get("seeds") or []) if isinstance(c, dict)]
+    if site_rows:
+        lines.append("At this site")
+        seen: set[tuple[str, str]] = set()
+        for row in site_rows:
+            kind = str(row.get("kind") or "")
+            name = str(row.get("name") or "")
+            key = (kind, name)
+            if key in seen or not (kind or name):
+                continue
+            seen.add(key)
+            lines.append(f"  {kind} {name}".rstrip())
+        lines.append("")
+    enclosing = payload.get("enclosing") if isinstance(payload.get("enclosing"), dict) else {}
+    if enclosing.get("name"):
+        lines.append("Context")
+        lines.append(
+            f"  enclosing {enclosing.get('kind') or 'FUNCTION'} {enclosing.get('name')}"
+        )
+        lines.append("")
+    for row in [*site_rows, enclosing]:
+        facets = row.get("facets") if isinstance(row.get("facets"), dict) else {}
+        lines.extend(_render_facets(facets, projection=projection))
+    return lines
+
+
 def _render_resolve_markdown(payload: dict[str, Any], *, projection: str) -> list[str]:
     cards = [c for c in (payload.get("cards") or []) if isinstance(c, dict)]
     primary = cards[0] if cards else {}
@@ -1043,7 +1143,13 @@ def _render_resolve_markdown(payload: dict[str, Any], *, projection: str) -> lis
     extras = primary.get("extras") if isinstance(primary.get("extras"), dict) else {}
     writers = extras.get("writers") or primary.get("writers") or []
     readers = extras.get("readers") or primary.get("readers") or []
-    if writers:
+    support = payload.get("compiled_support")
+    if not isinstance(support, dict):
+        support = (primary.get("facets") or {}).get("compiled_support") if isinstance(primary.get("facets"), dict) else None
+    host_from_compiled = bool(
+        isinstance(support, dict) and support.get("host_encoding")
+    )
+    if writers and not host_from_compiled:
         lines.append("Host")
         for row in _dedup_rows([r for r in writers if isinstance(r, dict)])[:3]:
             lines.append(_loc(row))
@@ -1077,12 +1183,8 @@ def _render_resolve_markdown(payload: dict[str, Any], *, projection: str) -> lis
             lines.append(f"{len(used)} references across {len(counts)} files")
         lines.append("")
     dim_names = [str(n).strip() for n in (payload.get("dim_names") or []) if str(n).strip()]
-    support = payload.get("compiled_support")
-    if not isinstance(support, dict):
-        facets = primary.get("facets") if isinstance(primary.get("facets"), dict) else {}
-        support = facets.get("compiled_support") if isinstance(facets, dict) else None
     if isinstance(support, dict) and support:
-        lines.append("**Compiled support**")
+        lines.append("Compiled")
         legal = "yes" if support.get("legal") else "no"
         dim = str(support.get("dim") or "")
         variants = support.get("variants")
@@ -1126,6 +1228,8 @@ def _render_resolve_markdown(payload: dict[str, Any], *, projection: str) -> lis
         lines.append("**Dims**")
         lines.append("- " + ", ".join(dim_names))
         lines.append("")
+    facets = primary.get("facets") if isinstance(primary.get("facets"), dict) else {}
+    lines.extend(_render_facets(facets, projection=projection))
     hint = str(payload.get("hint") or "")
     if hint:
         lines.extend([hint, ""])
@@ -1242,8 +1346,16 @@ def render_explore_markdown(
     )
     op = str(payload.get("operation") or "")
     shape = str(payload.get("shape") or "")
+    quiet_success = not payload.get("error_code") and completeness not in {
+        "AMBIGUOUS",
+        "INCOMPLETE",
+    }
+    if quiet_success:
+        header = ""
     if op == "search" or shape == "search":
         body = _render_search_markdown(payload)
+    elif payload.get("resolve_mode") == "site" or shape == "around":
+        body = _render_site_markdown(payload, projection=projection)
     elif _is_name_list(payload) or op == "find":
         body = _render_find_markdown(payload)
     elif op == "contract":
@@ -1506,10 +1618,15 @@ def attach_explore_fields(
     if not cards and payload.get("seeds"):
         cards = list(payload.get("seeds") or [])
     cards = [c for c in cards if isinstance(c, dict)]
+    def _finish() -> dict[str, Any]:
+        attach = getattr(query, "attach_card_facets", None)
+        if callable(attach):
+            attach(payload)
+        payload["text"] = render_explore_markdown(payload, projection=projection)
+        return slim_explore_payload(payload)
+
     if str(payload.get("shape") or "") == "search" or operation == "search":
-        payload.setdefault("completeness", COMPLETE if cards else UNKNOWN)
-        if not cards:
-            payload["completeness"] = UNKNOWN
+        payload["completeness"] = ""
         payload["text"] = render_explore_markdown(payload, projection=projection)
         return slim_explore_payload(payload)
     raw_cards = list(cards)
@@ -1571,8 +1688,7 @@ def attach_explore_fields(
     if not unique_seed:
         payload.setdefault("completeness", COMPLETE if cards else UNKNOWN)
         payload.setdefault("total", payload.get("total") or len(cards))
-        payload["text"] = render_explore_markdown(payload, projection=projection)
-        return slim_explore_payload(payload)
+        return _finish()
     apply_contract = _contract_applicable(primary, seed_kind=seed_kind)
     if not apply_contract:
         if _has_definition(primary):
@@ -1639,8 +1755,7 @@ def attach_explore_fields(
         if uses:
             payload["used_at"] = uses
         _attach_call_site_fanout(query, payload, primary)
-        payload["text"] = render_explore_markdown(payload, projection=projection)
-        return slim_explore_payload(payload)
+        return _finish()
     try:
         card = build_contract_card(
             query,
@@ -1650,8 +1765,7 @@ def attach_explore_fields(
     except Exception:  # noqa: BLE001
         payload.setdefault("completeness", INCOMPLETE)
         payload.setdefault("unresolved_reason", "CONTRACT_BUILD_FAILED")
-        payload["text"] = render_explore_markdown(payload, projection=projection)
-        return slim_explore_payload(payload)
+        return _finish()
     payload["contract"] = card
     payload["impact_sinks"] = card.get("impact_sinks") or []
     payload["entry"] = card.get("entry") or []
@@ -1735,8 +1849,7 @@ def attach_explore_fields(
         payload["ok"] = True
     payload.setdefault("explore_pattern", pattern)
     _attach_call_site_fanout(query, payload, primary)
-    payload["text"] = render_explore_markdown(payload, projection=projection)
-    return slim_explore_payload(payload)
+    return _finish()
 
 
 def _attach_call_site_fanout(

@@ -131,7 +131,7 @@ def _main(argv: list[str] | None = None) -> int:
         parser.add_argument("--line", type=int, default=0)
         parser.add_argument("--line-end", type=int, default=0)
         parser.add_argument("--confirm-scope", action="store_true")
-        parser.add_argument("--limit", type=int, default=8)
+        parser.add_argument("--limit", type=int, default=20)
         parser.add_argument("--cursor", default="")
         ns = parser.parse_args(rest)
         from ascendc_codemap_mcp.service import control

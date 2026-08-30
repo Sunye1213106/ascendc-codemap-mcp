@@ -16,7 +16,7 @@ _AGENTS_BODY = """# AscendC CodeMap MCP
 
 Use MCP server `ascendc-codemap-mcp`. Identity: `codemap_discover` then `codemap.id`, or project+architecture on `codemap_query`. Missing → `codemap_doctor` / `codemap_index`. Stale/dirty → `codemap_update`.
 
-Unknown symbol → `codemap_query operation=search name=`. Known ident → `operation=resolve symbol=`. All sites → `find`. A→B path → `trace`.
+Unknown → `codemap_query operation=search name=`. Known or file:line → `operation=resolve`. Query reads the snapshot only.
 
 Query reads the `.uo` snapshot only. Architecture: see the package `docs/ARCHITECTURE.md`.
 """
@@ -30,6 +30,28 @@ def bundled_root() -> Path:
     raise FileNotFoundError("bundled AscendC CodeMap skills are missing")
 
 
+def canonical_query_skill() -> Path:
+    """Repo-root ``skills/query-codemap/SKILL.md`` is the single owner."""
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        candidate = parent / "skills" / "query-codemap" / "SKILL.md"
+        package_copy = parent / "src" / "ascendc_codemap_mcp" / "skills" / "query-codemap" / "SKILL.md"
+        if candidate.is_file() and package_copy.is_file():
+            return candidate
+    return bundled_root() / "query-codemap" / "SKILL.md"
+
+
+def sync_query_skill() -> str:
+    """Copy the canonical query skill into the package bundle. Returns the text."""
+    src = canonical_query_skill()
+    body = src.read_text(encoding="utf-8")
+    dest = bundled_root() / "query-codemap" / "SKILL.md"
+    if dest.resolve() != src.resolve():
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(body, encoding="utf-8")
+    return body
+
+
 def _skill_folder_names() -> tuple[str, ...]:
     names: list[str] = []
     for name in SKILL_NAMES:
@@ -41,8 +63,9 @@ def _skill_folder_names() -> tuple[str, ...]:
 def _copy_skills(dest: Path) -> None:
     src = bundled_root()
     dest.mkdir(parents=True, exist_ok=True)
+    query_body = sync_query_skill()
     for name in SKILL_NAMES:
-        body = (src / name / "SKILL.md").read_text(encoding="utf-8")
+        body = query_body if name == "query-codemap" else (src / name / "SKILL.md").read_text(encoding="utf-8")
         for folder in (f"ascendc-codemap-{name}", name):
             target = dest / folder / "SKILL.md"
             target.parent.mkdir(parents=True, exist_ok=True)

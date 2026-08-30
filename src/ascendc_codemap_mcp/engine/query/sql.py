@@ -187,6 +187,9 @@ CARD_EDGE_KINDS = NEIGHBOR_REL_KINDS + (
     "FLOWS_TO",
     "LAUNCHES",
     "REFERENCES",
+    "BACKED_BY",
+    "INSTANCE_OF",
+    "MATERIALIZES_AS",
 )
 # Neighbor bodies on the card (codegraph trail / CBM 1-hop). Other CARD_EDGE_KINDS
 # stay as count-only so completeness is visible without dumping the hop list.
@@ -2636,6 +2639,7 @@ class UoSqlQuery:
         self._edges_cache: dict[str, list[dict[str, Any]]] | None = None
         self._named_fields_cache: dict[str, list[dict[str, Any]]] | None = None
         self._idf_cache: tuple[int, dict[str, int]] | None = None
+        self._compiled_support_cache: dict[str, dict[str, Any]] = {}
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -4977,7 +4981,7 @@ class UoSqlQuery:
         return {str(row[0]): int(row[1] or 0) for row in rows if row[0] is not None}
 
     def _legal_cross_counts(
-        self, dim: str, value: str, *, limit_dims: int = 12
+        self, dim: str, value: str, *, limit_dims: int = 12, only_dims: tuple[str, ...] | None = None
     ) -> dict[str, dict[str, int]]:
         """Sibling-dim counts under dim=value, including zeros for known values."""
         dname = str(dim or "").strip()
@@ -4998,22 +5002,39 @@ class UoSqlQuery:
                     f"WHERE dim = ? AND value IN ({marks})"
                 )
                 matched_params = (dname, *aliases)
+                sibling_filter = ""
+                sibling_params: tuple[Any, ...] = (*matched_params, dname)
+                want = [str(n).strip() for n in (only_dims or ()) if str(n).strip() and str(n).strip() != dname]
+                if want:
+                    marks_d = ",".join("?" for _ in want)
+                    sibling_filter = f" AND dim IN ({marks_d})"
+                    sibling_params = (*matched_params, dname, *want)
                 sibling_rows = conn.execute(
                     f"""
                     SELECT dim, value, COUNT(*) FROM legal_key_dim
-                    WHERE key_id IN ({matched_sql}) AND dim != ?
+                    WHERE key_id IN ({matched_sql}) AND dim != ?{sibling_filter}
                     GROUP BY dim, value
                     """,
-                    (*matched_params, dname),
+                    sibling_params,
                 ).fetchall()
-                universe = conn.execute(
-                    """
-                    SELECT dim, value FROM legal_key_dim
-                    WHERE dim != ?
-                    GROUP BY dim, value
-                    """,
-                    (dname,),
-                ).fetchall()
+                if want:
+                    universe = conn.execute(
+                        f"""
+                        SELECT dim, value FROM legal_key_dim
+                        WHERE dim IN ({",".join("?" for _ in want)})
+                        GROUP BY dim, value
+                        """,
+                        tuple(want),
+                    ).fetchall()
+                else:
+                    universe = conn.execute(
+                        """
+                        SELECT dim, value FROM legal_key_dim
+                        WHERE dim != ?
+                        GROUP BY dim, value
+                        """,
+                        (dname,),
+                    ).fetchall()
             except sqlite3.OperationalError:
                 return {}
         present: dict[str, dict[str, int]] = {}
@@ -5138,6 +5159,10 @@ class UoSqlQuery:
         self, ident: str, extras: dict[str, Any] | None = None
     ) -> dict[str, Any] | None:
         """Host encoding ↔ persisted legal_key. Query never re-parses templates."""
+        ident_key = str(ident or "").strip().lower()
+        cached = self._compiled_support_cache.get(ident_key)
+        if cached is not None:
+            return dict(cached)
         dim = self._resolve_legal_dim(ident)
         if not dim:
             return None
@@ -5174,15 +5199,16 @@ class UoSqlQuery:
         on_val = "1" if "1" in counts else (on_vals[0] if on_vals else "")
         kernel: dict[str, Any] = {dim: dict(counts)}
         if on_val:
-            cross = self._legal_cross_counts(dim, str(on_val), limit_dims=8)
-            for sdim in (
+            want = (
                 "DTemplate",
                 "DTemplateNum",
                 "IsDNoEqual",
                 "dNoEqual",
                 "IsRope",
                 "hasRope",
-            ):
+            )
+            cross = self._legal_cross_counts(dim, str(on_val), only_dims=want)
+            for sdim in want:
                 if sdim == dim:
                     continue
                 cmap = cross.get(sdim)
@@ -5212,6 +5238,7 @@ class UoSqlQuery:
                     "legal": n > 0,
                     "variants": n,
                 }
+        self._compiled_support_cache[ident_key] = dict(support)
         return support
 
     def aggregate_buffer(self, pattern: str = "", *, limit: int = 50) -> dict[str, Any]:
@@ -6915,11 +6942,11 @@ class UoSqlQuery:
                 window = _source_line_window(conn, path, start)
         seed_cap = AROUND_SEED_LIMIT
         seeds = self._around_seed_hits(path, start, end or start, limit=seed_cap)
-        enclosing = [hit for hit in seeds if _encloses_line(hit, start)]
-        if enclosing:
-            seeds = enclosing[:1]
-        else:
-            seeds = seeds[:1]
+        enclosing_hits = [hit for hit in seeds if _encloses_line(hit, start)]
+        site_hits = [hit for hit in seeds if int(hit.get("line") or hit.get("line_start") or 0) == start]
+        if not site_hits:
+            site_hits = list(seeds)
+        seeds = site_hits or enclosing_hits[:1]
         compact_seeds = [_compact_around_hit(hit, snippet=False) for hit in seeds]
         if window and compact_seeds:
             compact_seeds[0]["snippet"] = window
@@ -6963,10 +6990,15 @@ class UoSqlQuery:
                         if isinstance(row, dict)
                     ],
                 }
-        enclosing = compact_seeds[0] if compact_seeds else {}
+        enclosing = (
+            _compact_around_hit(enclosing_hits[0], snippet=False)
+            if enclosing_hits
+            else (compact_seeds[0] if compact_seeds else {})
+        )
         payload = {
             "ok": bool(window or seeds),
             "shape": "around",
+            "resolve_mode": "site",
             "file": path,
             "line": start,
             "line_end": end or start,
@@ -7235,57 +7267,369 @@ class UoSqlQuery:
         ]
         return cards, total
 
-    def query_search(self, plan: Any, *, limit: int = 8) -> dict[str, Any]:
-        from ascendc_codemap_mcp.engine.query.completeness import COMPLETE, UNKNOWN
+    def _search_regex_lines(
+        self,
+        conn: sqlite3.Connection,
+        phrase: str,
+        *,
+        file_filter: str = "",
+        limit: int = 20,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        from ascendc_codemap_mcp.engine.query.rg import (
+            compile_search,
+            is_pure_literal,
+            line_matches,
+            path_matches,
+            rank_path,
+        )
+        from ascendc_codemap_mcp.engine.store.accel import has_source_fts, has_source_line
+
+        cre = compile_search(phrase)
+        cap = max(1, int(limit))
+        start = max(0, int(offset or 0))
+        arch = str(self._architecture or "")
+        rows: list[tuple[Any, ...]] = []
+        fts_q = _fts_match_query(phrase) if is_pure_literal(phrase) and len(phrase) >= 3 else ""
+        if has_source_fts(conn) and fts_q:
+            try:
+                rows = conn.execute(
+                    "SELECT sl.path, sl.line, sl.text "
+                    "FROM source_fts f JOIN source_line sl ON sl.id = f.rowid "
+                    "WHERE f.source_fts MATCH ?",
+                    (fts_q,),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                rows = []
+        if not rows and has_source_line(conn):
+            rows = conn.execute("SELECT path, line, text FROM source_line").fetchall()
+        matched: list[tuple[str, int, str]] = []
+        for path, line, text in rows:
+            if not path_matches(str(path or ""), file_filter):
+                continue
+            if not line_matches(cre, str(text or "")):
+                continue
+            matched.append((str(path or ""), int(line or 0), str(text or "").rstrip()))
+        matched.sort(key=lambda r: (*rank_path(r[0], arch)[:2], r[1]))
+        total = len(matched)
+        page = matched[start : start + cap]
+        cards = [{"file": p, "line": ln, "text": tx} for p, ln, tx in page]
+        return cards, total
+
+    def attach_card_facets(self, payload: dict[str, Any]) -> dict[str, Any]:
+        cards = [c for c in (payload.get("cards") or []) if isinstance(c, dict)]
+        enclosing = payload.get("enclosing")
+        if isinstance(enclosing, dict):
+            cards = [*cards, enclosing]
+        for card in cards:
+            eid = str(card.get("id") or "")
+            if not eid:
+                continue
+            facets = card.get("facets") if isinstance(card.get("facets"), dict) else {}
+            storage = self._storage_facet(eid)
+            if storage:
+                facets["storage"] = storage
+            controls = self._controls_facet(eid)
+            if controls:
+                facets["controls"] = controls
+            memory = self._memory_facet(eid)
+            if memory:
+                facets["memory"] = memory
+            used = self._used_by_facet(eid)
+            if used:
+                facets["used_by"] = used
+            if facets:
+                card["facets"] = facets
+        return payload
+
+    def _confirmed_neighbors(
+        self, entity_id: str, kinds: tuple[str, ...]
+    ) -> list[tuple[str, str, str, str, int, dict[str, Any], dict[str, Any]]]:
+        if not entity_id or not kinds:
+            return []
+        ph = ",".join("?" for _ in kinds)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT r.kind, e.kind, e.name, e.file, e.line_start, e.data, r.data
+                FROM relation r
+                JOIN entity e ON e.id = CASE WHEN r.src = ? THEN r.dst ELSE r.src END
+                WHERE (r.src = ? OR r.dst = ?) AND r.kind IN ({ph})
+                  AND LOWER(IFNULL(r.status,'')) IN ('confirmed','extracted','verified')
+                """,
+                (entity_id, entity_id, entity_id, *kinds),
+            ).fetchall()
+        out = []
+        for row in rows:
+            out.append(
+                (
+                    str(row[0] or ""),
+                    str(row[1] or ""),
+                    str(row[2] or ""),
+                    str(row[3] or ""),
+                    int(row[4] or 0),
+                    _parse_data(row[5]),
+                    _parse_data(row[6]),
+                )
+            )
+        return out
+
+    def _storage_facet(self, entity_id: str) -> dict[str, Any] | None:
+        backed: list[dict[str, Any]] = []
+        types: list[str] = []
+        for rkind, ekind, name, file, line, edata, _rdata in self._confirmed_neighbors(
+            entity_id, ("BACKED_BY", "INSTANCE_OF")
+        ):
+            if rkind == "BACKED_BY":
+                space = str(
+                    edata.get("physical_space") or edata.get("memory_space") or ""
+                )
+                if not space:
+                    continue
+                backed.append(
+                    {
+                        "name": name,
+                        "kind": ekind,
+                        "file": file,
+                        "line": line,
+                        "physical_space": space,
+                    }
+                )
+            elif rkind == "INSTANCE_OF" and name:
+                types.append(name)
+        if not backed and not types:
+            return None
+        return {"backed_by": backed, "instance_of": types}
+
+    def _controls_facet(self, entity_id: str) -> dict[str, Any] | None:
+        controls: list[str] = []
+        materializes: list[str] = []
+        for rkind, _ekind, name, _file, _line, _edata, _rdata in self._confirmed_neighbors(
+            entity_id, ("CONTROLS", "MATERIALIZES_AS")
+        ):
+            if not name:
+                continue
+            if rkind == "CONTROLS":
+                controls.append(name)
+            elif rkind == "MATERIALIZES_AS":
+                materializes.append(name)
+        if not controls and not materializes:
+            return None
+        return {"controls": controls, "materializes_as": materializes}
+
+    def _memory_facet(self, entity_id: str) -> dict[str, Any] | None:
+        rows = self._confirmed_neighbors(entity_id, ("FLOWS_TO",))
+        transfers: list[tuple[str, str]] = []
+        unresolved = 0
+        total = 0
+        for rkind, _ekind, name, _file, _line, edata, rdata in rows:
+            if rkind != "FLOWS_TO":
+                continue
+            if str(rdata.get("via") or "") != "MemoryTransfer":
+                continue
+            total += 1
+            src_space = str(rdata.get("src_space") or rdata.get("from_space") or "")
+            dst_space = str(rdata.get("dst_space") or rdata.get("to_space") or "")
+            if not src_space:
+                src_space = str(edata.get("memory_space") or edata.get("physical_space") or "")
+            if not src_space or not dst_space:
+                unresolved += 1
+                continue
+            transfers.append((src_space, dst_space))
+        if total == 0:
+            return None
+        counts: dict[str, int] = {}
+        for src, dst in transfers:
+            key = f"{src} → {dst}"
+            counts[key] = counts.get(key, 0) + 1
+        return {
+            "resolved": total - unresolved,
+            "total": total,
+            "unresolved": unresolved,
+            "flows": counts,
+        }
+
+    def _used_by_facet(self, entity_id: str) -> dict[str, int] | None:
+        counts: dict[str, int] = {}
+        for rkind, _ekind, name, _file, _line, _edata, _rdata in self._confirmed_neighbors(
+            entity_id, ("CALLS", "READS", "FLOWS_TO")
+        ):
+            if rkind not in {"CALLS", "READS", "FLOWS_TO"} or not name:
+                continue
+            counts[name] = counts.get(name, 0) + 1
+        return counts or None
+
+    def _search_entity_rows(
+        self,
+        conn: sqlite3.Connection,
+        phrase: str,
+        *,
+        kind: str,
+        file_filter: str = "",
+        limit: int = 20,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        from ascendc_codemap_mcp.engine.query.lexicon import entity_haystack
+        from ascendc_codemap_mcp.engine.query.rg import (
+            compile_search,
+            line_matches,
+            path_matches,
+            rank_path,
+        )
+
+        cre = compile_search(phrase)
+        cap = max(1, int(limit))
+        start = max(0, int(offset or 0))
+        arch = str(self._architecture or "")
+        rows = conn.execute(
+            "SELECT id, kind, name, file, line_start, data FROM entity WHERE kind = ?",
+            (kind,),
+        ).fetchall()
+        matched: list[dict[str, Any]] = []
+        for eid, ekind, name, file, line, data in rows:
+            blob = _parse_data(data)
+            hay = entity_haystack(str(ekind or ""), str(name or ""), blob)
+            if not line_matches(cre, hay):
+                continue
+            path = str(file or "")
+            if not path_matches(path, file_filter):
+                continue
+            matched.append(
+                {
+                    "file": path,
+                    "line": int(line or 0),
+                    "name": str(name or ""),
+                    "kind": str(ekind or ""),
+                    "text": "",
+                    "id": str(eid or ""),
+                }
+            )
+        matched.sort(key=lambda r: (*rank_path(str(r.get("file") or ""), arch)[:2], int(r.get("line") or 0)))
+        total = len(matched)
+        return matched[start : start + cap], total
+
+    def _suggest_lexicon_symbols(
+        self,
+        conn: sqlite3.Connection,
+        phrase: str,
+        *,
+        file_filter: str = "",
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        from ascendc_codemap_mcp.engine.query.lexicon import lexicon_tags
+        from ascendc_codemap_mcp.engine.query.rg import path_matches
+
+        tags = lexicon_tags(phrase)
+        if not tags:
+            return []
+        from ascendc_codemap_mcp.engine.query.lexicon import entity_haystack
+
+        rows = conn.execute(
+            "SELECT kind, name, file, line_start, data FROM entity"
+        ).fetchall()
+        out: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, int]] = set()
+        for alias, tag in tags:
+            for ekind, name, file, line, data in rows:
+                nm = str(name or "")
+                hay = entity_haystack(str(ekind or ""), nm, _parse_data(data))
+                if tag not in nm and tag not in hay:
+                    continue
+                path = str(file or "")
+                if not path_matches(path, file_filter):
+                    continue
+                key = (nm, path, int(line or 0))
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(
+                    {
+                        "name": nm,
+                        "kind": str(ekind or ""),
+                        "file": path,
+                        "line": int(line or 0),
+                        "matched_alias": alias,
+                    }
+                )
+                if len(out) >= max(1, int(limit)):
+                    return out
+        return out
+
+    def query_search(
+        self, plan: Any, *, limit: int = 20, offset: int = 0
+    ) -> dict[str, Any]:
+        from ascendc_codemap_mcp.engine.query.rg import InvalidRegex, compile_search
 
         phrase = str(getattr(plan, "name", "") or "").strip()
         file_filter = str(getattr(plan, "file", "") or "").strip()
         cap = max(1, int(limit))
+        start = max(0, int(offset or 0))
         empty = {
-            "ok": False,
+            "ok": True,
             "shape": "search",
             "operation": "search",
             "cards": [],
             "count": 0,
+            "returned": 0,
             "total": 0,
             "truncated": False,
-            "completeness": UNKNOWN,
-            "unresolved_reason": "NO_SEED",
-            "hint": f"no source line matched {phrase!r}; try a different phrase",
+            "exhaustive": True,
+            "engine_paged": True,
+            "next_offset": None,
+            "completeness": "",
+            "unresolved_reason": "",
+            "hint": "",
         }
-        if len(phrase) < 3:
+        if not phrase:
             return empty
+        try:
+            compile_search(phrase)
+        except InvalidRegex as exc:
+            return {
+                **empty,
+                "ok": False,
+                "error_code": "INVALID_REGEX",
+                "error": str(exc),
+                "hint": f"invalid regex: {exc}",
+            }
+        kind = str(getattr(plan, "kind", "") or "").strip().upper()
         with self._connect() as conn:
-            cards, total = self._search_source_lines(
-                conn, phrase, file_filter=file_filter, limit=cap
-            )
-            if not cards:
-                tokens = _search_phrase_tokens(phrase)
-                if len(tokens) >= 2:
-                    cards, total = self._search_source_lines(
-                        conn,
-                        phrase,
-                        file_filter=file_filter,
-                        limit=cap,
-                        and_tokens=tokens,
+            symbols: list[dict[str, Any]] = []
+            if kind:
+                cards, total = self._search_entity_rows(
+                    conn,
+                    phrase,
+                    kind=kind,
+                    file_filter=file_filter,
+                    limit=cap,
+                    offset=start,
+                )
+            else:
+                cards, total = self._search_regex_lines(
+                    conn, phrase, file_filter=file_filter, limit=cap, offset=start
+                )
+                if total == 0:
+                    symbols = self._suggest_lexicon_symbols(
+                        conn, phrase, file_filter=file_filter, limit=cap
                     )
-        if not cards:
-            return empty
-        truncated = total > len(cards)
-        hint = ""
-        if truncated:
-            hint = f"showing {len(cards)} of {total}"
+        returned = len(cards)
+        nxt = start + returned if start + returned < total else None
         return {
             "ok": True,
             "shape": "search",
             "operation": "search",
             "cards": cards,
-            "count": len(cards),
+            "count": returned,
+            "returned": returned,
             "total": total,
-            "truncated": truncated,
-            "completeness": COMPLETE,
+            "truncated": nxt is not None,
+            "exhaustive": nxt is None,
+            "engine_paged": True,
+            "next_offset": nxt,
+            "completeness": "",
             "unresolved_reason": "",
-            "hint": hint,
+            "hint": "",
+            "symbols": symbols,
         }
 
     def query_find(self, plan: Any, *, limit: int = 8) -> dict[str, Any]:

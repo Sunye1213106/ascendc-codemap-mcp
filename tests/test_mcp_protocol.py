@@ -84,12 +84,32 @@ def test_query_schema_has_operation_enum() -> None:
     op = props.get("operation") or {}
     enum = op.get("enum") or []
     assert "resolve" in enum
-    assert "find" in enum
     assert "search" in enum
+    assert "trace" in enum
+    assert "find" not in enum
+    assert "contract" not in enum
+    assert "impact" not in enum
+    assert "entry" not in enum
+    assert "callee" not in props
+    assert "entity_id" not in props
     assert "ctx" not in props
     ann = getattr(tool, "annotations", None)
     assert ann is not None
     assert ann.read_only_hint is True
+
+
+def test_mcp_instructions_are_three_invariants() -> None:
+    from ascendc_codemap_mcp.mcp_adapter import INSTRUCTIONS
+
+    text = INSTRUCTIONS.strip()
+    assert "Unknown → search" in text
+    assert "Known or file:line → resolve" in text
+    assert "Query reads snapshot only" in text
+    assert "find" not in text
+    assert "COMPLETE" not in text
+    assert "UNKNOWN" not in text
+    assert "FTS" not in text
+    assert "evidence" not in text.lower()
 
 
 def test_index_tool_is_not_read_only() -> None:

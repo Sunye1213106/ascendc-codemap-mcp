@@ -42,18 +42,12 @@ def test_status_reports_identity_and_freshness(tmp_path: Path, monkeypatch) -> N
     op.mkdir()
     product = _write_fixture(op)
     monkeypatch.setattr(
-        "ascendc_codemap_mcp.engine.store.writer.detect_source_revision",
-        lambda root: "abc123",
-    )
-    monkeypatch.setattr(
-        "ascendc_codemap_mcp.service.freshness.inspect_git_changes",
-        lambda *a, **k: {
+        "ascendc_codemap_mcp.service.freshness.probe_operator_git",
+        lambda _project: {
             "git_ok": True,
-            "rows": [],
-            "worktree_dirty": False,
-            "worktree_fingerprint": "",
-            "head_sha": "abc123",
-            "base_sha": "abc123",
+            "head": "abc123",
+            "dirty": False,
+            "changed_files": 0,
         },
     )
     st = status(project=str(op), architecture="arch35")
@@ -72,18 +66,12 @@ def test_status_stale_when_head_moved(tmp_path: Path, monkeypatch) -> None:
     op.mkdir()
     _write_fixture(op)
     monkeypatch.setattr(
-        "ascendc_codemap_mcp.engine.store.writer.detect_source_revision",
-        lambda root: "fff999",
-    )
-    monkeypatch.setattr(
-        "ascendc_codemap_mcp.service.freshness.inspect_git_changes",
-        lambda *a, **k: {
+        "ascendc_codemap_mcp.service.freshness.probe_operator_git",
+        lambda _project: {
             "git_ok": True,
-            "rows": [("M", "op_host/tiling.cpp")],
-            "worktree_dirty": False,
-            "worktree_fingerprint": "",
-            "head_sha": "fff999",
-            "base_sha": "abc123",
+            "head": "fff999",
+            "dirty": False,
+            "changed_files": 1,
         },
     )
     st = status(project=str(op), architecture="arch35")

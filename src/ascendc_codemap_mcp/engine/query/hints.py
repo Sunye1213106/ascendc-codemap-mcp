@@ -119,8 +119,7 @@ def attach_query_hints(
     if regex:
         payload.setdefault("empty_reason", "pattern_looks_like_regex")
         payload["hint"] = (
-            "Graph search is not regex; query one identifier. "
-            "For template coverage use dim= / value=."
+            "Use search name= for a regex over snapshot source lines."
         )
         payload["pattern_tokens"] = tokens
     elif count == 0 and str(mode or "") == "around":

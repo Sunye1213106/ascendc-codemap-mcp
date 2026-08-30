@@ -165,9 +165,10 @@ def test_search_keepprob_and_zero_is_unknown(tmp_path: Path) -> None:
         operation="search",
         name="NoSuchPhraseZZZ",
     )
-    assert empty.get("verdict") == "UNKNOWN"
-    assert (empty.get("data") or {}).get("completeness") == "UNKNOWN"
-    assert "COMPLETE" not in str((empty.get("data") or {}).get("completeness") or "")
+    etext = str((empty.get("data") or {}).get("text") or "")
+    assert etext.startswith("0 matches")
+    assert "UNKNOWN" not in etext
+    assert empty.get("ok") is True
 
 
 def test_contract_same_leaf_merges_host_and_kernel(tmp_path: Path) -> None:

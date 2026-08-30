@@ -26,13 +26,15 @@ from pathlib import Path
 from typing import Any
 
 from ascendc_codemap_mcp.engine.perf import TimeBudget, kernel_root_trace_budget_s
-from ascendc_codemap_mcp.engine.ids import buffer_site_id, make_id, operation_site_id, register_site_id
+from ascendc_codemap_mcp.engine.ids import make_id, operation_site_id
 from ascendc_codemap_mcp.engine.ir.codemap import CodeMap, relation_id
 from ascendc_codemap_mcp.engine.ir.entity import EntityKind
 from ascendc_codemap_mcp.engine.ir.identity import (
+    bind_local_object,
     bind_or_create,
     find_declaration,
     is_forbidden_callable_name,
+    trusted_scope_name,
 )
 from ascendc_codemap_mcp.engine.ir.evidence import TRUST_ADVISORY
 from ascendc_codemap_mcp.engine.ir.relation import RelationKind
@@ -2644,7 +2646,6 @@ def finalize_kernel_root_trace(
             owner = str(row["owner"])
             if (owner, name) in buffer_by_key:
                 continue
-            sid = make_id(sync_kind.value.title(), "decl", owner, name, nfile, line)
             root_spell = (
                 "TPipe"
                 if sync_kind == EntityKind.PIPE
@@ -2652,7 +2653,7 @@ def finalize_kernel_root_trace(
             )
             root_id = _ensure_ascendc_root(codemap, root_spell, root_kind="SYNC")
             pipe_attrs = {
-                    "scope": owner,
+                    "scope": trusted_scope_name(owner),
                     "type_name": _persist_type_name(type_text),
                     "tposition": tposition_from_type_text(expanded)
                     or tposition_from_type_text(type_text)
@@ -2670,16 +2671,20 @@ def finalize_kernel_root_trace(
             if sync_kind == EntityKind.PIPE and not pipe_attrs["pointer"]:
                 pipe_attrs["role"] = "launch_instance"
                 pipe_attrs["kernel_file"] = nfile
-            ent = codemap.upsert(
+            ent = bind_local_object(
+                codemap,
                 sync_kind,
                 name,
-                eid=sid,
-                attrs=pipe_attrs,
                 file=nfile,
                 line=line,
+                scope=owner,
+                root=root,
+                attrs=pipe_attrs,
                 status="extracted",
                 confidence=1.0,
             )
+            if ent is None:
+                continue
             _link(codemap, RelationKind.ROOTED_AT, ent.id, root_id)
             if owner in type_ents:
                 _link(
@@ -2751,7 +2756,6 @@ def finalize_kernel_root_trace(
         nfile = str(row["file"])
         line = int(row["line"])
         owner = str(row["owner"])
-        bid = buffer_site_id(file=nfile, line=line, scope=owner, name=name, root=root)
         resolved = resolve_buffer_decl(expanded) or resolve_buffer_decl(type_text)
         if not space:
             space = "UNKNOWN"
@@ -2786,7 +2790,7 @@ def finalize_kernel_root_trace(
             "tposition": tposition_from_type_text(expanded)
             or tposition_from_type_text(type_text)
             or "",
-            "scope": owner,
+            "scope": trusted_scope_name(owner),
             "type_name": type_name,
             "role": "storage_wrapper" if is_wrapper else "storage",
             "wrapper": wrapper_spell,
@@ -2802,17 +2806,22 @@ def finalize_kernel_root_trace(
         }
         if branch_bases:
             attrs["conditional_flag"] = True
-        ent = codemap.upsert(
+        ent = bind_local_object(
+            codemap,
             EntityKind.BUFFER,
             name,
-            eid=bid,
-            attrs=attrs,
             file=nfile,
             line=line,
+            scope=owner,
+            root=root,
+            attrs=attrs,
             status="extracted" if root_spell else "partial",
             confidence=0.9 if root_spell else 0.4,
         )
-        _index_storage(ent.id, scope=owner, name=name, nfile=nfile)
+        if ent is None:
+            continue
+        bid = ent.id
+        _index_storage(ent.id, scope=trusted_scope_name(owner), name=name, nfile=nfile)
         buf_count += 1
         if owner in type_ents:
             _link(
@@ -2892,7 +2901,6 @@ def finalize_kernel_root_trace(
                     skip_namesake = False
                 if skip_namesake:
                     continue
-            sid = make_id(sync_kind.value.title(), "decl", function, name, nfile, line)
             root_spell = (
                 "TPipe"
                 if sync_kind == EntityKind.PIPE
@@ -2900,7 +2908,7 @@ def finalize_kernel_root_trace(
             )
             root_id = _ensure_ascendc_root(codemap, root_spell, root_kind="SYNC")
             pipe_attrs = {
-                    "scope": function,
+                    "scope": trusted_scope_name(function),
                     "type_name": _persist_type_name(type_text),
                     "tposition": tposition_from_type_text(expanded)
                     or tposition_from_type_text(type_text)
@@ -2918,18 +2926,22 @@ def finalize_kernel_root_trace(
             if sync_kind == EntityKind.PIPE and not pipe_attrs["pointer"]:
                 pipe_attrs["role"] = "launch_instance"
                 pipe_attrs["kernel_file"] = nfile
-            ent = codemap.upsert(
+            ent = bind_local_object(
+                codemap,
                 sync_kind,
                 name,
-                eid=sid,
-                attrs=pipe_attrs,
                 file=nfile,
                 line=line,
+                scope=function,
+                root=root,
+                attrs=pipe_attrs,
                 status="extracted",
                 confidence=1.0,
             )
+            if ent is None:
+                continue
             _link(codemap, RelationKind.ROOTED_AT, ent.id, root_id)
-            _index_storage(ent.id, scope=function, name=name, nfile=nfile)
+            _index_storage(ent.id, scope=trusted_scope_name(function), name=name, nfile=nfile)
             pipe_count += int(sync_kind == EntityKind.PIPE)
             event_count += int(sync_kind == EntityKind.EVENT)
             queue_count += int(sync_kind == EntityKind.QUEUE)
@@ -2970,32 +2982,33 @@ def finalize_kernel_root_trace(
         if reg_class:
             if not nfile or int(line or 0) <= 0:
                 continue
-            rid = register_site_id(file=file, line=line, scope=function, name=name, root=root)
             root_id = _ensure_ascendc_root(
                 codemap, _base_type_name(expanded) or "RegTensor", root_kind="REGISTER"
             )
-            ent = codemap.upsert(
+            ent = bind_local_object(
+                codemap,
                 EntityKind.REGISTER,
                 name,
-                eid=rid,
+                file=nfile,
+                line=line,
+                scope=function,
+                root=root,
                 attrs={
                     "register_class": reg_class,
-                    # Registers are storage; naming their tier is what lets a
-                    # question about where a value lives include them.
                     "memory_space": REGISTER_MEMORY_SPACE,
                     "type_name": _persist_type_name(type_text),
-                    "scope": function,
+                    "scope": trusted_scope_name(function),
                     "root_status": "REACHED",
                     "root_kind": "REGISTER",
                     "root": codemap.entities[root_id].name,
                     "trace": [name, _base_type_name(expanded) or type_text],
                     "provenance": "kernel_root_trace",
                 },
-                file=nfile,
-                line=line,
                 status="extracted",
                 confidence=1.0,
             )
+            if ent is None:
+                continue
             _link(codemap, RelationKind.ROOTED_AT, ent.id, root_id)
             _index_storage(ent.id, scope=function, name=name, nfile=nfile)
             reg_count += 1
@@ -3038,13 +3051,12 @@ def finalize_kernel_root_trace(
         elif root_spell:
             root_status = "REACHED"
 
-        bid = buffer_site_id(file=file, line=line, scope=function, name=name, root=root)
         attrs = {
             "memory_space": space,
             "tposition": tposition_from_type_text(expanded)
             or tposition_from_type_text(type_text)
             or "",
-            "scope": function,
+            "scope": trusted_scope_name(function),
             "type_name": (
                 "|".join(branch_bases) if branch_bases else _persist_type_name(type_text)
             ),
@@ -3068,26 +3080,31 @@ def finalize_kernel_root_trace(
             attrs["conditional_flag"] = True
         if root_status == "UNRESOLVED":
             attrs["gap_code"] = REASON_NO_ASCENDC_ROOT
+        ent = bind_local_object(
+            codemap,
+            EntityKind.BUFFER,
+            name,
+            file=nfile,
+            line=line,
+            scope=function,
+            root=root,
+            attrs=attrs,
+            status="extracted" if root_status == "REACHED" else "partial",
+            confidence=1.0 if root_status == "REACHED" else 0.4,
+        )
+        if ent is None:
+            continue
+        if root_status == "UNRESOLVED":
             gaps.append(
                 {
                     "code": REASON_NO_ASCENDC_ROOT,
-                    "entity_id": bid,
+                    "entity_id": ent.id,
                     "name": name,
                     "file": nfile,
                     "line": line,
                 }
             )
-        ent = codemap.upsert(
-            EntityKind.BUFFER,
-            name,
-            eid=bid,
-            attrs=attrs,
-            file=nfile,
-            line=line,
-            status="extracted" if root_status == "REACHED" else "partial",
-            confidence=1.0 if root_status == "REACHED" else 0.4,
-        )
-        _index_storage(ent.id, scope=function, name=name, nfile=nfile)
+        _index_storage(ent.id, scope=trusted_scope_name(function), name=name, nfile=nfile)
         buf_count += 1
         polarity = _conditional_polarity_map(type_text, expanded)
         for idx, branch in enumerate(branch_bases):

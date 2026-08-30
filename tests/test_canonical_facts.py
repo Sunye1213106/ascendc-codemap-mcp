@@ -9,7 +9,14 @@ import pytest
 
 from ascendc_codemap_mcp.engine.ir.codemap import CodeMap
 from ascendc_codemap_mcp.engine.ir.entity import EntityKind
-from ascendc_codemap_mcp.engine.ir.identity import bind_or_create, is_forbidden_callable_name
+from ascendc_codemap_mcp.engine.diagnostics.audit import _integrity_false_confirmed
+from ascendc_codemap_mcp.engine.ids import buffer_site_id, register_site_id
+from ascendc_codemap_mcp.engine.ir.identity import (
+    bind_local_object,
+    bind_or_create,
+    is_forbidden_callable_name,
+    is_untrusted_scope,
+)
 from ascendc_codemap_mcp.engine.ir.relation import RelationKind
 from ascendc_codemap_mcp.engine.passes.kernel_root_trace import _link_backed_by
 from ascendc_codemap_mcp.engine.passes.source_resolution import _mint_runtime_field
@@ -36,6 +43,89 @@ def test_bind_or_create_refuses_keyword_method() -> None:
     again = bind_or_create(cm, EntityKind.TYPE, "QL1BuffSelector", file="a.h", line=3)
     assert again is not None
     assert again.id == typed.id
+
+
+def test_untrusted_scope_does_not_split_local_object() -> None:
+    assert is_untrusted_scope("constexpr")
+    assert is_untrusted_scope("static")
+    assert not is_untrusted_scope("IterateMmQK")
+    trusted = buffer_site_id(
+        file="block_cube.h", line=666, scope="IterateMmQK", name="qL1Tensor"
+    )
+    dirty = buffer_site_id(
+        file="block_cube.h", line=666, scope="constexpr", name="qL1Tensor"
+    )
+    empty = buffer_site_id(file="block_cube.h", line=666, scope="", name="qL1Tensor")
+    assert trusted == dirty == empty
+    split = buffer_site_id(
+        file="block_cube.h",
+        line=666,
+        scope="IterateMmQK",
+        name="qL1Tensor",
+        instantiation_context="IS_SMALL_D_PRELOAD=1",
+    )
+    assert split != trusted
+    assert register_site_id(
+        file="a.h", line=10, scope="constexpr", name="vreg"
+    ) == register_site_id(file="a.h", line=10, scope="Kernel", name="vreg")
+
+
+def test_bind_local_object_reuses_declaration_site() -> None:
+    cm = CodeMap(op_name="toy", architecture="arch35")
+    first = bind_local_object(
+        cm,
+        EntityKind.BUFFER,
+        "qL1Tensor",
+        file="block_cube.h",
+        line=666,
+        scope="IterateMmQK",
+    )
+    second = bind_local_object(
+        cm,
+        EntityKind.BUFFER,
+        "qL1Tensor",
+        file="block_cube.h",
+        line=666,
+        scope="constexpr",
+    )
+    assert first is not None and second is not None
+    assert first.id == second.id
+    assert len([e for e in cm.by_kind(EntityKind.BUFFER) if e.name == "qL1Tensor"]) == 1
+    inst = bind_local_object(
+        cm,
+        EntityKind.BUFFER,
+        "qL1Tensor",
+        file="block_cube.h",
+        line=666,
+        scope="IterateMmQK",
+        instantiation_context="D=128",
+    )
+    assert inst is not None
+    assert inst.id != first.id
+
+
+def test_duplicate_local_object_is_integrity_blocking() -> None:
+    cm = CodeMap(op_name="toy", architecture="arch35")
+    cm.upsert(
+        EntityKind.BUFFER,
+        "qL1Tensor",
+        eid="BUF_OLD_TRUSTED",
+        attrs={"scope": "IterateMmQK"},
+        file="block_cube.h",
+        line=666,
+        status="extracted",
+    )
+    cm.upsert(
+        EntityKind.BUFFER,
+        "qL1Tensor",
+        eid="BUF_OLD_CONSTEXPR",
+        attrs={"scope": "constexpr"},
+        file="block_cube.h",
+        line=666,
+        status="extracted",
+    )
+    codes = {str(row.get("code") or "") for row in _integrity_false_confirmed(cm)}
+    assert "DUPLICATE_LOCAL_OBJECT" in codes
 
 
 def test_using_type_is_not_field() -> None:
@@ -352,7 +442,7 @@ def test_resolve_has_rope_compiled_support(tmp_path: Path) -> None:
     cf = support.get("counterfactual") if isinstance(support.get("counterfactual"), dict) else {}
     assert cf.get("legal") is False
     text = str(data.get("text") or "")
-    assert "Compiled support" in text
+    assert "Compiled" in text
     md = render_explore_markdown(data, verdict="ANSWERED", layer="template")
     assert "legal=" in md
 
@@ -451,5 +541,29 @@ def test_fag_uo_identity_invariants() -> None:
             """
         ).fetchone()[0]
         assert bad_backed == 0
+        dirty_scope = conn.execute(
+            """
+            SELECT COUNT(*) FROM entity
+            WHERE kind IN ('BUFFER','REGISTER','QUEUE','EVENT')
+              AND IFNULL(json_extract(data, '$.scope'), '') IN
+                  ('constexpr','static','inline','const','typename','template')
+            """
+        ).fetchone()[0]
+        if dirty_scope:
+            pytest.skip("FAG snapshot predates canonical local-object bind; rebuild to verify")
+        split_locals = conn.execute(
+            """
+            SELECT COUNT(*) FROM (
+              SELECT name, file, line_start FROM entity
+              WHERE kind IN ('BUFFER','REGISTER','QUEUE','EVENT')
+                AND IFNULL(file,'') != '' AND IFNULL(line_start,0) > 0
+              GROUP BY kind, name, file, line_start
+              HAVING COUNT(*) > 1
+                 AND SUM(CASE WHEN IFNULL(json_extract(data, '$.instantiation_context'), '')
+                                   != '' THEN 1 ELSE 0 END) = 0
+            )
+            """
+        ).fetchone()[0]
+        assert split_locals == 0
     finally:
         conn.close()

@@ -23,7 +23,7 @@ Source + BuildContext
 
 ## Freeze
 
-- 不新增 public `operation`，不新增 Agent retry / hint 路由，不特化某个算子的抽取器，不把 rg 塞进 MCP。
+- 不新增 public `operation`，不新增 Agent retry / hint 路由，不特化某个算子的抽取器。不执行外部 rg，也不读取工作区；`search` 对已持久化的 `source_line` 提供 rg-like regex 语义。
 - 新能力必须先回答 FactKind（下表）和 semantic domain。答不出就不加。
 - Query 不读工作区源码，不做 task routing。
 - Agent-facing 默认不暴露内部 join / debug 标识。
@@ -87,7 +87,7 @@ Output order:
 | `source` | summary + the smallest statement window that carries the meaning |
 | `locations` | Exhaustive sites |
 
-Happy path: unknown symbol → `search`; known → `resolve`. `find` enumerates; `trace` proves A→B. `contract` / `impact` / `entry` stay until a benchmark shows the dossier covers them.
+Happy path: unknown → `search`; known ident or `file:line` → `resolve`. `trace` proves A→B. `find` / `contract` / `impact` / `entry` stay internal.
 
 Query snippets come from `.uo` `source_line` / `source_span`. Missing → `source unavailable in snapshot`.
 

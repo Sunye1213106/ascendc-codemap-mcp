@@ -51,6 +51,11 @@ def test_search_accepts_name_and_file() -> None:
     assert plan.file == "block_cube.h"
 
 
+def test_search_accepts_kind() -> None:
+    plan = validate_plan(operation="search", name="L1", kind="BUFFER")
+    assert plan.kind == "BUFFER"
+
+
 def test_illegal_filter_suggests_legal_rebinding() -> None:
     try:
         validate_plan(operation="find", kind="FUNCTION", symbol="SyncALLCores")

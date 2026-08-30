@@ -22,6 +22,8 @@ from ascendc_codemap_mcp.engine.ir.identity import (
     declaration_key,
     is_declaration_kind,
     is_forbidden_callable_name,
+    is_local_object_kind,
+    local_object_key,
 )
 from ascendc_codemap_mcp.engine.ir.relation import RelationKind
 from ascendc_codemap_mcp.engine.passes.host_kernel import evidence_backed_host_kernel_path_exists
@@ -153,6 +155,27 @@ def _integrity_false_confirmed(codemap: CodeMap) -> list[dict[str, Any]]:
                 }
             ):
                 return out
+    seen_local: dict[tuple[str, str, int, int, str, str], str] = {}
+    for ent in codemap.entities.values():
+        if not is_local_object_kind(ent.kind_name()):
+            continue
+        if not str(ent.file or "").strip() or int(ent.line_start or 0) <= 0:
+            continue
+        if not _leaf_name(ent.name):
+            continue
+        key = local_object_key(ent)
+        prev = seen_local.get(key)
+        if prev and prev != ent.id:
+            if _push(
+                {
+                    "code": "DUPLICATE_LOCAL_OBJECT",
+                    "detail": f"{key[0]} {ent.name} @ {key[1]}:{key[2]}",
+                    "entity_id": ent.id,
+                }
+            ):
+                return out
+        else:
+            seen_local[key] = ent.id
     return out
 
 

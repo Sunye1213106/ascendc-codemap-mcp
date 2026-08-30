@@ -168,7 +168,11 @@ def _infer_verdict(payload: dict[str, Any], *, truncated: bool) -> str:
     op = str(payload.get("operation") or "")
     shape = str(payload.get("shape") or "")
     is_find = op in {"find", "search"} or shape in {"find", "search"}
-    if completeness == "UNKNOWN" or payload.get("error_code") == "INVALID_QUERY":
+    if payload.get("error_code") == "INVALID_QUERY":
+        return VERDICT_UNKNOWN
+    if is_find and payload.get("ok"):
+        return VERDICT_ANSWERED
+    if completeness == "UNKNOWN":
         return VERDICT_UNKNOWN
     if completeness == "INCOMPLETE" or completeness == "AMBIGUOUS":
         return VERDICT_PARTIAL
@@ -277,6 +281,29 @@ def paginate(
     query: str,
 ) -> tuple[dict[str, Any], dict[str, Any], str | None]:
     page = max(1, min(int(limit or 8), 32))
+    if payload.get("engine_paged"):
+        returned = int(payload.get("returned") or payload.get("count") or 0)
+        total = int(payload.get("total") or 0)
+        nxt_off = payload.get("next_offset")
+        truncated = nxt_off is not None
+        coverage = {
+            "returned": returned,
+            "total": total,
+            "truncated": truncated,
+            "nested_truncated": False,
+            "exhaustive": not truncated,
+            "token_budget": 24_000,
+        }
+        payload = dict(payload)
+        payload["returned"] = returned
+        payload["total"] = total
+        payload["exhaustive"] = coverage["exhaustive"]
+        nxt = (
+            encode_cursor(int(nxt_off), snapshot=snapshot, query=query)
+            if nxt_off is not None
+            else None
+        )
+        return payload, coverage, nxt
     key, rows = _primary_list(payload)
     # `count` is the page, `total` is the population. Reading count first made
     # every paged set answer look complete.
@@ -458,6 +485,8 @@ def _run_query(
                 )
 
                 try:
+                    plan.offset = offset
+                    plan.limit = page
                     payload = execute(query, plan)
                 except InvalidQuery as exc:
                     return fail(
@@ -493,6 +522,8 @@ def _run_query(
         truncated = bool(coverage.get("truncated"))
         verdict = _infer_verdict(payload, truncated=truncated)
         layer = _infer_layer(payload)
+        if nxt:
+            payload["next_cursor"] = nxt
         if engine in {"codemap_query", "codemap_evidence"} or payload.get("text"):
             from ascendc_codemap_mcp.engine.query.explore import render_explore_markdown
 
@@ -597,7 +628,7 @@ def query(
     entry_role: str = "",
     function: str = "",
     projection: str = "summary",
-    limit: int = 8,
+    limit: int = 20,
     cursor: str = "",
     expected_snapshot_id: str = "",
 ) -> dict[str, Any]:
@@ -658,7 +689,7 @@ def query(
         return ref  # type: ignore[return-value]
     return _run_query(
         ref,
-        pattern=plan.symbol or plan.callee or plan.dim,
+        pattern=plan.symbol or plan.callee or plan.dim or plan.name,
         file=plan.file,
         line=plan.line,
         line_end=plan.line_end,

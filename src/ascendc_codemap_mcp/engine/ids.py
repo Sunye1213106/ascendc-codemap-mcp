@@ -174,6 +174,44 @@ def operation_site_id(
     return make_id("Operation", *parts)
 
 
+def local_object_id(
+    *,
+    kind: str,
+    file: str,
+    line: int,
+    name: str,
+    column: int = 0,
+    instantiation_context: str = "",
+    root: str = "",
+) -> str:
+    """Identity for one local storage/sync object.
+
+    Scope is not hashed: untrusted specifiers must not mint a second object,
+    and a trusted enclosing name is context, not identity. Only an explicit
+    ``instantiation_context`` may split the same ``file:line:name``.
+    """
+    id_kind = {
+        "BUFFER": "Buffer",
+        "REGISTER": "Register",
+        "QUEUE": "Queue",
+        "EVENT": "Event",
+        "PIPE": "Pipe",
+        "Buffer": "Buffer",
+        "Register": "Register",
+        "Queue": "Queue",
+        "Event": "Event",
+        "Pipe": "Pipe",
+    }.get(str(kind or ""), "Buffer")
+    parts: list[Any] = [rel_posix(file, root), int(line), str(name or "")]
+    col = int(column or 0)
+    if col > 0:
+        parts.append(col)
+    inst = str(instantiation_context or "").strip()
+    if inst:
+        parts.append(inst)
+    return make_id(id_kind, *parts)
+
+
 def buffer_site_id(
     *,
     file: str,
@@ -181,8 +219,19 @@ def buffer_site_id(
     scope: str,
     name: str,
     root: str = "",
+    column: int = 0,
+    instantiation_context: str = "",
 ) -> str:
-    return make_id("Buffer", rel_posix(file, root), int(line), str(scope or ""), str(name or ""))
+    del scope
+    return local_object_id(
+        kind="Buffer",
+        file=file,
+        line=line,
+        name=name,
+        column=column,
+        instantiation_context=instantiation_context,
+        root=root,
+    )
 
 
 def register_site_id(
@@ -192,8 +241,19 @@ def register_site_id(
     scope: str,
     name: str,
     root: str = "",
+    column: int = 0,
+    instantiation_context: str = "",
 ) -> str:
-    return make_id("Register", rel_posix(file, root), int(line), str(scope or ""), str(name or ""))
+    del scope
+    return local_object_id(
+        kind="Register",
+        file=file,
+        line=line,
+        name=name,
+        column=column,
+        instantiation_context=instantiation_context,
+        root=root,
+    )
 
 
 def buffer_view_id(

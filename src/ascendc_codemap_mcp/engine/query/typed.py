@@ -33,6 +33,10 @@ FIND_KINDS = (
     EntityKind.KERNEL.value,
     EntityKind.MACRO.value,
     EntityKind.COMPILE_VAR.value,
+    EntityKind.BUFFER.value,
+    EntityKind.QUEUE.value,
+    EntityKind.EVENT.value,
+    EntityKind.TYPE.value,
 )
 
 FILTER_KEYS = (
@@ -68,7 +72,7 @@ _CONTRACT_FILTERS = _RESOLVE_FILTERS
 _IMPACT_FILTERS = frozenset({"symbol", "entity_id", "file", "line", "kind"})
 _ENTRY_FILTERS = frozenset({"layer", "entry_role", "function", "referenced_symbol"})
 _TRACE_FILTERS = frozenset({"from_symbol", "to_symbol", "relation"})
-_SEARCH_FILTERS = frozenset({"name", "file"})
+_SEARCH_FILTERS = frozenset({"name", "file", "kind"})
 # `name` is a name-pattern discovery filter: substring, or glob when it holds
 # * / ?. It is the only filter that does not require knowing an exact ident.
 _FIND_COMMON = frozenset({"kind", "layer", "function", "name"})
@@ -85,6 +89,10 @@ _FIND_BY_KIND: dict[str, frozenset[str]] = {
     EntityKind.KERNEL.value: _FIND_COMMON,
     EntityKind.MACRO.value: _FIND_COMMON | {"callee"},
     EntityKind.COMPILE_VAR.value: _FIND_COMMON | {"dim"},
+    EntityKind.BUFFER.value: _FIND_COMMON,
+    EntityKind.QUEUE.value: _FIND_COMMON,
+    EntityKind.EVENT.value: _FIND_COMMON,
+    EntityKind.TYPE.value: _FIND_COMMON,
 }
 
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -143,6 +151,7 @@ class QueryPlan:
     entry_role: str = ""
     function: str = ""
     limit: int = 8
+    offset: int = 0
     filled: dict[str, str] = field(default_factory=dict)
     dropped: list[str] = field(default_factory=list)
 
@@ -506,7 +515,14 @@ def validate_plan(**kwargs: Any) -> QueryPlan:
         to_symbol=str(filled.get("to_symbol") or ""),
         entry_role=entry_role,
         function=str(filled.get("function") or ""),
-        limit=max(1, int(kwargs.get("limit") or 8)),
+        limit=max(
+            1,
+            int(
+                kwargs.get("limit")
+                or (20 if operation == "search" else 8)
+            ),
+        ),
+        offset=max(0, int(kwargs.get("offset") or 0)),
         filled=filled,
         dropped=dropped,
     )
@@ -557,7 +573,9 @@ def snapshot_has_ast(query: Any) -> bool:
 
 def execute(query: Any, plan: QueryPlan) -> dict[str, Any]:
     if plan.operation == "search":
-        payload = query.query_search(plan, limit=plan.limit)
+        payload = query.query_search(
+            plan, limit=plan.limit, offset=int(getattr(plan, "offset", 0) or 0)
+        )
         return _attach(query, payload, plan, unique_seed=False)
     if plan.operation == "find":
         if _AST_FILTERS & set(plan.filled) and not snapshot_has_ast(query):
@@ -583,7 +601,8 @@ def execute(query: Any, plan: QueryPlan) -> dict[str, Any]:
         payload = _resolve_seed(query, plan)
         return _attach(query, payload, plan, unique_seed=True)
     payload = _resolve_seed(query, plan)
-    return _attach(query, payload, plan, unique_seed=True)
+    site = bool(plan.file and int(plan.line or 0) > 0)
+    return _attach(query, payload, plan, unique_seed=not site)
 
 
 def _resolve_seed(query: Any, plan: QueryPlan) -> dict[str, Any]:

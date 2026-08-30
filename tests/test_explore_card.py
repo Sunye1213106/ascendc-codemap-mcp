@@ -141,9 +141,11 @@ def test_explore_mcp_result_sends_answer_once() -> None:
     dumped = json.dumps(sc, ensure_ascii=False)
     assert "ASCENDC_TPL" not in dumped
     assert answer not in dumped
-    assert sc.get("ok") is True
-    assert sc.get("verdict") == "ANSWERED"
-    assert sc.get("layer") == "template"
+    assert "verdict" not in sc
+    assert "layer" not in sc
+    assert "ok" not in sc
+    assert sc.get("codemap_id") == "p:x::op@arch35"
+    assert sc.get("snapshot_id") == "cm:abc"
     assert (sc.get("codemap") or {}).get("id") == "p:x::op@arch35"
     assert (sc.get("codemap") or {}).get("snapshot_id") == "cm:abc"
     assert "path" not in (sc.get("codemap") or {})

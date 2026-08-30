@@ -3,7 +3,21 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ascendc_codemap_mcp.install.skills import bundled_root, install_for, uninstall_for
+from ascendc_codemap_mcp.install.skills import (
+    bundled_root,
+    canonical_query_skill,
+    install_for,
+    uninstall_for,
+)
+
+
+def test_query_skill_has_single_owner() -> None:
+    canonical = canonical_query_skill().read_text(encoding="utf-8")
+    bundled = (bundled_root() / "query-codemap" / "SKILL.md").read_text(encoding="utf-8")
+    assert canonical == bundled
+    assert "Unknown → search" in canonical
+    assert "operation=find" not in canonical
+    assert "find kind" not in canonical
 
 
 def test_bundled_skills_exist() -> None:
@@ -20,17 +34,15 @@ def test_bundled_skills_exist() -> None:
     assert "/uo-init" not in text
     assert "codemap_query" in text
     assert "codemap_id" in text
-    assert "dim_names" in text or "**Dims**" in text
-    assert "UNKNOWN" in text
-    assert "legal_key_count" in text or "operation" in text
-    assert "search name" in text
-    assert "在 dim 查询上忽略" not in text
-    assert "InitBuffer" in text
+    assert "search works like regex" in text
+    assert "kind=" in text
+    assert "UNKNOWN" not in text
+    assert "COMPLETE" not in text
+    assert "find kind" not in text
+    assert "FTS" not in text
+    assert "codemap_evidence" not in text
     assert "codemap_explore" not in text
-    assert "overview" not in text or "Do not call overview" in text
-    assert "去 evidence" not in text
-    assert "语义问题去" not in text
-    assert "logical unit" in text
+    assert "logical unit" not in text
     index = (root / "index-operator" / "SKILL.md").read_text(encoding="utf-8")
     assert "codemap_index" in index
     assert "cann-extract" in index
@@ -50,8 +62,8 @@ def test_install_skills_under_fake_home(tmp_path: Path, monkeypatch) -> None:
     assert "codemap_query" in body
     assert "codemap_explore" not in body
     assert "ascendc-codemap-mcp query" in body
-    assert "**Dims**" in body
-    assert "UNKNOWN" in body
+    assert "search works like regex" in body
+    assert "UNKNOWN" not in body
 
 
 def test_install_opencode_skills_under_xdg(tmp_path: Path, monkeypatch) -> None:

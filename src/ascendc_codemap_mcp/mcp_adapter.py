@@ -39,21 +39,9 @@ from ascendc_codemap_mcp.service.query import (
 )
 
 INSTRUCTIONS = """\
-AscendC CodeMap is a self-contained semantic index for one operator + one architecture.
-Build compiles C++/CANN into `.uo` (the only product truth). Query compresses those facts; it does not re-analyze source or read the working tree.
-
-Workflow:
-1. Identity: `codemap_discover` then `codemap.id`, or pass project+architecture on query.
-2. Missing: `codemap_doctor` then `codemap_index`. Stale/dirty → `codemap_update`. Do not index on connect.
-3. Query with `codemap_query` only. Happy path: unknown word → `operation=search name=`; known ident → `operation=resolve symbol=`. Advanced: `find` enumerates sites; `trace` proves A→B. `contract` / `impact` / `entry` still exist; prefer resolve first. Do not call overview.
-
-search cards are path:line + that line. resolve is name + file:line + the smallest source window. Empty resolve lists this operator's Dims. UNKNOWN means the ident is absent here. AMBIGUOUS is different leaves or multiple definition bodies.
-
-Rules:
-- Never guess architecture. Pass identifiers, file+line, or closed filters — not a natural-language sentence.
-- INVALID_QUERY lists legal filters and `did you mean:` ready-made calls; resend one verbatim.
-- Query does not expose internal graph ids. Follow evidence[].id (span:...) with expected_snapshot_id only when expanding evidence.
-- Do not write patches into .uo. Do not use raw SQL/Cypher.
+Unknown → search
+Known or file:line → resolve
+Query reads snapshot only
 """
 
 READ = ToolAnnotations(
@@ -110,20 +98,29 @@ _CODEMAP_FOLLOWUP = ("id", "snapshot_id", "architecture", "alias")
 
 
 def _agent_followup(payload: dict[str, Any]) -> dict[str, Any]:
-    """Handles the next tool call needs. Not a second copy of the answer."""
+    """Exception-oriented: success keeps snapshot/cursor only."""
     out: dict[str, Any] = {}
-    for key in _FOLLOWUP_KEYS:
-        value = payload.get(key)
-        if value in (None, ""):
-            continue
-        out[key] = value
-    if "ok" not in out:
-        out["ok"] = bool(payload.get("ok", False))
     handle = payload.get("codemap")
     if isinstance(handle, dict):
         keep = {key: handle[key] for key in _CODEMAP_FOLLOWUP if handle.get(key) not in (None, "")}
         if keep:
             out["codemap"] = keep
+            if keep.get("id"):
+                out["codemap_id"] = keep["id"]
+            if keep.get("snapshot_id"):
+                out["snapshot_id"] = keep["snapshot_id"]
+    nxt = payload.get("next_cursor")
+    if nxt not in (None, ""):
+        out["next_cursor"] = nxt
+    failed = (not payload.get("ok", True)) or payload.get("error_code") or payload.get("error")
+    if failed:
+        for key in _FOLLOWUP_KEYS:
+            value = payload.get(key)
+            if value in (None, ""):
+                continue
+            out[key] = value
+        if "ok" not in out:
+            out["ok"] = False
     return out
 
 
@@ -242,67 +239,39 @@ def codemap_status(
 
 @mcp.tool(title="Query CodeMap", annotations=READ, structured_output=True)
 def codemap_query(
-    operation: Literal["resolve", "contract", "impact", "entry", "find", "search", "trace"] = "resolve",
+    operation: Literal["search", "resolve", "trace"] = "resolve",
     codemap_id: str = "",
     project: str = "",
     architecture: str = "",
-    symbol: str = "",
     name: str = "",
-    entity_id: str = "",
+    symbol: str = "",
     file: str = "",
     line: int = 0,
-    line_end: int = 0,
     kind: str = "",
-    layer: str = "",
-    callee: str = "",
-    referenced_symbol: str = "",
-    referenced_value: str = "",
-    literal: str = "",
-    operator: str = "",
-    dim: str = "",
-    value: str = "",
-    relation: str = "",
-    consumer_role: str = "",
-    from_symbol: str = "",
-    to_symbol: str = "",
-    entry_role: str = "",
-    function: str = "",
     projection: Literal["summary", "source", "locations"] = "summary",
     cursor: str = "",
-    limit: int = 8,
+    limit: int = 20,
+    from_symbol: str = "",
+    to_symbol: str = "",
     expected_snapshot_id: str = "",
 ) -> CallToolResult:
-    """Typed graph query. resolve/contract/impact need an exact ident (symbol). Do not know the ident? search name= scans source lines; find name= lists matching entity names (a miss is 0). find with kind= enumerates sites, e.g. kind=OPERATION callee=Foo for every call site. Identity is codemap_id or project+architecture."""
+    """search ≈ regex over the indexed source snapshot. resolve ≈ read + semantic context. Identity is codemap_id or project+architecture."""
     return _query_result(
         query_impl(
             operation=operation,
             codemap_id=codemap_id,
             project=project,
             architecture=architecture,
-            symbol=symbol,
             name=name,
-            entity_id=entity_id,
+            symbol=symbol,
             file=file,
             line=line,
-            line_end=line_end,
             kind=kind,
-            layer=layer,
-            callee=callee,
-            referenced_symbol=referenced_symbol,
-            referenced_value=referenced_value,
-            literal=literal,
-            operator=operator,
-            dim=dim,
-            value=value,
-            relation=relation,
-            consumer_role=consumer_role,
-            from_symbol=from_symbol,
-            to_symbol=to_symbol,
-            entry_role=entry_role,
-            function=function,
             projection=projection,
             cursor=cursor,
             limit=limit,
+            from_symbol=from_symbol,
+            to_symbol=to_symbol,
             expected_snapshot_id=expected_snapshot_id,
         )
     )

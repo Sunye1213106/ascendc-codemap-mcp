@@ -110,6 +110,19 @@ def is_forbidden_callable_name(name: str) -> bool:
     return leaf in CXX_SPECIFIERS
 
 
+def is_untrusted_scope(scope: str) -> bool:
+    """True when *scope* is a C++ specifier and must not mint a local identity."""
+    leaf = _leaf(scope)
+    return bool(leaf) and leaf in CXX_SPECIFIERS
+
+
+def trusted_scope_name(scope: str) -> str:
+    leaf = _leaf(scope)
+    if not leaf or leaf in CXX_SPECIFIERS:
+        return ""
+    return leaf
+
+
 def is_alias_not_field(name: str, ctype: str = "") -> bool:
     """True when a member scan is a ``using`` / typedef alias, not a FIELD."""
     leaf = _leaf(name)
@@ -272,3 +285,154 @@ def declaration_key(ent: Entity) -> tuple[str, str, str, str]:
 def is_declaration_kind(kind: EntityKind | str) -> bool:
     kind_name = kind.value if isinstance(kind, EntityKind) else str(kind)
     return kind_name in _DECLARATION_KINDS
+
+
+_LOCAL_OBJECT_KINDS = frozenset(
+    {
+        EntityKind.BUFFER.value,
+        EntityKind.REGISTER.value,
+        EntityKind.QUEUE.value,
+        EntityKind.EVENT.value,
+        EntityKind.PIPE.value,
+    }
+)
+
+_LOCAL_ID_KIND = {
+    EntityKind.BUFFER.value: "Buffer",
+    EntityKind.REGISTER.value: "Register",
+    EntityKind.QUEUE.value: "Queue",
+    EntityKind.EVENT.value: "Event",
+    EntityKind.PIPE.value: "Pipe",
+}
+
+
+def is_local_object_kind(kind: EntityKind | str) -> bool:
+    kind_name = kind.value if isinstance(kind, EntityKind) else str(kind)
+    return kind_name in _LOCAL_OBJECT_KINDS
+
+
+def local_object_key(
+    ent: Entity,
+) -> tuple[str, str, int, int, str, str]:
+    """(kind, file, line, column, name, instantiation) for duplicate-site probes."""
+    inst = str(ent.attrs.get("instantiation_context") or "").strip()
+    col = int(ent.attrs.get("column") or 0)
+    return (
+        ent.kind_name(),
+        _norm_file(ent.file),
+        int(ent.line_start or 0),
+        col,
+        _leaf(ent.name),
+        inst,
+    )
+
+
+def find_local_object(
+    codemap: CodeMap,
+    kind: EntityKind | str,
+    *,
+    name: str,
+    file: str,
+    line: int,
+    column: int = 0,
+    instantiation_context: str = "",
+) -> Entity | None:
+    kind_name = kind.value if isinstance(kind, EntityKind) else str(kind)
+    leaf = _leaf(name)
+    want_file = _norm_file(file)
+    want_line = int(line or 0)
+    want_col = int(column or 0)
+    want_inst = str(instantiation_context or "").strip()
+    if not leaf or not want_file or want_line <= 0:
+        return None
+    hits: list[Entity] = []
+    for ent in codemap.by_kind(kind_name):
+        if _leaf(ent.name) != leaf:
+            continue
+        if _norm_file(ent.file) != want_file:
+            continue
+        if int(ent.line_start or 0) != want_line:
+            continue
+        if int(ent.attrs.get("column") or 0) != want_col:
+            continue
+        if str(ent.attrs.get("instantiation_context") or "").strip() != want_inst:
+            continue
+        hits.append(ent)
+    if len(hits) == 1:
+        return hits[0]
+    return hits[0] if hits else None
+
+
+def bind_local_object(
+    codemap: CodeMap,
+    kind: EntityKind | str,
+    name: str,
+    *,
+    file: str = "",
+    line: int = 0,
+    column: int = 0,
+    scope: str = "",
+    instantiation_context: str = "",
+    root: str = "",
+    attrs: dict[str, Any] | None = None,
+    status: str = "extracted",
+    confidence: float = 1.0,
+) -> Entity | None:
+    """Bind a BUFFER/REGISTER/QUEUE/EVENT/PIPE to one source declaration.
+
+    Untrusted scope never participates in identity. Only an explicit
+    ``instantiation_context`` may split the same ``file:line:name``.
+    """
+    from ascendc_codemap_mcp.engine.ids import local_object_id
+
+    kind_name = kind.value if isinstance(kind, EntityKind) else str(kind)
+    if kind_name not in _LOCAL_OBJECT_KINDS:
+        return None
+    leaf = _leaf(name)
+    if not leaf or not str(file or "").strip() or int(line or 0) <= 0:
+        return None
+    inst = str(instantiation_context or "").strip()
+    existing = find_local_object(
+        codemap,
+        kind,
+        name=leaf,
+        file=file,
+        line=line,
+        column=column,
+        instantiation_context=inst,
+    )
+    payload = dict(attrs or {})
+    trusted = trusted_scope_name(scope)
+    if trusted:
+        payload.setdefault("scope", trusted)
+    elif "scope" in payload and is_untrusted_scope(str(payload.get("scope") or "")):
+        payload.pop("scope", None)
+    if inst:
+        payload["instantiation_context"] = inst
+    if column:
+        payload["column"] = int(column)
+    if existing is not None:
+        existing.attrs.update({k: v for k, v in payload.items() if v not in (None, "")})
+        if file and not existing.file:
+            existing.file = file
+            existing.line_start = int(line or existing.line_start or 0)
+        return existing
+    eid = local_object_id(
+        kind=kind_name,
+        file=file,
+        line=line,
+        name=leaf,
+        column=column,
+        instantiation_context=inst,
+        root=root,
+    )
+    return codemap.upsert(
+        kind,
+        leaf,
+        eid=eid,
+        attrs=payload,
+        file=file,
+        line=line,
+        status=status,
+        confidence=confidence,
+    )
