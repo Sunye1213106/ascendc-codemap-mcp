@@ -11,6 +11,7 @@ the CodeMap directly via ``passes/kernel_root_trace.py``.
 
 from ascendc_codemap_mcp.engine.ir.codemap import CodeMap
 from ascendc_codemap_mcp.engine.ir.entity import Entity, EntityKind
+from ascendc_codemap_mcp.engine.ir.identity import bind_or_create
 from ascendc_codemap_mcp.engine.ir.relation import Relation, RelationKind
 from ascendc_codemap_mcp.engine.ir.evidence import (
     SOURCE_CLANG_AST,
@@ -39,6 +40,7 @@ __all__ = [
     "TRUST_AUTHORITATIVE",
     "TRUST_DERIVED",
     "TRUST_LEGACY_UNKNOWN",
+    "bind_or_create",
     "build_context_id",
     "stamp_attrs",
     "summarize_trust",

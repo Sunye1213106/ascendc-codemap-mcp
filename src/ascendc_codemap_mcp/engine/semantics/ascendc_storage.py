@@ -226,12 +226,6 @@ def memory_space_from_type_text(type_text: str) -> str | None:
             return space
     if "GlobalTensor" in text:
         return "GM"
-    if "LocalTensor" in text:
-        return "UB"
-    if "TQue" in text or "TQueBind" in text:
-        return "QUEUE"
-    if "TBuf" in text or "TBufPool" in text:
-        return "UB"
     return None
 
 

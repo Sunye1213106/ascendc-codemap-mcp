@@ -25,6 +25,9 @@ from ascendc_codemap_mcp.engine.query.completeness import (
 
 MAX_EXPLORE_CHARS = 25_000
 FILE_SECTION_PREFIX = "### "
+_INTERNAL_ID_RE = re.compile(
+    r"(?:SRCPOL(?:COND)?|SRCMACRO|SRCFRONTIER|E_TYPE_|REL::|entity_id=)[^\s]*"
+)
 _PROOF_LINES = 3
 _MAX_RANGE_LINES = 40
 #: Whole-card source budget. A set answer with many hits must not spend it all
@@ -50,7 +53,7 @@ _CONSUMER_KINDS = {
     RelationKind.MATERIALIZES_AS.value,
     RelationKind.SELECTS.value,
 }
-_LOC_KEEP = ("id", "name", "kind", "file", "line", "role", "consumer_role")
+_LOC_KEEP = ("name", "kind", "file", "line", "role", "consumer_role")
 _VALIDATION_NAMES = frozenset(
     {
         "CheckLogLevel",
@@ -196,47 +199,36 @@ def _merge_canonical_identities(cards: list[dict[str, Any]]) -> list[dict[str, A
 
 
 def _clip_source(
-    op_root: Path | None,
+    query: Any,
     file: str,
     line: int,
     *,
     line_end: int = 0,
     max_lines: int = _PROOF_LINES,
 ) -> str:
-    if not file or int(line or 0) <= 0:
+    """Snippet from `.uo` source_line only. Never reads the working tree."""
+    if not file or int(line or 0) <= 0 or query is None:
         return ""
-    path = Path(str(file).replace("\\", "/"))
-    if not path.is_file() and op_root is not None:
-        from ascendc_codemap_mcp.engine.paths import resolve_operator_file
+    from ascendc_codemap_mcp.engine.query.sql import (
+        _source_line_rows,
+        _source_line_window,
+    )
 
-        resolved = resolve_operator_file(Path(op_root), str(file))
-        if resolved is not None:
-            path = resolved
-        else:
-            path = Path(op_root) / str(file).replace("\\", "/")
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+        with query._connect() as conn:
+            if int(line_end or 0) >= int(line):
+                rows = _source_line_rows(conn, file, int(line), int(line_end))
+                if rows:
+                    return "\n".join(f"{ln}:{txt}" for ln, txt in rows)
+            half = max(0, int(max_lines) // 2)
+            window = _source_line_window(
+                conn, file, int(line), before=half, after=max(half, int(max_lines) - half)
+            )
+            if window:
+                return window
+    except Exception:  # noqa: BLE001
         return ""
-    rows = text.splitlines()
-    start_i = int(line) - 1
-    if start_i < 0 or start_i >= len(rows):
-        return ""
-    if int(line_end or 0) >= int(line):
-        end_i = min(len(rows), int(line_end))
-        if end_i - start_i > _MAX_RANGE_LINES:
-            end_i = start_i + _MAX_RANGE_LINES
-        out = [f"{i}:{rows[i - 1]}" for i in range(start_i + 1, end_i + 1)]
-        return "\n".join(out)
-    half = max(0, int(max_lines) // 2)
-    start = max(0, start_i - half)
-    end = min(len(rows), start + int(max_lines))
-    if end - start < int(max_lines):
-        start = max(0, end - int(max_lines))
-    out = []
-    for i, raw in enumerate(rows[start:end], start + 1):
-        out.append(f"{i}:{raw}")
-    return "\n".join(out)
+    return ""
 
 
 def _loc_row(ent: dict[str, Any], *, role: str, snippet: str = "") -> dict[str, Any]:
@@ -315,7 +307,7 @@ def _kernel_accessor_rows(query: Any, seed: dict[str, Any]) -> list[dict[str, An
                     "file": file,
                     "line_start": line,
                 }
-                snippet = _clip_source(op_root, file, line)
+                snippet = _clip_source(query, file, line)
                 out.append(_loc_row(hit, role="consumer", snippet=snippet))
         if not out:
             try:
@@ -344,7 +336,7 @@ def _kernel_accessor_rows(query: Any, seed: dict[str, Any]) -> list[dict[str, An
                     "file": file,
                     "line_start": line,
                 }
-                snippet = str(row[2] or "").strip() or _clip_source(op_root, file, line)
+                snippet = str(row[2] or "").strip() or _clip_source(query, file, line)
                 out.append(_loc_row(hit, role="consumer", snippet=snippet))
     return out
 
@@ -400,7 +392,7 @@ def _expand_statement_snippet(
     query: Any, card: dict[str, Any], pool: list[dict[str, Any]]
 ) -> dict[str, Any]:
     """COMPILE_VAR / MACRO / TILING_KEY Definition uses a ~16-line statement window."""
-    from ascendc_codemap_mcp.engine.query.sql import _source_line_window, _statement_window
+    from ascendc_codemap_mcp.engine.query.sql import _source_line_window
 
     out = dict(card)
     kind = str(out.get("kind") or "").upper()
@@ -439,8 +431,6 @@ def _expand_statement_snippet(
             window = _source_line_window(conn, file, line)
     except Exception:  # noqa: BLE001
         window = ""
-    if not window:
-        window, _cut = _statement_window(getattr(query, "_op_root", None), file, line)
     if window:
         out["file"] = file
         out["line"] = line
@@ -524,14 +514,14 @@ def build_contract_card(
                     and str(hit["kind"] or "") not in _PRODUCER_SKIP_KINDS
                     and not _is_validation_name(str(hit.get("name") or ""))
                 ):
-                    snippet = _clip_source(op_root, hit["file"], hit["line_start"])
+                    snippet = _clip_source(query, hit["file"], hit["line_start"])
                     producers.append(_loc_row(hit, role="producer", snippet=snippet))
                 if (
                     rkind in _CONSUMER_KINDS
                     and (dst_id == cur_id or src_id == cur_id)
                     and not _is_validation_name(str(hit.get("name") or ""))
                 ):
-                    snippet = _clip_source(op_root, hit["file"], hit["line_start"])
+                    snippet = _clip_source(query, hit["file"], hit["line_start"])
                     consumers.append(_loc_row(hit, role="consumer", snippet=snippet))
                 if rkind == RelationKind.BINDS.value:
                     binds.append(_loc_row(hit, role="bind"))
@@ -540,7 +530,7 @@ def build_contract_card(
                         _loc_row(
                             hit,
                             role="kernel_repr",
-                            snippet=_clip_source(op_root, hit["file"], hit["line_start"]),
+                            snippet=_clip_source(query, hit["file"], hit["line_start"]),
                         )
                     )
                 if (
@@ -552,7 +542,7 @@ def build_contract_card(
                         _loc_row(
                             hit,
                             role="entry",
-                            snippet=_clip_source(op_root, hit["file"], hit["line_start"]),
+                            snippet=_clip_source(query, hit["file"], hit["line_start"]),
                         )
                     )
         closure = semantic_impact_closure_sql(
@@ -577,11 +567,11 @@ def build_contract_card(
     for row in closure.get("sinks") or []:
         if _is_validation_name(str(row.get("name") or "")):
             continue
-        snippet = _clip_source(op_root, str(row.get("file") or ""), int(row.get("line") or 0))
+        snippet = _clip_source(query, str(row.get("file") or ""), int(row.get("line") or 0))
         sinks.append({**row, "snippet": snippet} if snippet else dict(row))
     transport = pick_transport(seed_kind=kind, has_branch_reader=has_branch, has_bind=bool(binds))
     seed_snippet = str(seed.get("snippet") or "") or _clip_source(
-        op_root,
+        query,
         str(seed.get("file") or ""),
         int(seed.get("line_start") or seed.get("line") or 0),
         line_end=int(seed.get("line_end") or 0),
@@ -644,9 +634,12 @@ def slim_explore_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 continue
             item = {
                 key: card[key]
-                for key in ("kind", "name", "id", "file", "line")
+                for key in ("kind", "name", "file", "line")
                 if key in card and card[key] not in (None, "")
             }
+            hidden = str(card.get("id") or card.get("entity_id") or "")
+            if hidden:
+                item["_entity_id"] = hidden
             extras = card.get("extras") if isinstance(card.get("extras"), dict) else {}
             writers = extras.get("writers") or card.get("writers")
             readers = extras.get("readers") or card.get("readers")
@@ -822,6 +815,7 @@ def _budget_lines(
 
 
 def cut_explore_text(text: str) -> str:
+    text = _INTERNAL_ID_RE.sub("", str(text or ""))
     if len(text) <= MAX_EXPLORE_CHARS:
         return text
     cut = text[:MAX_EXPLORE_CHARS]
@@ -875,6 +869,12 @@ def _render_search_markdown(payload: dict[str, Any]) -> list[str]:
         line = int(row.get("line") or row.get("line_start") or 0)
         text = str(row.get("text") or row.get("snippet") or "").strip()
         loc = f"{file}:{line}" if file and line else (file or "?")
+        name = str(row.get("name") or "")
+        kind = str(row.get("kind") or "")
+        if name:
+            lines.append(name)
+        if kind:
+            lines.append(kind)
         lines.append(loc)
         if text:
             lines.append(text)
@@ -959,33 +959,54 @@ def _render_resolve_markdown(payload: dict[str, Any], *, projection: str) -> lis
     primary = cards[0] if cards else {}
     seed_name = str(primary.get("name") or "")
     lines: list[str] = []
+    file, line, name, snippet = _site_line(primary)
+    kind = str(primary.get("kind") or "")
+    if seed_name:
+        lines.append(seed_name)
+        if kind:
+            lines.append(kind)
+        if file and line:
+            lines.append(f"{file}:{line}")
+        lines.append("")
     candidates = [c for c in (payload.get("candidates") or []) if isinstance(c, dict)]
     cand_src = [c for c in (payload.get("candidate_sources") or []) if isinstance(c, dict)]
     if candidates:
         lines.append("**Candidates** (resolve one)")
         for cand in candidates:
-            kind = str(cand.get("kind") or "")
-            file = str(cand.get("file") or "")
-            suffix = f"  {kind}" + (f"  {file}" if file else "")
+            ck = str(cand.get("kind") or "")
+            cfile = str(cand.get("file") or "")
+            suffix = f"  {ck}" + (f"  {cfile}" if cfile else "")
             lines.append(f"- {cand.get('name')}{suffix}")
         lines.append("")
     if cand_src:
         lines.append("**Definition**")
         for row in cand_src:
-            file = str(row.get("file") or "")
-            if file:
-                lines.append(f"{FILE_SECTION_PREFIX}{file}")
+            cfile = str(row.get("file") or "")
+            if cfile:
+                lines.append(f"{FILE_SECTION_PREFIX}{cfile}")
             for no, text in _snippet_rows(str(row.get("snippet") or ""), int(row.get("line") or 0)):
                 lines.append(f"{no}|  {text}")
         lines.append("")
     elif primary and str(projection or payload.get("projection") or "summary") != "locations":
-        file, line, name, snippet = _site_line(primary)
         if file:
             src = _render_source(
                 [{"file": file, "line": line, "name": name, "snippet": snippet}],
-                tight=False,
+                tight=True if str(projection or "") == "summary" else False,
             )
             lines.extend(["**Definition**" if ln == "**Source**" else ln for ln in src])
+    extras = primary.get("extras") if isinstance(primary.get("extras"), dict) else {}
+    writers = extras.get("writers") or primary.get("writers") or []
+    readers = extras.get("readers") or primary.get("readers") or []
+    if writers:
+        lines.append("Host")
+        for row in _dedup_rows([r for r in writers if isinstance(r, dict)])[:3]:
+            lines.append(_loc(row))
+        lines.append("")
+    if readers:
+        lines.append("Kernel")
+        for row in _dedup_rows([r for r in readers if isinstance(r, dict)])[:3]:
+            lines.append(_loc(row))
+        lines.append("")
     used = _dedup_rows(r for r in (payload.get("used_at") or []) if isinstance(r, dict))
     used = [
         row
@@ -1285,24 +1306,14 @@ def _overlay_site(card: dict[str, Any], site: dict[str, Any], query: Any) -> dic
     file = str(site.get("file") or "")
     line = int(site.get("line") or 0)
     line_end = int(site.get("line_end") or 0)
-    op_root = getattr(query, "_op_root", None)
     kind = str(site.get("kind") or card.get("kind") or "").upper()
-    if kind in {
-        EntityKind.COMPILE_VAR.value,
-        EntityKind.MACRO.value,
-        EntityKind.TILING_KEY.value,
-    }:
-        from ascendc_codemap_mcp.engine.query.sql import _statement_window
-
-        snippet, _cut = _statement_window(op_root, file, line)
-        if not snippet:
-            snippet = _clip_source(op_root, file, line, max_lines=_USED_AT_LINES)
-    elif _looks_like_definition(site):
-        snippet = _clip_source(
-            op_root, file, line, line_end=line_end or 0, max_lines=_MAX_RANGE_LINES
-        )
-    else:
-        snippet = _clip_source(op_root, file, line, max_lines=_USED_AT_LINES)
+    snippet = _clip_source(
+        query,
+        file,
+        line,
+        line_end=line_end or 0,
+        max_lines=_MAX_RANGE_LINES if _looks_like_definition(site) else _USED_AT_LINES,
+    )
     out["file"] = file
     out["line"] = line
     if line_end:
@@ -1439,7 +1450,7 @@ def attach_explore_fields(
             file = str(site.get("file") or "")
             line = int(site.get("line") or 0)
             snippet = _clip_source(
-                op_root,
+                query,
                 file,
                 line,
                 line_end=int(site.get("line_end") or 0),
@@ -1466,7 +1477,7 @@ def attach_explore_fields(
                 continue
             if _file_matches(file, primary_file):
                 continue
-            snippet = _clip_source(op_root, file, line, max_lines=_USED_AT_LINES)
+            snippet = _clip_source(query, file, line, max_lines=_USED_AT_LINES)
             used.append(
                 {
                     "file": file,

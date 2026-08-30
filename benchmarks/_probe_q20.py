@@ -11,7 +11,7 @@ UO = Path(
     r"d:\TEST\ops-transformer\attention\flash_attention_score_grad"
     r"\.ascendc-codemap\arch35\FlashAttentionScoreGrad.arch35.uo"
 )
-OUT = Path(r"d:\TEST\ascendc-codemap-mcp\_uo_q20.json")
+OUT = Path(r"d:\TEST\ascendc-codemap-mcp\benchmarks\_uo_q20.json")
 
 IDENT_LIKE = r"[A-Za-z_][A-Za-z0-9_]*"
 

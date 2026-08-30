@@ -3,7 +3,7 @@ import sqlite3
 from pathlib import Path
 
 UO = r"d:\TEST\ops-transformer\attention\flash_attention_score_grad\.ascendc-codemap\arch35\FlashAttentionScoreGrad.arch35.uo"
-OUT = Path(r"d:\TEST\ascendc-codemap-mcp\_q20_fill2.txt")
+OUT = Path(r"d:\TEST\ascendc-codemap-mcp\benchmarks\_q20_fill2.txt")
 c = sqlite3.connect(UO)
 c.row_factory = sqlite3.Row
 

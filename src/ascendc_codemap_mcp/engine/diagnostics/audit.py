@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,41 @@ _FLOW_KINDS = {
 }
 _ROOT_FLOW_KINDS = {RelationKind.DERIVES.value, RelationKind.FLOWS_TO.value}
 _RUNTIME_KINDS = {EntityKind.VARIABLE.value, EntityKind.FIELD.value}
+_LEAF_TYPE_ID_RE = re.compile(r"^SRCPOL::[^:]+::[A-Za-z_]\w*$")
+
+
+def _integrity_false_confirmed(codemap: CodeMap) -> list[dict[str, Any]]:
+    """Hard commit blockers: confirmed edges with no endpoints, leaf-only TYPE ids."""
+    out: list[dict[str, Any]] = []
+    for rel in codemap.relations.values():
+        if str(rel.status or "").lower() != "confirmed":
+            continue
+        if rel.src not in codemap.entities or rel.dst not in codemap.entities:
+            out.append(
+                {
+                    "code": "CONFIRMED_DANGLING_EDGE",
+                    "detail": f"{rel.kind_name()} {rel.src!s} → {rel.dst!s}",
+                    "relation_id": rel.id,
+                }
+            )
+            if len(out) >= 24:
+                return out
+    for ent in codemap.by_kind(EntityKind.TYPE):
+        if str(ent.status or "").lower() != "confirmed":
+            continue
+        eid = str(ent.id or "")
+        name = str(ent.name or "")
+        if _LEAF_TYPE_ID_RE.match(eid) and "::" not in name:
+            out.append(
+                {
+                    "code": "LEAF_ONLY_TYPE_IDENTITY",
+                    "detail": f"{name} minted as {eid}",
+                    "entity_id": eid,
+                }
+            )
+            if len(out) >= 24:
+                return out
+    return out
 
 
 def _flow_adjacency(codemap: CodeMap, kinds: set[str]) -> dict[str, list[str]]:
@@ -412,6 +448,8 @@ def audit_codemap(codemap: CodeMap) -> dict[str, Any]:
     if low_conf_entities or low_conf_relations:
         warn("LOW_CONFIDENCE_FACTS", f"entities={len(low_conf_entities)} relations={len(low_conf_relations)}")
 
+    integrity_blocking = _integrity_false_confirmed(codemap)
+
     # Meta-only Kernel root-trace quality (does not block verify).
     ke = None
     if isinstance(codemap.meta, dict):
@@ -454,6 +492,7 @@ def audit_codemap(codemap: CodeMap) -> dict[str, Any]:
             "unresolved_entities": len(unresolved_entities), "unresolved_relations": len(unresolved_relations),
         },
         "blocking": blocking,
+        "integrity_blocking": integrity_blocking,
         "warnings": warnings,
     }
 

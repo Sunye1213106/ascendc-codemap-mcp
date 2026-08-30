@@ -59,7 +59,7 @@ def collect(payload: dict[str, Any], *, op_root: Path, snapshot: str) -> list[di
         if not isinstance(row, dict):
             return
         item = mint(
-            entity_id=str(row.get("id") or row.get("entity_id") or ""),
+            entity_id=str(row.get("id") or row.get("entity_id") or row.get("_entity_id") or ""),
             file=str(row.get("file") or ""),
             line=int(row.get("line") or row.get("line_start") or 0),
             op_root=op_root,

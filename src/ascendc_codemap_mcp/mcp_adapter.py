@@ -39,23 +39,20 @@ from ascendc_codemap_mcp.service.query import (
 )
 
 INSTRUCTIONS = """\
-AscendC CodeMap is a semantic compiler graph for one operator + one architecture.
-It answers what the code is, not what a previous agent thought.
+AscendC CodeMap is a self-contained semantic index for one operator + one architecture.
+Build compiles C++/CANN into `.uo` (the only product truth). Query compresses those facts; it does not re-analyze source or read the working tree.
 
 Workflow:
-1. If you have no codemap.id: codemap_discover (project= operator directory) or pass project+architecture on query. Identity is p:<workspace>::op@arch.
-2. If not indexed: codemap_doctor then codemap_index (minutes). Do not index on connect.
-3. If stale or dirty: codemap_update. Read state and updated; ok=true is not a rebuild.
-4. Query with codemap_query only. operation is an enum (default resolve). Do not call overview or symbol.
+1. Identity: `codemap_discover` then `codemap.id`, or pass project+architecture on query.
+2. Missing: `codemap_doctor` then `codemap_index`. Stale/dirty → `codemap_update`. Do not index on connect.
+3. Query with `codemap_query` only. Happy path: unknown word → `operation=search name=`; known ident → `operation=resolve symbol=`. Advanced: `find` enumerates sites; `trace` proves A→B. `contract` / `impact` / `entry` still exist; prefer resolve first. Do not call overview.
 
-Do not know the exact ident? search name=<phrase> scans source_fts (the line text). find name= matches entity.name only — a miss is UNKNOWN, not a Buffer-family recovery. Then resolve / contract one of those names. Extra name= on resolve is ignored when symbol= is already set.
-
-Each operation prints one card: search → path:line + that line; find → Matches/Groups; resolve → Definition + References (file:line); contract → Host → TilingKey → Kernel (template macros collapsed); impact → affected locations. Returned Definition spans are usable evidence. If neighboring lines are absent, use codemap_evidence or targeted Read. Empty resolve lists this operator's Dims. UNKNOWN means that ident is absent here — use those Dims; do not retry the same name. AMBIGUOUS is only different leaves or multiple definition bodies; pick one. A Call sites list under find is already the site list. Do not Grep files already listed. file= without line filters Definition to that file. Cover dim= prints value: n; legal_key_count is the compiled-key total.
+search cards are path:line + that line. resolve is name + file:line + the smallest source window. Empty resolve lists this operator's Dims. UNKNOWN means the ident is absent here. AMBIGUOUS is different leaves or multiple definition bodies.
 
 Rules:
 - Never guess architecture. Pass identifiers, file+line, or closed filters — not a natural-language sentence.
-- INVALID_QUERY lists legal filters and a `did you mean:` set of ready-made calls; resend one of those verbatim instead of guessing or giving up.
-- Follow evidence[].id (span:...) with evidence[].snapshot_id as expected_snapshot_id when continuing.
+- INVALID_QUERY lists legal filters and `did you mean:` ready-made calls; resend one verbatim.
+- Query does not expose internal graph ids. Follow evidence[].id (span:...) with expected_snapshot_id only when expanding evidence.
 - Do not write patches into .uo. Do not use raw SQL/Cypher.
 """
 

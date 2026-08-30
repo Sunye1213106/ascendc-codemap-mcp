@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 
-p = Path(r"d:\TEST\ascendc-codemap-mcp\_uo_q20.json")
+p = Path(r"d:\TEST\ascendc-codemap-mcp\benchmarks\_uo_q20.json")
 data = json.loads(p.read_text(encoding="utf-8"))
 print("legal_status", data["legal_status"])
 for qid, q in data["questions"].items():

@@ -16,7 +16,6 @@ import sqlite3
 import threading
 from collections import Counter, OrderedDict, deque
 from contextlib import contextmanager
-from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Sequence
 
@@ -46,21 +45,11 @@ from ascendc_codemap_mcp.engine.query.hints import (
     identifier_tokens,
     search_needles,
 )
-from ascendc_codemap_mcp.engine.paths import CANN_MARKER, cann_root
 from ascendc_codemap_mcp.engine.query.legal_key_cache import _pattern_filters, normalize_cover_pattern
 from ascendc_codemap_mcp.engine.source_locator import locations_from_attr_sites
 
 SNIPPET_LINES = 40
-
-#: `cann_root()` walks the filesystem, and a query resolves paths per card, so
-#: the answer is cached for the process. `None` is a real answer (no tree), so
-#: "not asked yet" needs its own sentinel.
-_UNSET: object = object()
-_CANN_ROOT: Any = _UNSET
 SNIPPET_BEFORE = 3
-FUNC_HEAD_LINES = 8
-#: FUNCTION/METHOD/KERNEL shorter than this render in full (no head+tail omit).
-FUNC_FULL_MAX = 96
 MACRO_CONT_MAX = 80
 STATEMENT_BEFORE = 8
 STATEMENT_AFTER = 8
@@ -69,7 +58,6 @@ _STMT_EXPAND_KINDS = {
     EntityKind.MACRO.value,
     EntityKind.TILING_KEY.value,
 }
-BRANCH_OUTER_BEFORE = 16
 PRIMARY_CANDIDATES = 3
 MAX_PAYLOAD_CHARS = 24_000
 MAX_REL_HOPS = 4
@@ -225,13 +213,6 @@ MAX_SAME_VALUE = 8
 _VIEW_CACHE_MAX = 1
 _TEMPLATE_BLOCKS_LOCK = threading.Lock()
 _TEMPLATE_BLOCKS_CACHE: OrderedDict[str, dict[str, Any]] = OrderedDict()
-#: Split source files, keyed by path -> ((mtime_ns, size), lines). Bounded by
-#: file count rather than bytes: an answer touches a handful of files and the
-#: largest here is a ~4k-line tiling header, so 64 entries is tens of MB at
-#: worst while covering the working set of a whole session.
-_SOURCE_LINES_MAX = 64
-_SOURCE_LINES_LOCK = threading.Lock()
-_SOURCE_LINES_CACHE: OrderedDict[str, tuple[tuple[int, int], tuple[str, ...]]] = OrderedDict()
 _SQL_IN_CHUNK = 400
 
 
@@ -1303,24 +1284,6 @@ def _branch_sort_key(hit: dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
-def _branch_window_start(lines: list[str], centre: int) -> int:
-    default = max(1, centre - SNIPPET_BEFORE)
-    if centre <= 1 or centre > len(lines):
-        return default
-    hit = lines[centre - 1]
-    hit_indent = len(hit) - len(hit.lstrip(" \t"))
-    lo = max(0, centre - 1 - BRANCH_OUTER_BEFORE)
-    for i in range(centre - 2, lo - 1, -1):
-        raw = lines[i]
-        stripped = raw.lstrip(" \t")
-        if "if constexpr" not in stripped:
-            continue
-        indent = len(raw) - len(stripped)
-        if indent < hit_indent:
-            return i + 1
-    return default
-
-
 def _candidate_limit(limit: int) -> int:
     return max(0, min(int(limit), PRIMARY_CANDIDATES))
 
@@ -1368,17 +1331,6 @@ def _cap_snippet(text: str, line_start: int) -> str:
     if start <= 0 or (lines and lines[0][:1].isdigit() and (":" in lines[0][:8] or "|" in lines[0][:8])):
         return "\n".join(lines)
     return "\n".join(f"{start + offset}:{line}" for offset, line in enumerate(lines))
-
-
-def _cann_root_cached() -> Path | None:
-    """`cann_root()` memoized: resolving it walks the filesystem."""
-    global _CANN_ROOT
-    if _CANN_ROOT is _UNSET:
-        try:
-            _CANN_ROOT = cann_root()
-        except Exception:  # noqa: BLE001
-            _CANN_ROOT = None
-    return _CANN_ROOT
 
 
 #: `entity` rows overlapping a line range in one file. Two things kept the
@@ -1446,113 +1398,6 @@ def _seed_rows_for_file(
     ).fetchall()
 
 
-@lru_cache(maxsize=4096)
-def _resolve_source_path(op_root: Path | None, file: str) -> Path | None:
-    """Locate a stored path on this reader's disk, memoized.
-
-    The probe costs two or three ``is_file`` calls, and a name-pattern answer
-    resolves the same handful of files once per hit: `OP_CHECK_IF` alone spent
-    17ms of a 100ms answer here, almost all of it re-asking the filesystem
-    questions it had just asked.
-    """
-    if not file:
-        return None
-    text = str(file).replace("\\", "/")
-    if text.startswith(CANN_MARKER):
-        # A toolkit header is outside every checkout, so it is stored by marker
-        # and only a reader's own install can say where it is.
-        root = _cann_root_cached()
-        if root is None:
-            return None
-        candidate = root / text[len(CANN_MARKER) :]
-        return candidate if candidate.is_file() else None
-    candidates: list[Path] = []
-    rel = Path(text)
-    if rel.is_file():
-        candidates.append(rel)
-    if op_root is not None:
-        candidates.append(op_root / text)
-        if not text.startswith("../"):
-            # Basename search is a last resort inside the operator; for a path
-            # that names a sibling tree it would answer with a same-named file
-            # from this one.
-            candidates.append(op_root / rel.name)
-    return next((p for p in candidates if p.is_file()), None)
-
-
-def _file_lines(path: Path) -> tuple[str, ...]:
-    """Every line of `path`, cached per (path, mtime, size).
-
-    One answer reads the same few files many times over: an entity's window, a
-    BRANCH's backward probe, a long function's head and tail are separate reads,
-    so 114 hits opened 228 handles and walked each file from line 1 to the line
-    it wanted. Holding the split lines makes every read after the first a slice.
-
-    Reading the whole file costs more than the old early-``break`` when a window
-    sits near the top, which is why this is a cache and not just a helper -- the
-    second read of a file is what pays for the first.
-    """
-    try:
-        stat = path.stat()
-    except OSError:
-        return ()
-    key = str(path)
-    stamp = (int(stat.st_mtime_ns), int(stat.st_size))
-    with _SOURCE_LINES_LOCK:
-        hit = _SOURCE_LINES_CACHE.get(key)
-        if hit is not None and hit[0] == stamp:
-            _SOURCE_LINES_CACHE.move_to_end(key)
-            return hit[1]
-    try:
-        with path.open(encoding="utf-8", errors="replace") as handle:
-            lines = tuple(raw.rstrip("\n") for raw in handle)
-    except OSError:
-        return ()
-    with _SOURCE_LINES_LOCK:
-        _SOURCE_LINES_CACHE[key] = (stamp, lines)
-        _SOURCE_LINES_CACHE.move_to_end(key)
-        while len(_SOURCE_LINES_CACHE) > _SOURCE_LINES_MAX:
-            _SOURCE_LINES_CACHE.popitem(last=False)
-    return lines
-
-
-def _read_line_range(path: Path, start: int, end: int) -> list[str]:
-    """Lines ``start..end`` (1-based, inclusive), or [] if the file is unreadable."""
-    lines = _file_lines(path)
-    if not lines:
-        return []
-    lo = max(1, int(start))
-    hi = max(lo, int(end))
-    return list(lines[lo - 1 : hi])
-
-
-def _numbered_lines(start: int, rows: Sequence[str]) -> list[str]:
-    return [f"{int(start) + i}:{rows[i]}" for i in range(len(rows))]
-
-
-def _statement_window(
-    op_root: Path | None,
-    file: str,
-    line: int,
-    *,
-    before: int = STATEMENT_BEFORE,
-    after: int = STATEMENT_AFTER,
-) -> tuple[str, bool]:
-    """Centered ~16-line window around a statement. Not a neighborhood dump."""
-    if not file or int(line or 0) <= 0:
-        return "", False
-    path = _resolve_source_path(op_root, file)
-    if path is None:
-        return "", False
-    centre = int(line)
-    start = max(1, centre - int(before))
-    end = centre + int(after)
-    chosen = _read_line_range(path, start, end)
-    if not chosen:
-        return "", False
-    return "\n".join(_numbered_lines(start, chosen)), False
-
-
 def _source_line_window(
     conn: sqlite3.Connection,
     file: str,
@@ -1609,6 +1454,113 @@ def _source_line_window(
     if not chosen:
         return ""
     return "\n".join(f"{ln}:{txt}" for ln, txt in chosen)
+
+
+def _source_line_rows(
+    conn: sqlite3.Connection, file: str, start: int, end: int
+) -> list[tuple[int, str]]:
+    from ascendc_codemap_mcp.engine.store.accel import has_source_line
+
+    if not file or int(start or 0) <= 0:
+        return []
+    if not has_source_line(conn):
+        return []
+    needle = str(file or "").replace("\\", "/")
+    leaf = needle.rsplit("/", 1)[-1]
+    lo = max(1, int(start))
+    hi = max(lo, int(end))
+    try:
+        rows = conn.execute(
+            """
+            SELECT path, line, text FROM source_line
+            WHERE line BETWEEN ? AND ?
+              AND (
+                    path = ?
+                 OR REPLACE(path, '\\', '/') LIKE '%' || ?
+              )
+            ORDER BY line, path
+            """,
+            (lo, hi, file, leaf),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    best_path = ""
+    for row in rows:
+        path = str(row[0] or "").replace("\\", "/")
+        if path == needle or path.endswith("/" + needle) or needle.endswith("/" + path):
+            best_path = str(row[0] or "")
+            break
+        if leaf and (path.endswith("/" + leaf) or path.endswith(leaf)):
+            best_path = str(row[0] or "")
+            break
+    if not best_path and rows:
+        best_path = str(rows[0][0] or "")
+    return [
+        (int(r[1] or 0), str(r[2] or ""))
+        for r in rows
+        if str(r[0] or "") == best_path
+    ]
+
+
+def _snapshot_window(
+    conn: sqlite3.Connection,
+    file: str,
+    line: int,
+    *,
+    kind: str = "",
+    line_end: int = 0,
+) -> tuple[str, bool, list[dict[str, Any]]]:
+    """Snippet from indexed source_line only. Never reads the working tree."""
+    empty: list[dict[str, Any]] = []
+    if not file or int(line or 0) <= 0:
+        return "", False, empty
+    centre = int(line)
+    kind_u = str(kind or "").upper()
+    span_end = int(line_end or 0)
+    if kind_u in _STMT_EXPAND_KINDS:
+        window = _source_line_window(conn, file, line)
+        return (window, False, empty) if window else ("", False, empty)
+    start = centre if kind_u in {
+        EntityKind.METHOD.value,
+        EntityKind.FUNCTION.value,
+        EntityKind.KERNEL.value,
+    } else max(1, centre - SNIPPET_BEFORE)
+    if span_end > centre:
+        end = min(span_end, start + SNIPPET_LINES - 1)
+        truncated = span_end > end
+    else:
+        end = start + SNIPPET_LINES - 1
+        truncated = False
+    rows = _source_line_rows(conn, file, start, end)
+    if not rows:
+        return "", False, empty
+    return "\n".join(f"{ln}:{txt}" for ln, txt in rows), truncated, empty
+
+
+def _source_file_text(conn: sqlite3.Connection, file: str) -> str:
+    rows = _source_line_rows(conn, file, 1, 100000)
+    if not rows:
+        return ""
+    return "\n".join(txt for _ln, txt in rows)
+
+
+def _snapshot_statement(conn: sqlite3.Connection, file: str, line: int) -> str:
+    rows = _source_line_rows(conn, file, int(line or 0), int(line or 0) + 23)
+    buf: list[str] = []
+    for _ln, txt in rows:
+        buf.append(str(txt).rstrip())
+        if ";" in txt:
+            break
+    return " ".join(buf)
+
+
+def _snapshot_snippet(
+    conn: sqlite3.Connection, file: str, line: int, *, kind: str = "", line_end: int = 0
+) -> str:
+    text, _truncated, _omitted = _snapshot_window(
+        conn, file, line, kind=kind, line_end=line_end
+    )
+    return text
 
 
 def _is_trivial_decl(row: dict[str, Any]) -> bool:
@@ -1793,150 +1745,12 @@ def _extend_next_from_value_expr(
             return
 
 
-def _backslash_continued_end(path: Path, start: int, *, cap: int = MACRO_CONT_MAX) -> int:
-    rows = _read_line_range(path, start, start + max(1, int(cap)) - 1)
-    end = int(start)
-    for i, ln in enumerate(rows):
-        end = int(start) + i
-        if not str(ln).rstrip().endswith("\\"):
-            break
-    return end
-
-
-def _disk_window(
-    op_root: Path | None,
-    file: str,
-    line: int,
-    *,
-    kind: str = "",
-    line_end: int = 0,
-) -> tuple[str, bool, list[dict[str, Any]]]:
-    empty: list[dict[str, Any]] = []
-    if not file or int(line or 0) <= 0:
-        return "", False, empty
-    path = _resolve_source_path(op_root, file)
-    if path is None:
-        return "", False, empty
-    centre = int(line)
-    kind_u = str(kind or "").upper()
-    span_end = int(line_end or 0)
-    if kind_u in _STMT_EXPAND_KINDS and kind_u != EntityKind.MACRO.value:
-        window, _cut = _statement_window(op_root, file, line)
-        if window:
-            return window, False, empty
-    if kind_u == EntityKind.MACRO.value:
-        end = _backslash_continued_end(path, centre)
-        chosen = _read_line_range(path, centre, end)
-        if not chosen:
-            return "", False, empty
-        truncated = (end - centre + 1) >= MACRO_CONT_MAX and str(chosen[-1]).rstrip().endswith(
-            "\\"
-        )
-        return "\n".join(_numbered_lines(centre, chosen)), truncated, empty
-    if kind_u in {
-        EntityKind.METHOD.value,
-        EntityKind.FUNCTION.value,
-        EntityKind.KERNEL.value,
-    }:
-        start = centre
-    elif kind_u == EntityKind.BRANCH.value:
-        probe_from = max(1, centre - BRANCH_OUTER_BEFORE)
-        probe = _read_line_range(path, probe_from, centre)
-        virtual = [""] * (probe_from - 1) + probe
-        while len(virtual) < centre:
-            virtual.append("")
-        start = _branch_window_start(virtual, centre)
-    else:
-        start = max(1, centre - SNIPPET_BEFORE)
-    truncated = False
-    recorded_span = span_end > centre
-    span_len = (span_end - start + 1) if recorded_span else 0
-    if (
-        kind_u
-        in {
-            EntityKind.METHOD.value,
-            EntityKind.FUNCTION.value,
-            EntityKind.KERNEL.value,
-        }
-        and recorded_span
-        and span_len > FUNC_FULL_MAX
-    ):
-        head_end = min(span_end, start + FUNC_HEAD_LINES - 1)
-        tail_budget = max(1, SNIPPET_LINES - FUNC_HEAD_LINES)
-        tail_start = max(head_end + 1, span_end - tail_budget + 1)
-        head = _read_line_range(path, start, head_end)
-        tail = _read_line_range(path, tail_start, span_end)
-        if not head and not tail:
-            return "", False, empty
-        parts = _numbered_lines(start, head)
-        omitted: list[dict[str, Any]] = []
-        if tail_start > head_end + 1:
-            parts.append("# ... omitted ...")
-            omitted.append(
-                {
-                    "file": str(file).replace("\\", "/"),
-                    "line": head_end + 1,
-                    "line_end": tail_start - 1,
-                }
-            )
-        parts.extend(_numbered_lines(tail_start, tail))
-        return "\n".join(parts), True, omitted
-    if recorded_span:
-        end = span_end
-        if span_len > FUNC_FULL_MAX:
-            end = start + SNIPPET_LINES - 1
-            truncated = span_end > end
-    else:
-        end = start + SNIPPET_LINES - 1
-    if end < centre:
-        end = centre + SNIPPET_LINES - 1
-        truncated = recorded_span and span_end > end
-    chosen = _read_line_range(path, start, end)
-    if not chosen:
-        return "", False, empty
-    truncated = truncated or (recorded_span and span_end > end)
-    return "\n".join(_numbered_lines(start, chosen)), truncated, empty
-
-
-def _disk_snippet(
-    op_root: Path | None,
-    file: str,
-    line: int,
-    *,
-    kind: str = "",
-    line_end: int = 0,
-) -> str:
-    text, _truncated, _omitted = _disk_window(
-        op_root, file, line, kind=kind, line_end=line_end
-    )
-    return text
-
-
 def _rhs_looks_truncated(rhs: str) -> bool:
     text = str(rhs or "")
     if len(text) >= PACKING_RHS_TRIM:
         return True
     stripped = text.rstrip()
     return stripped.endswith(("&&", "||", "(", ",", "+"))
-
-
-def _read_statement(op_root: Path | None, file: str, line: int) -> str:
-    path = _resolve_source_path(op_root, str(file or ""))
-    if path is None or int(line or 0) <= 0:
-        return ""
-    start = int(line)
-    rows = _read_line_range(path, start, start + 23)
-    if not rows:
-        return ""
-    buf: list[str] = []
-    for raw in rows:
-        buf.append(raw.rstrip())
-        if ";" in raw:
-            break
-    blob = "\n".join(buf)
-    if "=" in blob:
-        blob = blob.split("=", 1)[1]
-    return blob.replace(";", "").strip()
 
 
 def _template_block_rows(blob: Any) -> list[dict[str, Any]]:
@@ -2830,12 +2644,6 @@ class UoSqlQuery:
         key = str(self.product)
         with _TEMPLATE_BLOCKS_LOCK:
             _TEMPLATE_BLOCKS_CACHE.pop(key, None)
-        # The line cache revalidates on mtime, but the path memo caches mere
-        # existence, so a test that adds or removes a source file between opens
-        # would otherwise read a stale answer.
-        with _SOURCE_LINES_LOCK:
-            _SOURCE_LINES_CACHE.clear()
-        _resolve_source_path.cache_clear()
         self._engine = None
         self._accel = None
         self._launch_cache = {}
@@ -2912,12 +2720,10 @@ class UoSqlQuery:
             )
             if line > 0 and (thin or not _snippet_covers_line(snippet, line)):
                 line_end = int(hit.get("line_end") or 0)
-                window, truncated, omitted = _disk_window(
-                    self._op_root, orig, line, kind=kind, line_end=line_end
-                )
-                if not window:
-                    window, truncated, omitted = _disk_window(
-                        self._op_root, file, line, kind=kind, line_end=line_end
+                window, truncated, omitted = ("", False, [])
+                if conn is not None:
+                    window, truncated, omitted = _snapshot_window(
+                        conn, orig or file, line, kind=kind, line_end=line_end
                     )
                 if window:
                     snippet = window
@@ -2926,23 +2732,18 @@ class UoSqlQuery:
                         hit["truncated"] = True
                     if omitted:
                         hit["omitted"] = omitted
-            if str(kind or "").upper() == EntityKind.MACRO.value and line > 0:
-                src = _resolve_source_path(self._op_root, orig) or _resolve_source_path(
-                    self._op_root, file
-                )
-                if src is not None:
-                    hit["line_end"] = max(
-                        int(hit.get("line_end") or 0),
-                        _backslash_continued_end(src, line),
-                    )
+            if str(kind or "").upper() == EntityKind.MACRO.value and line > 0 and conn is not None:
+                rows = _source_line_rows(conn, orig or file, line, line + MACRO_CONT_MAX)
+                end = line
+                for ln, txt in rows:
+                    end = ln
+                    if not str(txt).rstrip().endswith("\\"):
+                        break
+                hit["line_end"] = max(int(hit.get("line_end") or 0), end)
             if str(kind or "").upper() in _STMT_EXPAND_KINDS and line > 0:
                 window = ""
                 if conn is not None:
                     window = _source_line_window(conn, orig or file, line)
-                if not window:
-                    window, _cut = _statement_window(
-                        self._op_root, orig or file, line
-                    )
                 if window and (
                     str(snippet or "").count("\n") < 2 or len(window) > len(snippet)
                 ):
@@ -3883,9 +3684,10 @@ class UoSqlQuery:
                             seen_readers.add(hid)
                             readers.append(hit)
         for hit in writers[:12]:
-            stmt = _read_statement(
-                self._op_root, str(hit.get("file") or ""), int(hit.get("line_start") or 0)
-            )
+            with self._connect() as conn:
+                stmt = _snapshot_statement(
+                    conn, str(hit.get("file") or ""), int(hit.get("line_start") or 0)
+                )
             if not stmt:
                 continue
             facts = dict(hit.get("facts") or {}) if isinstance(hit.get("facts"), dict) else {}
@@ -3897,11 +3699,13 @@ class UoSqlQuery:
         for hit in writers[:cap]:
             if str(hit.get("snippet") or "").strip():
                 continue
-            window = _disk_snippet(
-                self._op_root,
-                str(hit.get("file") or ""),
-                int(hit.get("line_start") or 0),
-            )
+            window = ""
+            with self._connect() as conn:
+                window = _snapshot_snippet(
+                    conn,
+                    str(hit.get("file") or ""),
+                    int(hit.get("line_start") or 0),
+                )
             if window:
                 hit["snippet"] = window
         primary = dict(primary)
@@ -4073,7 +3877,10 @@ class UoSqlQuery:
                 payload.setdefault("name", row.get("name"))
                 payload.setdefault("kind", extra.kind)
                 if not payload.get("snippet"):
-                    payload["snippet"] = _disk_snippet(self._op_root, extra.file, extra.line_start)
+                    with self._connect() as conn:
+                        payload["snippet"] = _snapshot_snippet(
+                            conn, extra.file, extra.line_start
+                        )
                 payload["snippet"] = _cap_snippet(
                     str(payload.get("snippet") or ""), int(payload.get("line_start") or 0)
                 )
@@ -4147,9 +3954,11 @@ class UoSqlQuery:
                 continue
             item = dict(site)
             rhs = str(item.get("rhs") or "")
-            stmt = _read_statement(
-                self._op_root, str(item.get("file") or ""), int(item.get("line") or 0)
-            )
+            stmt = ""
+            with self._connect() as conn:
+                stmt = _snapshot_statement(
+                    conn, str(item.get("file") or ""), int(item.get("line") or 0)
+                )
             if stmt and (
                 len(stmt) > len(rhs)
                 or _rhs_looks_truncated(rhs)
@@ -4164,9 +3973,11 @@ class UoSqlQuery:
         hit["facts"] = facts
         best = next((site for site in repaired if isinstance(site, dict)), None)
         if best is not None:
-            window = _disk_snippet(
-                self._op_root, str(best.get("file") or ""), int(best.get("line") or 0)
-            )
+            window = ""
+            with self._connect() as conn:
+                window = _snapshot_snippet(
+                    conn, str(best.get("file") or ""), int(best.get("line") or 0)
+                )
             if window:
                 hit["snippet"] = window
         return hit
@@ -5575,13 +5386,8 @@ class UoSqlQuery:
         return hits
 
     def _source_text(self, file: str) -> str:
-        path = _resolve_source_path(self._op_root, file)
-        if path is None:
-            return ""
-        try:
-            return path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            return ""
+        with self._connect() as conn:
+            return _source_file_text(conn, file)
 
     def _destroy_ops_in_file(self, winner_file: str) -> list[tuple[int, str]]:
         want = str(winner_file or "").replace("\\", "/").lower()
@@ -5988,11 +5794,13 @@ class UoSqlQuery:
                 grouped["READS"]["count"] = max(int(grouped["READS"].get("count") or 0), len(readers))
             focus = _focus_value_write(extras)
             if focus:
-                window, _win_cut = _statement_window(
-                    self._op_root,
-                    str(focus.get("file") or ""),
-                    int(focus.get("line") or 0),
-                )
+                window = ""
+                with self._connect() as conn:
+                    window = _source_line_window(
+                        conn,
+                        str(focus.get("file") or ""),
+                        int(focus.get("line") or 0),
+                    )
                 if window:
                     card["snippet"] = window
                     card["file"] = str(focus.get("file") or card.get("file") or "")
@@ -6784,11 +6592,13 @@ class UoSqlQuery:
         if sel_sites:
             payload["sel_sites"] = sel_sites
             first = sel_sites[0]
-            window, _cut = _statement_window(
-                self._op_root,
-                str(first.get("file") or ""),
-                int(first.get("line") or 0),
-            )
+            window = ""
+            with self._connect() as conn:
+                window = _source_line_window(
+                    conn,
+                    str(first.get("file") or ""),
+                    int(first.get("line") or 0),
+                )
             if window:
                 payload["snippet"] = window
                 payload["file"] = first.get("file") or ""
@@ -6929,12 +6739,13 @@ class UoSqlQuery:
                 "error": "around_needs_file_line",
                 "hint": "Pass file and line from a previous card.",
             }
-        if end > start:
-            resolved = _resolve_source_path(self._op_root, path)
-            chosen = _read_line_range(resolved, start, end) if resolved is not None else []
-            window = "\n".join(_numbered_lines(start, chosen)) if chosen else ""
-        else:
-            window, _win_cut = _statement_window(self._op_root, path, start)
+        window = ""
+        with self._connect() as conn:
+            if end > start:
+                rows = _source_line_rows(conn, path, start, end)
+                window = "\n".join(f"{ln}:{txt}" for ln, txt in rows)
+            else:
+                window = _source_line_window(conn, path, start)
         seed_cap = AROUND_SEED_LIMIT
         seeds = self._around_seed_hits(path, start, end or start, limit=seed_cap)
         enclosing = [hit for hit in seeds if _encloses_line(hit, start)]

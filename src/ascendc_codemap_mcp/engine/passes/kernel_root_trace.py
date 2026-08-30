@@ -1517,6 +1517,31 @@ def _link(
     # Keep first-seen file/line as the primary display site; do not overwrite.
 
 
+def _link_backed_by(
+    codemap: CodeMap,
+    view_id: str,
+    owner_id: str,
+    *,
+    space: str = "",
+    via: str = "storage_owner",
+    file: str = "",
+    line: int = 0,
+) -> None:
+    """Tensor/View → StorageOwner. physical_space lives on the owner (and this edge)."""
+    if not view_id or not owner_id or view_id == owner_id:
+        return
+    if view_id not in codemap.entities or owner_id not in codemap.entities:
+        return
+    payload: dict[str, Any] = {"via": via}
+    space_s = str(space or "").strip()
+    if space_s and space_s != "UNKNOWN":
+        payload["physical_space"] = space_s
+    if file:
+        payload["file"] = file
+        payload["line"] = int(line or 0)
+    _link(codemap, RelationKind.BACKED_BY, view_id, owner_id, attrs=payload)
+
+
 def _record_flag_pair_appearance(codemap: CodeMap, gaps: list[dict[str, Any]]) -> dict[str, int]:
     """Identity-level Set/Wait appearance. TQue ops never enter this check."""
     groups: dict[tuple[str, str, str], dict[str, list[str]]] = defaultdict(
@@ -1596,6 +1621,7 @@ def _propagate_reachability(codemap: CodeMap) -> None:
             RelationKind.ALIASES.value,
             RelationKind.CALLS.value,
             RelationKind.ROOTED_AT.value,
+            RelationKind.BACKED_BY.value,
         }:
             continue
         # Lexical CALLS are candidates; the reverse climb only follows
@@ -2753,6 +2779,20 @@ def finalize_kernel_root_trace(
             rid = _ensure_ascendc_root(codemap, root_spell, root_kind="STORAGE")
             _link(codemap, RelationKind.WRAPS, ent.id, rid, attrs={"via": "storage_root"})
             _link(codemap, RelationKind.ROOTED_AT, ent.id, rid)
+            owner_id = (
+                type_ents[base]
+                if is_wrapper and base in type_ents and _is_catalog_storage_base(base)
+                else rid
+            )
+            _link_backed_by(
+                codemap,
+                ent.id,
+                owner_id,
+                space=space,
+                via="storage_owner",
+                file=nfile,
+                line=line,
+            )
 
     for decl in decls or []:
         type_text, name, function, file, line = _decl_fields(decl)
@@ -3008,6 +3048,20 @@ def finalize_kernel_root_trace(
                 _link(codemap, RelationKind.WRAPS, ent.id, type_ents[base], attrs={"via": "decl_type"})
             _link(codemap, RelationKind.WRAPS, ent.id, rid, attrs={"via": "storage_root"})
             _link(codemap, RelationKind.ROOTED_AT, ent.id, rid)
+            owner_id = (
+                type_ents[base]
+                if is_wrapper and base in type_ents and _is_catalog_storage_base(base)
+                else rid
+            )
+            _link_backed_by(
+                codemap,
+                ent.id,
+                owner_id,
+                space=space,
+                via="storage_owner",
+                file=nfile,
+                line=line,
+            )
 
     # --- 5. METHOD + OPERATION call sites (all source calls) -------------
     method_ents: dict[str, str] = {}  # identity key → METHOD entity id
@@ -3206,6 +3260,17 @@ def finalize_kernel_root_trace(
                     },
                 )
                 initbuffer_links.append((pipe_id, obj_id, nfile, line, receiver))
+                qent = codemap.entities.get(pipe_id)
+                if qent is not None and qent.kind_name() == EntityKind.QUEUE.value:
+                    _link_backed_by(
+                        codemap,
+                        pipe_id,
+                        obj_id,
+                        space=str(obj.attrs.get("memory_space") or ""),
+                        via="InitBuffer",
+                        file=nfile,
+                        line=line,
+                    )
         if callee in STACK_BUFFER_CALLEES:
             obj_name = _expr_storage_name(args[0] if args else "")
             if not obj_name and args:
@@ -3466,6 +3531,32 @@ def finalize_kernel_root_trace(
                 )
                 seen_op_ids.add(oid)
                 op_count += 1
+
+        if ent is not None:
+            reads, writes = semreg.arg_effects(callee, args, receiver=receiver)
+            for names, kind in (
+                (reads, RelationKind.READS),
+                (writes, RelationKind.WRITES),
+            ):
+                for raw in names:
+                    aname = _expr_storage_name(raw) or str(raw or "").strip()
+                    if not aname or not aname.isidentifier():
+                        continue
+                    aid = _lookup_storage(aname, identity_scopes, nfile)
+                    if not aid:
+                        continue
+                    _link(
+                        codemap,
+                        kind,
+                        ent.id,
+                        aid,
+                        attrs={
+                            "via": "arg_effect",
+                            "file": nfile,
+                            "line": line,
+                            "arg": aname,
+                        },
+                    )
 
         # Flag identity only. TQue EnQue/DeQue have no user event; CANN owns that
         # handshake, so they never get SIGNALS/AWAITS.

@@ -2,9 +2,11 @@
 
 ![AscendC CodeMap MCP：提取与查询框架](docs/codemap-framework.png)
 
-面向 AI coding agent 的 AscendC 算子语义图。把一个算子在指定 architecture 下的 **Host / TilingData / TilingKey / Template / Kernel / AscendC API** 编进持久化 `.uo` 图，再通过 MCP 做低延迟查询。
+按 operator + architecture 编译得到的、自包含 AscendC 语义索引。构建把 C++ / CANN DSL 编成唯一、可信、可追溯的语义事实；`.uo` 是唯一产品真值；Query 把这些事实压缩成面向 AI 的上下文。Agent 只负责理解任务和使用事实。
 
-这是**语义编译图**，不是通用代码记忆。`.uo` 只存代码*是什么*。Agent 的计划、review、ADR 留在会话或调用方（例如 AscendC-Pilot）。
+架构合约见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。两条根约束：**Build for truth. Project for usefulness.** Query 是 semantic projection / compression，不重新分析代码，也不读工作区源码。内部 identity（entity id、USR、provenance）默认不出现在 Agent 卡片上。
+
+这不是通用代码记忆。Agent 的计划、review、ADR 留在会话或调用方（例如 AscendC-Pilot）。
 
 对 SFAG 算子的本地实测：
 
@@ -58,7 +60,7 @@ Codebase Memory 与 CodeGraph 是通用代码图：多语言、通用导航。Co
 
 他们更擅长「代码在哪、谁调用谁」。CodeMap 更希望回答：**这个算子为什么走到这个 Kernel，以及这个值怎么从 Host 传下来。**
 
-本仓库不把 memory / ADR / 文档检索、默认 Cypher/SQL、impact 分析或可视化做成产品功能。
+本仓库不把 memory / ADR / 文档检索、默认 Cypher/SQL 或可视化做成产品功能。`impact` 仍是 `codemap_query` 的一个 operation，会等 resolve dossier 覆盖后再从公开 enum 删除。
 
 ## 为什么用 Clang
 
@@ -284,11 +286,14 @@ ascendc-codemap-mcp status --codemap-id <id>
 
 ## 查询
 
+Query 只读已提交的 `.uo`（`source_line` / 图），不打开工作区文件。不知道 ident 时先 `search`，知道了再 `resolve`。
+
 CLI：
 
 ```bash
 ascendc-codemap-mcp discover --project <算子目录>
 ascendc-codemap-mcp query --codemap-id <id> --symbol IsPse
+ascendc-codemap-mcp query --codemap-id <id> --operation search --name BufferNum
 ascendc-codemap-mcp query --codemap-id <id> --operation find --kind OPERATION --callee SyncAll
 ```
 
@@ -299,16 +304,16 @@ Agent 用 typed 工具。`operation` 是闭集 enum，缺省 `resolve`。`symbol
 | ------------------------- | ---------------------------------------------------------- |
 | 扫目录、拿到 `codemap.id`       | `codemap_discover`                                         |
 | 新鲜度                       | `codemap://map/{codemap_id}`（CLI 仍可用 `status`）            |
-| 图查询（ident / Dim / 集合 / 契约） | `codemap_query`（`operation` + 闭集 filters）                 |
+| 图查询（ident / Dim / 集合）     | `codemap_query`（`operation` + 闭集 filters）                 |
 | 从卡片继续                     | `codemap_evidence`（`evidence_id` + `expected_snapshot_id`） |
 | 构建前检查                     | `codemap_doctor`                                           |
 | 冷构建                       | `codemap_index`                                            |
 | 增量刷新                      | `codemap_update`                                           |
 
 
-`codemap_query` 的 `operation`：`resolve`（缺省，唯一 seed） / `search`（源码行） / `find`（集合，`kind` 或 `name`） / `impact` / `contract` / `entry` / `trace`。Dim 用 `dim` + `value`，不要写 `Dim=` 字符串。兼容别名：`index_operator`、`update_operator`。只读工具带 `readOnlyHint`。查询结果走统一 envelope（`ok`、`codemap`、`verdict`、`layer`、`data`、`evidence`、`coverage`、`next_cursor`）和 `structuredContent`。
+`codemap_query` 的 `operation`：`resolve`（缺省） / `search`（源码行） / `find`（集合） / `trace`（A→B）。`contract` / `impact` / `entry` 仍可用，优先走 resolve。Dim 用 `dim` + `value`，不要写 `Dim=` 字符串。兼容别名：`index_operator`、`update_operator`。只读工具带 `readOnlyHint`。查询结果走统一 envelope（`ok`、`codemap`、`verdict`、`layer`、`data`、`evidence`、`coverage`、`next_cursor`）和 `structuredContent`。
 
-跟 `evidence[].id`（`span:...`）走，并把当时的 `snapshot_id` 当作 `expected_snapshot_id`；对不上是 `SNAPSHOT_CHANGED`。`coverage.truncated` 且带了 `next_cursor` 再翻页；nested neighbor 样本只标 `nested_truncated`，不是假翻页。`count: 0` 不等于「图上没有」，跟 `hint`。
+跟 `evidence[].id`（`span:...`）走，并把当时的 `snapshot_id` 当作 `expected_snapshot_id`；对不上是 `SNAPSHOT_CHANGED`。`coverage.truncated` 且带了 `next_cursor` 再翻页。`count: 0` 不等于「图上没有」，跟 `hint`。
 
 回答所问的层：Host 写出 ≠ 模板可编译 ≠ Kernel 消费。不要把 LLM 补丁写进 `.uo`，不要对产品图跑原始 SQL/Cypher。
 

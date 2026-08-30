@@ -8,10 +8,6 @@ from typing import Any, Iterable
 
 _TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _REGEX_MARKERS_RE = re.compile(r"(\\\||\||\.\*)")
-_PIPE_EMPTY_RE = re.compile(
-    r"(PRE_CORE_POST|三相|\bPIPE\b|\bTPipe\b|Pre/Main/Post|\bPre\b|\bPost\b)",
-    re.I,
-)
 
 
 def identifier_tokens(pattern: str) -> list[str]:
@@ -38,11 +34,6 @@ def is_multi_token(pattern: str) -> bool:
 
 
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
-_FOUR_FORMS_HINT = (
-    "Use one of four forms: (1) no-arg index, (2) one identifier, "
-    "(3) Dim=<dimName> for one coverage list or Name=Value combo filter, "
-    "(4) --file PATH --line N copied from a previous card."
-)
 
 
 def looks_like_nl_or_multi_token(pattern: str) -> bool:
@@ -65,8 +56,8 @@ def nl_or_multi_token_payload(pattern: str) -> dict[str, Any]:
         "pattern": str(pattern or "").strip(),
         "cards": [],
         "count": 0,
-        "hint": "Whole-sentence / multi-token queries are rejected. " + _FOUR_FORMS_HINT,
-        "suggested_retries": tokens[:4],
+        "hint": "Whole-sentence / multi-token queries are rejected. "
+        "Use search name=, resolve symbol=, find kind=, or file+line.",
         "pattern_tokens": tokens,
     }
 
@@ -120,35 +111,17 @@ def attach_query_hints(
     mode: str = "",
 ) -> dict[str, Any]:
     """Annotate empty / regex / multi-token queries. Does not change hit rows."""
+    del kinds
     text = str(pattern or "").strip()
     tokens = identifier_tokens(text)
     regex = looks_like_regex(text)
     multi = is_multi_token(text)
-    kinds_u = {str(k).upper() for k in (kinds or ())}
-    pipe_empty = int(count or 0) == 0 and (
-        "PIPE" in kinds_u
-        or str(mode or "") == "kernel_launch"
-        or bool(_PIPE_EMPTY_RE.search(text))
-    )
-    if pipe_empty:
-        payload["empty_reason"] = payload.get("empty_reason") or "no_substring_match"
-        payload["hint"] = (
-            "Omit the identifier and call acp uo-query --project <operator-abs> "
-            "for the operator index (launch phases). PRE_CORE_POST is not a graph token."
-        )
-        payload["suggested_retries"] = [
-            "TPipe",
-            "InitBuffer",
-            "PopStackBuffer",
-            "InitShareBufStart",
-        ]
-    elif regex:
+    if regex:
         payload.setdefault("empty_reason", "pattern_looks_like_regex")
         payload["hint"] = (
             "Graph search is not regex; query one identifier. "
-            "For template coverage use Dim=<dimName> or Name=Value combo filters."
+            "For template coverage use dim= / value=."
         )
-        payload["suggested_retries"] = tokens[:4]
         payload["pattern_tokens"] = tokens
     elif count == 0 and str(mode or "") == "around":
         if str(payload.get("snippet") or "").strip():
@@ -164,10 +137,9 @@ def attach_query_hints(
     elif count == 0 and multi:
         payload["empty_reason"] = "no_substring_match"
         payload["hint"] = (
-            "Retry one shorter identifier, or Dim=<dimName> / Name=Value for coverage, "
-            "or --file --line from a previous card."
+            "Retry one shorter identifier, or dim=/value= for coverage, "
+            "or file= line= from a previous card."
         )
-        payload["suggested_retries"] = tokens[:4]
         payload["pattern_tokens"] = tokens
     elif count == 0 and str(mode or "") == "index":
         payload["empty_reason"] = payload.get("empty_reason") or "no_substring_match"
@@ -175,12 +147,9 @@ def attach_query_hints(
         payload["empty_reason"] = payload.get("empty_reason") or "no_substring_match"
         dims = payload.get("dim_names") if isinstance(payload.get("dim_names"), list) else []
         payload["hint"] = absent_ident_hint(text, dims)
-        if dims:
-            payload["suggested_retries"] = [str(d) for d in dims[:4]]
-        elif tokens:
-            payload["suggested_retries"] = tokens[:4]
     if indexed is False:
-        extra = "Template coverage prefers Dim=<dimName> or Name=Value (Dim=V); free-text is unindexed."
+        extra = "Template coverage prefers dim= / value=; free-text is unindexed."
         prev = str(payload.get("hint") or "").strip()
         payload["hint"] = f"{prev} {extra}".strip() if prev else extra
+    payload.pop("suggested_retries", None)
     return payload

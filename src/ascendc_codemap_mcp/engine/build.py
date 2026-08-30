@@ -265,6 +265,9 @@ def compile_codemap(
         clear_source_text()
         reset_index_cache()
         reset_file_reads()
+        # Layer 1–2: language frontends / compiler facts (bind existing ids; no rediscovery).
+        # Layer 3: HostIR / KernelIR consumers.
+        # Layer 4: AscendC domains (storage, compile policy, ABI, contracts).
         for name, fn, kwargs in (
             ("inventory", inventory_source_files, {}),
             ("source_contract", enrich_codemap_from_operator_source, {"needs_irs": True}),
@@ -363,6 +366,22 @@ def compile_codemap(
     t0 = time.perf_counter()
     audit = audit_codemap(cm)
     _span("audit", t0)
+    integrity = list(audit.get("integrity_blocking") or [])
+    if commit and integrity:
+        return {
+            "ok": False,
+            "error": "INTEGRITY_GATE",
+            "integrity_blocking": integrity,
+            "summary": dict(audit.get("summary") or {}),
+            "audit": audit,
+            "gaps": list_gaps(cm, audit=audit),
+            "codemap": cm,
+            "_merged_views": merged_views,
+            "tg_views": {
+                "legal_key_count": int(cm.meta.get("legal_key_count") or 0),
+                "view_names": sorted(merged_views),
+            },
+        }
     result: dict[str, Any] = {
         "ok": True,
         "summary": dict(audit["summary"]),

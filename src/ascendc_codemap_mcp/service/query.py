@@ -64,6 +64,19 @@ _PAGE_KEYS = (
 )
 
 
+def _strip_internal_card_ids(payload: dict[str, Any]) -> None:
+    """Agent cards keep human coordinates; graph ids stay in evidence[].id."""
+    for key in ("cards", "hits", "seeds", "sel_sites", "phases", "neighbors"):
+        rows = payload.get(key)
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if isinstance(row, dict):
+                row.pop("id", None)
+                row.pop("_entity_id", None)
+                row.pop("entity_id", None)
+
+
 def _meta(product: Path) -> dict[str, Any]:
     from ascendc_codemap_mcp.engine.store.reader import read_meta
 
@@ -459,6 +472,7 @@ def _run_query(
         ev = evidence_mod.collect(
             payload, op_root=ref.project, snapshot=snapshot
         )
+        _strip_internal_card_ids(payload)
         truncated = bool(coverage.get("truncated"))
         verdict = _infer_verdict(payload, truncated=truncated)
         layer = _infer_layer(payload)

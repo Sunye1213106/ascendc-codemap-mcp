@@ -10,4 +10,10 @@ build/
 .ascendc-codemap/
 _cann/
 .pytest_tmp/
+benchmarks/_*.json
+benchmarks/_*.txt
+benchmarks/*.json
+benchmarks/*.txt
+_eval/
+
 

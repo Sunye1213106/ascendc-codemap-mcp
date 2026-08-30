@@ -50,6 +50,7 @@ class RelationKind(str, Enum):
     # Kernel root-trace graph (UO canonical): wrapper / API → AscendC root.
     WRAPS = "WRAPS"
     ROOTED_AT = "ROOTED_AT"
+    BACKED_BY = "BACKED_BY"
 
     # Source-order facts. PRECEDES is adjacency, not pairing.
     # Flag pair appearance is SIGNALS/AWAITS + UNPAIRED_FLAG_SYNC, not this kind.

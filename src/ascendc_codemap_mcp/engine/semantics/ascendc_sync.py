@@ -260,6 +260,15 @@ def parse_pipe_token(text: str) -> str:
     return tok
 
 
+def compatible_flag_guards(event_a: str, event_b: str) -> bool:
+    """Set(guard=A) / Wait(guard=B): empty matches any; otherwise the event tokens must agree."""
+    a = str(event_a or "").strip()
+    b = str(event_b or "").strip()
+    if not a or not b:
+        return True
+    return a == b
+
+
 def resolve_sync_site(
     callee: str,
     args: list[str] | None = None,

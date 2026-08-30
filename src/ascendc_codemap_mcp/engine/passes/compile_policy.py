@@ -12,9 +12,12 @@ from typing import Any
 
 from ascendc_codemap_mcp.engine.ir.codemap import CodeMap
 from ascendc_codemap_mcp.engine.ir.entity import Entity, EntityKind
+from ascendc_codemap_mcp.engine.ir.identity import bind_or_create
 from ascendc_codemap_mcp.engine.ir.relation import RelationKind
 from ascendc_codemap_mcp.engine.passes.source_text_cache import read_text
 from ascendc_codemap_mcp.engine.source_layout import selected_host_files, selected_kernel_files
+
+_OWNER_RE = re.compile(r"\b(?:struct|class)\s+([A-Za-z_]\w*)")
 
 _USING_RE = re.compile(
     r"\busing\s+(?P<alias>[A-Za-z_]\w*)\s*=\s*(?P<rhs>[^;]+);",
@@ -137,34 +140,56 @@ def _unique(codemap: CodeMap, name: str, kinds: tuple[EntityKind, ...] = _SOURCE
     return None
 
 
-def _upsert_type(codemap: CodeMap, name: str, *, file: str, line: int, arch: str, provenance: str) -> Entity:
+def _lexical_owner(text: str, pos: int) -> str:
+    last = None
+    for match in _OWNER_RE.finditer(text[: max(0, int(pos))]):
+        last = match
+    if last is None:
+        return ""
+    depth = 0
+    for ch in text[last.start() : pos]:
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+    return str(last.group(1) or "") if depth > 0 else ""
+
+
+def _upsert_type(
+    codemap: CodeMap,
+    name: str,
+    *,
+    file: str,
+    line: int,
+    arch: str,
+    provenance: str,
+    owner: str = "",
+) -> Entity:
     leaf = _base_ident(name) or str(name or "").split("::")[-1]
-    return codemap.upsert(
+    return bind_or_create(
+        codemap,
         EntityKind.TYPE,
         leaf,
-        eid=f"SRCPOL::{file}::{leaf}",
-        attrs={"provenance": provenance, "architecture": arch, "policy_alias": True},
         file=file,
         line=line,
+        owner=owner,
+        architecture=arch,
+        attrs={"provenance": provenance, "architecture": arch, "policy_alias": True},
         status="confirmed",
     )
 
 
 def _link_buffers(codemap: CodeMap, alias: Entity, names: set[str], *, file: str, line: int) -> None:
-    needles = {n.lower() for n in names if n}
+    needles = {n for n in names if n}
+    alias_names = {str(alias.name or ""), _base_ident(alias.name)}
+    needles.update(n for n in alias_names if n)
     if not needles:
         return
     for kind in (EntityKind.BUFFER, EntityKind.QUEUE):
         for buf in codemap.by_kind(kind):
-            blob = " ".join(
-                [
-                    str(buf.name or ""),
-                    str(buf.attrs.get("type_name") or ""),
-                    " ".join(str(x) for x in (buf.attrs.get("trace") or [])),
-                    str(buf.attrs.get("root") or ""),
-                ]
-            ).lower()
-            if not any(n in blob for n in needles):
+            type_name = str(buf.attrs.get("type_name") or "")
+            type_leaf = type_name.replace(".", "::").split("::")[-1]
+            if type_name not in needles and type_leaf not in needles:
                 continue
             codemap.mint_candidate_relation(
                 RelationKind.BINDS,
@@ -200,8 +225,15 @@ def enrich_compile_policy(
             if not alias_name or not rhs:
                 continue
             line = text.count("\n", 0, match.start()) + 1
+            owner = _lexical_owner(text, match.start())
             alias = _upsert_type(
-                codemap, alias_name, file=file, line=line, arch=arch, provenance="source_compile_policy"
+                codemap,
+                alias_name,
+                file=file,
+                line=line,
+                arch=arch,
+                provenance="source_compile_policy",
+                owner=owner,
             )
             parts = _conditional_parts(rhs)
             names: set[str] = {alias_name}

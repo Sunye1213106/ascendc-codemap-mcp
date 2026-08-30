@@ -362,24 +362,32 @@ def test_check_macros_omitted_from_flow_and_impact() -> None:
 
 
 def test_clip_source_is_contiguous_for_line_end(tmp_path: Path) -> None:
+    import sqlite3
+
+    from tests.conftest import write_uo_fixture
+    from tests.test_query_surface import _add_source_lines
+    from ascendc_codemap_mcp.engine.query.sql import UoSqlQuery
     from ascendc_codemap_mcp.engine.query.explore import _clip_source
 
-    src = tmp_path / "tiling.cpp"
-    src.write_text(
-        "\n".join(
-            [
-                "// comment 1933",
-                "SetScheduleMode(Q);",
-                "SetScheduleMode(K);",
-                "SetScheduleMode(V);",
-                "int unused = 0;",
-                "return;",
-                "// end 1939",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    clip = _clip_source(tmp_path, str(src), 1, line_end=7)
+    op = tmp_path / "toy_op"
+    op.mkdir()
+    dest = write_uo_fixture(op)
+    rows = [
+        ("tiling.cpp", 1, "// comment 1933"),
+        ("tiling.cpp", 2, "SetScheduleMode(Q);"),
+        ("tiling.cpp", 3, "SetScheduleMode(K);"),
+        ("tiling.cpp", 4, "SetScheduleMode(V);"),
+        ("tiling.cpp", 5, "int unused = 0;"),
+        ("tiling.cpp", 6, "return;"),
+        ("tiling.cpp", 7, "// end 1939"),
+    ]
+    conn = sqlite3.connect(str(dest))
+    try:
+        _add_source_lines(conn, rows)
+        conn.commit()
+    finally:
+        conn.close()
+    clip = _clip_source(UoSqlQuery(dest), "tiling.cpp", 1, line_end=7)
     assert "1:" in clip
     assert "2:" in clip
     assert "7:" in clip

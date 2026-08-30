@@ -14,29 +14,19 @@ from ascendc_codemap_mcp.install.opencode import home as opencode_home
 
 _AGENTS_BODY = """# AscendC CodeMap MCP
 
-Use MCP server `ascendc-codemap-mcp`. Identity: `codemap_discover` then `codemap.id` (`p:<workspace>::op@arch`), or pass project+architecture on `codemap_query`. Missing → `codemap_doctor` / `codemap_index`. Stale/dirty → `codemap_update`.
+Use MCP server `ascendc-codemap-mcp`. Identity: `codemap_discover` then `codemap.id`, or project+architecture on `codemap_query`. Missing → `codemap_doctor` / `codemap_index`. Stale/dirty → `codemap_update`.
 
-```text
-代码语义（谁写谁读 / 为什么走这条路 / 改了影响谁）  → 一次 codemap_query
-已知文件 + 精确源码细节（卡片没列出的行）          → targeted Read
-```
+Unknown symbol → `codemap_query operation=search name=`. Known ident → `operation=resolve symbol=`. All sites → `find`. A→B path → `trace`.
 
-不知道确切 ident：先 `codemap_query operation=search name=<短语>` 扫源码行；`find name=` 只匹配 entity.name，0 就是 0，不会扩成 Buffer 家族。再 `resolve` / `contract` 其中真名。`resolve` 已有 `symbol=` 时多余的 `name=` 会被忽略。`dim=` 的 `legal_key_count` 是编进包的 key 数。
-
-CLI fallback (same engine): `ascendc-codemap-mcp query --codemap-id ID --symbol <ident>`.
-Returned Definition spans are usable evidence. If neighboring lines are absent, use codemap_evidence or targeted Read. Empty resolve lists **Dims**. UNKNOWN means the ident is absent on this operator — use those Dims. AMBIGUOUS is multiple definition bodies — pick one. **References** are file:line; expand with codemap_evidence. Kernel API Definition is the bottom layer. Do not call overview first. INVALID_QUERY prints `did you mean:` ready-made calls — resend one verbatim.
+Query reads the `.uo` snapshot only. Architecture: see the package `docs/ARCHITECTURE.md`.
 """
 
 
 def bundled_root() -> Path:
     here = Path(__file__).resolve()
-    candidates = (
-        here.parents[1] / "skills",
-        here.parents[3] / "skills",
-    )
-    for root in candidates:
-        if (root / "index-operator" / "SKILL.md").is_file():
-            return root
+    root = here.parents[1] / "skills"
+    if (root / "index-operator" / "SKILL.md").is_file():
+        return root
     raise FileNotFoundError("bundled AscendC CodeMap skills are missing")
 
 

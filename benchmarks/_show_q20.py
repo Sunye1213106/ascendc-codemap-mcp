@@ -60,8 +60,8 @@ def show_q(qid, q):
 
 
 def main():
-    a = json.loads(Path(r"d:\TEST\ascendc-codemap-mcp\_run_q20.json").read_text(encoding="utf-8"))
-    b_path = Path(r"d:\TEST\ascendc-codemap-mcp\_run_q20_b.json")
+    a = json.loads(Path(r"d:\TEST\ascendc-codemap-mcp\benchmarks\_run_q20.json").read_text(encoding="utf-8"))
+    b_path = Path(r"d:\TEST\ascendc-codemap-mcp\benchmarks\_run_q20_b.json")
     b = json.loads(b_path.read_text(encoding="utf-8")) if b_path.exists() else {}
     for qid in ["Q1", "Q2", "Q3", "Q4", "Q5"]:
         show_q(qid, a[qid])
