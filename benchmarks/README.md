@@ -7,3 +7,4 @@ Q20 and related drivers live here. They are not MCP tools.
 - Legacy `_run_q20*.py` probes still run against a rebuilt `.uo`.
 - Result JSON/txt is gitignored.
 - Metrics: zero-hit rate, searches-to-first-useful-locator (Q-class ≤2), evidence calls (must stay 0).
+- Resolve goldens: `resolve(file,1673)` anchors `SetSplitAxis`; `resolve(isBn2MultiBlk)` / `resolve(hasRope)` must show Assignments or Compiled from product facts, not source guesses.

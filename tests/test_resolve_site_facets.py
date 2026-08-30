@@ -11,6 +11,189 @@ from ascendc_codemap_mcp.service.query import query
 from tests.conftest import write_uo_fixture
 from tests.test_query_surface import _add_source_lines, _insert_entity, _insert_rel
 
+_HOST = "op_host/arch35/common_regbase.cpp"
+
+
+def _split_axis_fixture(op: Path) -> None:
+    dest = write_uo_fixture(op)
+    src = [
+        (_HOST, 10, "bool SetSparseParams(FuzzyBaseInfoParamsRegbase &fBaseParams)"),
+        (_HOST, 11, "{"),
+        * [(_HOST, n, f"    // sparse body {n}") for n in range(12, 29)],
+        (_HOST, 29, "    return false;"),
+        (_HOST, 30, "}"),
+        (_HOST, 32, "void SetSplitAxis(const gert::TilingContext *context_)"),
+        (_HOST, 33, "{"),
+        (_HOST, 34, "    bool hasRope = fBaseParams.hasRope;"),
+        * [(_HOST, n, f"    // split body {n}") for n in range(35, 44)],
+        (
+            _HOST,
+            45,
+            "    fBaseParams.isBn2MultiBlk = bnSparseLimit && !hasRope;",
+        ),
+        * [(_HOST, n, f"    // split mid {n}") for n in range(46, 49)],
+        (_HOST, 50, "    if (dropMaskOuter) { fBaseParams.isBn2MultiBlk = false; }"),
+        * [(_HOST, n, f"    // split tail {n}") for n in range(51, 59)],
+        (_HOST, 59, "}"),
+    ]
+    conn = sqlite3.connect(str(dest))
+    try:
+        _add_source_lines(conn, src)
+        _insert_entity(
+            conn,
+            eid="fn_sparse",
+            kind="FUNCTION",
+            name="SetSparseParams",
+            file=_HOST,
+            line=10,
+            line_end=30,
+        )
+        _insert_entity(
+            conn,
+            eid="fn_split",
+            kind="FUNCTION",
+            name="SetSplitAxis",
+            file=_HOST,
+            line=32,
+            line_end=59,
+        )
+        _insert_entity(
+            conn,
+            eid="fld_bn2",
+            kind="TILING_FIELD",
+            name="isBn2MultiBlk",
+            file=_HOST,
+            line=45,
+        )
+        _insert_entity(
+            conn,
+            eid="fld_rope",
+            kind="FIELD",
+            name="hasRope",
+            file=_HOST,
+            line=34,
+        )
+        _insert_rel(
+            conn,
+            rid="w_cand",
+            kind="WRITES",
+            src="fn_split",
+            dst="fld_bn2",
+            file=_HOST,
+            line=45,
+        )
+        conn.execute(
+            "UPDATE relation SET status='confirmed', data=? WHERE id='w_cand'",
+            (
+                json.dumps(
+                    {
+                        "file": _HOST,
+                        "line": 45,
+                        "rhs": "bnSparseLimit && !hasRope",
+                    }
+                ),
+            ),
+        )
+        _insert_rel(
+            conn,
+            rid="w_drop",
+            kind="WRITES",
+            src="fn_split",
+            dst="fld_bn2",
+            file=_HOST,
+            line=50,
+        )
+        conn.execute(
+            "UPDATE relation SET status='confirmed', data=? WHERE id='w_drop'",
+            (
+                json.dumps(
+                    {
+                        "file": _HOST,
+                        "line": 50,
+                        "rhs": "false",
+                    }
+                ),
+            ),
+        )
+        _insert_entity(
+            conn,
+            eid="br_drop",
+            kind="BRANCH",
+            name="dropMaskOuter",
+            file=_HOST,
+            line=50,
+        )
+        _insert_rel(
+            conn,
+            rid="g_drop",
+            kind="GUARDED_BY",
+            src="w_drop",
+            dst="br_drop",
+            file=_HOST,
+            line=50,
+        )
+        conn.execute("UPDATE relation SET status='confirmed' WHERE id='g_drop'")
+        _insert_rel(
+            conn,
+            rid="c_rope",
+            kind="CONTROLS",
+            src="fld_rope",
+            dst="fn_split",
+            file=_HOST,
+            line=34,
+        )
+        conn.execute("UPDATE relation SET status='confirmed' WHERE id='c_rope'")
+        conn.commit()
+    finally:
+        conn.close()
+    status(project=str(op), architecture="arch35")
+
+
+def test_resolve_file_line_returns_enclosing_function(tmp_path: Path) -> None:
+    op = tmp_path / "toy_op"
+    op.mkdir()
+    _split_axis_fixture(op)
+    payload = query(
+        project=str(op),
+        architecture="arch35",
+        operation="resolve",
+        file=_HOST,
+        line=45,
+    )
+    text = str((payload.get("data") or {}).get("text") or "")
+    assert "SetSplitAxis" in text
+    assert f"{_HOST}:32-59" in text or f"{_HOST}:32–59" in text
+    assert "32|" in text
+    assert "59|" in text
+    assert "45|" in text
+    assert "50|" in text
+    assert "SetSparseParams" not in text.split("Source", 1)[0]
+    assert "State changes" in text
+    assert "isBn2MultiBlk" in text
+    assert "1673" not in text
+    assert "bnSparseLimit" in text
+    assert "false" in text
+    assert "dropMaskOuter" in text
+
+
+def test_resolve_file_line_stays_in_enclosing_function(tmp_path: Path) -> None:
+    op = tmp_path / "toy_op"
+    op.mkdir()
+    _split_axis_fixture(op)
+    payload = query(
+        project=str(op),
+        architecture="arch35",
+        operation="resolve",
+        file=_HOST,
+        line=20,
+    )
+    text = str((payload.get("data") or {}).get("text") or "")
+    assert "SetSparseParams" in text
+    assert "10|" in text
+    assert "30|" in text
+    assert "void SetSplitAxis" not in text
+    assert text.count("SetSplitAxis") == 0
+
 
 def test_resolve_file_line_lists_site_entities(tmp_path: Path) -> None:
     op = tmp_path / "toy_op"

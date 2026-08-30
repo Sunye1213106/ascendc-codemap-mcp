@@ -53,6 +53,8 @@ SNIPPET_BEFORE = 3
 MACRO_CONT_MAX = 80
 STATEMENT_BEFORE = 8
 STATEMENT_AFTER = 8
+SITE_UNIT_SOFT = 120
+SITE_UNIT_HARD = 240
 _STMT_EXPAND_KINDS = {
     EntityKind.COMPILE_VAR.value,
     EntityKind.MACRO.value,
@@ -110,6 +112,12 @@ _PROTECTED_PAYLOAD_KEYS = frozenset(
         "unresolved_reasons",
         "windows",
         "text",
+        "state_changes",
+        "unit_start",
+        "unit_end",
+        "resolve_mode",
+        "assignments",
+        "host_kernel",
     }
 )
 PACKING_RHS_TRIM = 400
@@ -551,6 +559,76 @@ def _encloses_line(hit: dict[str, Any], line: int) -> bool:
         return False
     loc = int(line or 0)
     return start <= loc <= end
+
+
+_SITE_UNIT_SOFT = 120
+_SITE_UNIT_HARD = 240
+
+
+def _is_noise_name_sql(name: str) -> bool:
+    from ascendc_codemap_mcp.engine.query.explore import _is_noise_name
+
+    return _is_noise_name(name)
+
+
+def _file_same(left: str, right: str) -> bool:
+    a = _norm_file(str(left or "")).replace("\\", "/")
+    b = _norm_file(str(right or "")).replace("\\", "/")
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    return a.endswith("/" + b) or b.endswith("/" + a) or a.rsplit("/", 1)[-1] == b.rsplit("/", 1)[-1]
+
+
+def _smallest_compound_span(
+    rows: list[tuple[int, str]], center: int, *, cap: int
+) -> tuple[int, int] | None:
+    """Innermost brace block that contains `center`, capped at `cap` lines."""
+    if not rows:
+        return None
+    indexed = {int(ln): str(txt or "") for ln, txt in rows}
+    numbers = sorted(indexed)
+    if not numbers:
+        return None
+    if center not in indexed:
+        center = min(numbers, key=lambda n: abs(n - center))
+    depth = 0
+    start = numbers[0]
+    for n in reversed([x for x in numbers if x <= center]):
+        for ch in reversed(indexed[n]):
+            if ch == "}":
+                depth += 1
+            elif ch == "{":
+                if depth == 0:
+                    start = n
+                    depth = -1
+                    break
+                depth -= 1
+        if depth < 0:
+            break
+    depth = 0
+    end = numbers[-1]
+    started = False
+    for n in [x for x in numbers if x >= start]:
+        for ch in indexed[n]:
+            if ch == "{":
+                depth += 1
+                started = True
+            elif ch == "}":
+                depth = max(0, depth - 1)
+                if started and depth == 0:
+                    end = n
+                    break
+        if started and depth == 0 and end >= start:
+            break
+    if end < start:
+        return None
+    if end - start + 1 > cap:
+        lo = max(start, center - cap // 2)
+        hi = min(end, lo + cap - 1)
+        return lo, hi
+    return start, end
 
 
 def _edge_evidence_rank(
@@ -5746,7 +5824,11 @@ class UoSqlQuery:
         path = str(file or "").strip()
         line_n = int(line or 0)
         if path and line_n:
-            payload = self.query_around(path, line_n, line_end=int(line_end or line_n), limit=limit)
+            span = int(line_end or line_n)
+            if span > line_n:
+                payload = self.query_around(path, line_n, line_end=span, limit=limit)
+            else:
+                payload = self.query_site_unit(path, line_n, limit=limit)
             from ascendc_codemap_mcp.engine.query.explore import attach_explore_fields
 
             return _fit_payload(attach_explore_fields(self, payload, pattern=f"{path}:{line_n}"))
@@ -6896,6 +6978,8 @@ class UoSqlQuery:
                         continue
                     other_id = str(_row_get(row, "other_id") or "")
                     other_name = str(_row_get(row, "other_name") or "")
+                    if _is_noise_name_sql(other_name):
+                        continue
                     key = (rel, other_kind, other_name)
                     if key in seen:
                         continue
@@ -6914,6 +6998,237 @@ class UoSqlQuery:
         for rows in per_kind.values():
             out.extend(rows)
         return out
+
+    def _enclosing_def(
+        self, file: str, line: int
+    ) -> dict[str, Any] | None:
+        needle = _strip_dot_slash(str(file or "").replace("\\", "/"))
+        loc = int(line or 0)
+        if not needle or loc <= 0:
+            return None
+        leaf = needle.rsplit("/", 1)[-1]
+        kinds = tuple(_ENCLOSE_KINDS)
+        ph = ",".join("?" for _ in kinds)
+        sql = f"""
+            SELECT e.id, e.kind, e.name, e.file, e.line_start, e.line_end
+            FROM entity e
+            WHERE e.kind IN ({ph})
+              AND IFNULL(e.line_start, 0) > 0
+              AND IFNULL(e.line_end, 0) >= e.line_start
+              AND ? BETWEEN e.line_start AND e.line_end
+              AND (
+                    REPLACE(REPLACE(IFNULL(e.file, ''), '\\', '/'), '\\', '/') = ?
+                 OR REPLACE(REPLACE(IFNULL(e.file, ''), '\\', '/'), '\\', '/') LIKE '%' || ?
+              )
+            ORDER BY (e.line_end - e.line_start) ASC, e.name
+            LIMIT 8
+        """
+        with self._connect() as conn:
+            rows = conn.execute(sql, (*kinds, loc, needle, leaf)).fetchall()
+        hits: list[dict[str, Any]] = []
+        for row in rows:
+            path = _norm_file(str(_row_get(row, "e.file") or _row_get(row, "file") or ""))
+            if path and not _file_same(path, needle):
+                continue
+            hits.append(
+                {
+                    "id": str(_row_get(row, "e.id") or _row_get(row, "id") or ""),
+                    "kind": str(_row_get(row, "e.kind") or _row_get(row, "kind") or ""),
+                    "name": str(_row_get(row, "e.name") or _row_get(row, "name") or ""),
+                    "file": path or needle,
+                    "line": int(_row_get(row, "e.line_start") or _row_get(row, "line_start") or 0),
+                    "line_start": int(
+                        _row_get(row, "e.line_start") or _row_get(row, "line_start") or 0
+                    ),
+                    "line_end": int(
+                        _row_get(row, "e.line_end") or _row_get(row, "line_end") or 0
+                    ),
+                }
+            )
+        return hits[0] if hits else None
+
+    def _state_changes_in_span(
+        self,
+        file: str,
+        start: int,
+        end: int,
+        *,
+        highlight: str = "",
+    ) -> list[dict[str, Any]]:
+        lo, hi = int(start or 0), int(end or 0)
+        if lo <= 0 or hi < lo:
+            return []
+        want = _last_ident(str(highlight or "").replace(".", "::")).lower()
+        writes: list[dict[str, Any]] = []
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT r.id, r.kind, r.src, r.dst, r.data, r.status,
+                       dst.name AS dst_name, dst.kind AS dst_kind,
+                       src.name AS src_name
+                FROM relation r
+                JOIN entity dst ON dst.id = r.dst
+                LEFT JOIN entity src ON src.id = r.src
+                WHERE r.kind IN ('WRITES', 'DERIVES')
+                  AND LOWER(IFNULL(r.status, '')) IN ('confirmed', 'extracted', 'verified')
+                """
+            ).fetchall()
+            guards = conn.execute(
+                """
+                SELECT r.src, r.data, e.name AS guard_name, e.line_start
+                FROM relation r
+                JOIN entity e ON e.id = r.dst
+                WHERE r.kind = 'GUARDED_BY'
+                  AND LOWER(IFNULL(r.status, '')) IN ('confirmed', 'extracted', 'verified')
+                """
+            ).fetchall()
+        by_rel: dict[str, list[str]] = {}
+        by_line: dict[int, list[str]] = {}
+        for row in guards:
+            name = str(_row_get(row, "guard_name") or "").strip()
+            if not name or _is_noise_name_sql(name):
+                continue
+            data = _parse_data(_row_get(row, "r.data") or _row_get(row, "data"))
+            src = str(_row_get(row, "r.src") or _row_get(row, "src") or "")
+            gl = int(data.get("line") or _row_get(row, "line_start") or 0)
+            if src:
+                by_rel.setdefault(src, []).append(name)
+            if gl:
+                by_line.setdefault(gl, []).append(name)
+        for row in rows:
+            data = _parse_data(_row_get(row, "r.data") or _row_get(row, "data"))
+            path = str(data.get("file") or "")
+            line = int(data.get("line") or data.get("line_start") or 0)
+            if line < lo or line > hi:
+                continue
+            if path and not _file_same(path, file):
+                continue
+            name = str(_row_get(row, "dst_name") or "")
+            if not name or _is_noise_name_sql(name):
+                continue
+            if want and _last_ident(name).lower() != want:
+                continue
+            rid = str(_row_get(row, "r.id") or _row_get(row, "id") or "")
+            when = ""
+            for cand in by_rel.get(rid, []) + by_line.get(line, []):
+                if cand and cand not in when:
+                    when = cand if not when else when
+                    break
+            writes.append(
+                {
+                    "name": name,
+                    "line": line,
+                    "rhs": str(data.get("rhs") or data.get("expression") or "").strip(),
+                    "when": when,
+                    "writer": str(_row_get(row, "src_name") or ""),
+                }
+            )
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        order: list[str] = []
+        seen: set[tuple[str, int, str]] = set()
+        for item in writes:
+            key = (item["name"], int(item["line"]), str(item.get("rhs") or ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            if item["name"] not in grouped:
+                grouped[item["name"]] = []
+                order.append(item["name"])
+            grouped[item["name"]].append(item)
+        return [{"name": name, "sites": grouped[name]} for name in order]
+
+    def query_site_unit(
+        self,
+        file: str,
+        line: int,
+        *,
+        highlight: str = "",
+        limit: int = 8,
+    ) -> dict[str, Any]:
+        """Source-centric resolve(file,line): enclosing function or smallest compound."""
+        path = str(file or "").strip()
+        loc = int(line or 0)
+        if not path or loc <= 0:
+            return {
+                "ok": False,
+                "shape": "around",
+                "resolve_mode": "site",
+                "error": "around_needs_file_line",
+                "hint": "Pass file and line from a previous card.",
+            }
+        enclosing = self._enclosing_def(path, loc)
+        unit_start = int((enclosing or {}).get("line_start") or loc)
+        unit_end = int((enclosing or {}).get("line_end") or loc)
+        with self._connect() as conn:
+            rows = _source_line_rows(conn, path, unit_start, unit_end)
+            if not rows:
+                window = _source_line_window(conn, path, loc)
+                rows = [
+                    (int(no), txt)
+                    for no, txt in (
+                        (part.partition(":")[0], part.partition(":")[2])
+                        for part in str(window).splitlines()
+                        if ":" in part[:8]
+                    )
+                    if str(no).isdigit()
+                ]
+        if enclosing and rows and (unit_end - unit_start + 1) > _SITE_UNIT_SOFT:
+            compound = _smallest_compound_span(rows, loc, cap=_SITE_UNIT_SOFT)
+            if compound:
+                unit_start, unit_end = compound
+                rows = [(n, t) for n, t in rows if unit_start <= n <= unit_end]
+        if not enclosing and rows:
+            compound = _smallest_compound_span(rows, loc, cap=_SITE_UNIT_HARD)
+            if compound:
+                unit_start, unit_end = compound
+                rows = [(n, t) for n, t in rows if unit_start <= n <= unit_end]
+        if rows and (unit_end - unit_start + 1) > _SITE_UNIT_HARD:
+            lo = max(unit_start, loc - _SITE_UNIT_HARD // 2)
+            hi = min(unit_end, lo + _SITE_UNIT_HARD - 1)
+            unit_start, unit_end = lo, hi
+            rows = [(n, t) for n, t in rows if lo <= n <= hi]
+        snippet = "\n".join(f"{ln}:{txt}" for ln, txt in rows)
+        if not snippet:
+            with self._connect() as conn:
+                snippet = _source_line_window(conn, path, loc)
+        seeds = self._around_seed_hits(path, loc, loc, limit=max(1, int(limit)))
+        site_hits = [
+            hit
+            for hit in seeds
+            if int(hit.get("line") or hit.get("line_start") or 0) == loc
+        ]
+        compact = [_compact_around_hit(hit, snippet=False) for hit in (site_hits or seeds[:1])]
+        enc = enclosing or (compact[0] if compact else {})
+        state = self._state_changes_in_span(
+            path, unit_start, unit_end, highlight=str(highlight or "")
+        )
+        payload = {
+            "ok": bool(snippet or enc),
+            "shape": "around",
+            "resolve_mode": "site",
+            "file": path,
+            "line": loc,
+            "unit_start": unit_start,
+            "unit_end": unit_end,
+            "snippet": snippet,
+            "seeds": compact,
+            "cards": compact,
+            "enclosing": {
+                "id": enc.get("id"),
+                "name": enc.get("name"),
+                "kind": enc.get("kind") or "FUNCTION",
+                "file": _norm_file(str(enc.get("file") or path)),
+                "line": int(enc.get("line") or enc.get("line_start") or unit_start),
+                "line_start": unit_start,
+                "line_end": unit_end,
+            },
+            "state_changes": state,
+            "hits": compact,
+            "count": len(compact),
+            "truncated": False,
+        }
+        attach_query_hints(payload, path, count=int(payload.get("count") or 0), mode="around")
+        return _fit_payload(payload)
 
     def query_around(
         self,
@@ -7316,13 +7631,246 @@ class UoSqlQuery:
         cards = [{"file": p, "line": ln, "text": tx} for p, ln, tx in page]
         return cards, total
 
+    def _field_ids_named(self, ident: str) -> list[str]:
+        leaf = _last_ident(str(ident or "").replace(".", "::"))
+        if not leaf:
+            return []
+        kinds = (
+            EntityKind.TILING_FIELD.value,
+            EntityKind.FIELD.value,
+            EntityKind.TILING_KEY.value,
+            EntityKind.COMPILE_VAR.value,
+        )
+        ph = ",".join("?" for _ in kinds)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT e.id, e.name FROM entity e
+                WHERE e.kind IN ({ph})
+                  AND (
+                        e.name = ? COLLATE NOCASE
+                     OR e.name LIKE '%::' || ? COLLATE NOCASE
+                  )
+                LIMIT 16
+                """,
+                (*kinds, leaf, leaf),
+            ).fetchall()
+        return [str(r[0]) for r in rows if r[0]]
+
+    def assignments_for(self, ident: str) -> dict[str, Any] | None:
+        fids = self._field_ids_named(ident)
+        if not fids:
+            return None
+        ph = ",".join("?" for _ in fids)
+        sites: list[dict[str, Any]] = []
+        unresolved = 0
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT r.id, r.src, r.data, src.name, src.file, src.line_start, src.kind
+                FROM relation r
+                LEFT JOIN entity src ON src.id = r.src
+                WHERE r.dst IN ({ph})
+                  AND r.kind IN ('WRITES', 'DERIVES')
+                  AND LOWER(IFNULL(r.status, '')) IN ('confirmed', 'extracted', 'verified')
+                """,
+                fids,
+            ).fetchall()
+            guards = conn.execute(
+                """
+                SELECT r.src, r.data, e.name, e.line_start
+                FROM relation r
+                JOIN entity e ON e.id = r.dst
+                WHERE r.kind = 'GUARDED_BY'
+                  AND LOWER(IFNULL(r.status, '')) IN ('confirmed', 'extracted', 'verified')
+                """
+            ).fetchall()
+        by_rel: dict[str, str] = {}
+        by_line: dict[int, str] = {}
+        for row in guards:
+            gname = str(_row_get(row, "e.name") or _row_get(row, "name") or "")
+            if not gname or _is_noise_name_sql(gname):
+                continue
+            data = _parse_data(_row_get(row, "r.data") or _row_get(row, "data"))
+            src = str(_row_get(row, "r.src") or _row_get(row, "src") or "")
+            gl = int(data.get("line") or _row_get(row, "line_start") or 0)
+            if src:
+                by_rel[src] = gname
+            if gl:
+                by_line[gl] = gname
+        seen: set[tuple[str, int, str]] = set()
+        for row in rows:
+            data = _parse_data(_row_get(row, "r.data") or _row_get(row, "data"))
+            writer = str(_row_get(row, "src.name") or _row_get(row, "name") or "")
+            line = int(data.get("line") or _row_get(row, "src.line_start") or _row_get(row, "line_start") or 0)
+            file = str(data.get("file") or _row_get(row, "src.file") or _row_get(row, "file") or "")
+            rhs = str(data.get("rhs") or data.get("expression") or "").strip()
+            rid = str(_row_get(row, "r.id") or _row_get(row, "id") or "")
+            if not writer or _is_noise_name_sql(writer):
+                if not line:
+                    unresolved += 1
+                continue
+            key = (writer, line, rhs)
+            if key in seen:
+                continue
+            seen.add(key)
+            if not file or line <= 0:
+                unresolved += 1
+            sites.append(
+                {
+                    "writer": writer,
+                    "file": _norm_file(file),
+                    "line": line,
+                    "rhs": rhs,
+                    "when": by_rel.get(rid) or by_line.get(line) or "",
+                }
+            )
+        if not sites and not unresolved:
+            return None
+        groups: dict[str, list[dict[str, Any]]] = {}
+        order: list[str] = []
+        for site in sites:
+            writer = str(site["writer"])
+            if writer not in groups:
+                groups[writer] = []
+                order.append(writer)
+            groups[writer].append(site)
+        consumed = self._consumed_by_names(fids)
+        confirmed = len(sites)
+        return {
+            "confirmed": confirmed,
+            "unresolved": unresolved,
+            "exhaustive": unresolved == 0,
+            "total": confirmed + unresolved,
+            "groups": [{"writer": w, "sites": groups[w]} for w in order],
+            "consumed_by": consumed,
+        }
+
+    def _consumed_by_names(self, field_ids: list[str]) -> list[str]:
+        if not field_ids:
+            return []
+        ph = ",".join("?" for _ in field_ids)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT src.name
+                FROM relation r
+                JOIN entity src ON src.id = r.src
+                WHERE r.dst IN ({ph})
+                  AND r.kind IN ('READS', 'CALLS', 'BINDS')
+                  AND LOWER(IFNULL(r.status, '')) IN ('confirmed', 'extracted', 'verified')
+                """,
+                field_ids,
+            ).fetchall()
+        names: list[str] = []
+        seen: set[str] = set()
+        for row in rows:
+            name = str(row[0] or "")
+            if not name or _is_noise_name_sql(name) or name in seen:
+                continue
+            seen.add(name)
+            names.append(name)
+        return names
+
+    def host_kernel_for(self, ident: str) -> dict[str, Any] | None:
+        fids = self._field_ids_named(ident)
+        if not fids:
+            return None
+        ph = ",".join("?" for _ in fids)
+        producers: list[dict[str, Any]] = []
+        consumers: list[dict[str, Any]] = []
+        transport: list[str] = []
+        unresolved_p = 0
+        unresolved_c = 0
+        with self._connect() as conn:
+            writes = conn.execute(
+                f"""
+                SELECT src.name, src.file, src.line_start
+                FROM relation r
+                JOIN entity src ON src.id = r.src
+                WHERE r.dst IN ({ph})
+                  AND r.kind IN ('WRITES', 'DERIVES')
+                  AND LOWER(IFNULL(r.status, '')) IN ('confirmed', 'extracted', 'verified')
+                """,
+                fids,
+            ).fetchall()
+            reads = conn.execute(
+                f"""
+                SELECT src.name, src.file, src.line_start, src.kind
+                FROM relation r
+                JOIN entity src ON src.id = r.src
+                WHERE r.dst IN ({ph})
+                  AND r.kind IN ('READS', 'CALLS_UNDER_GUARD')
+                  AND LOWER(IFNULL(r.status, '')) IN ('confirmed', 'extracted', 'verified')
+                """,
+                fids,
+            ).fetchall()
+            binds = conn.execute(
+                f"""
+                SELECT e.name
+                FROM relation r
+                JOIN entity e ON e.id = CASE WHEN r.src IN ({ph}) THEN r.dst ELSE r.src END
+                WHERE (r.src IN ({ph}) OR r.dst IN ({ph}))
+                  AND r.kind IN ('BINDS', 'MATERIALIZES_AS')
+                  AND LOWER(IFNULL(r.status, '')) IN ('confirmed', 'extracted', 'verified')
+                """,
+                (*fids, *fids, *fids),
+            ).fetchall()
+        seen_p: set[str] = set()
+        seen_c: set[str] = set()
+        for row in writes:
+            name = str(row[0] or "")
+            file = str(row[1] or "")
+            if not name or _is_noise_name_sql(name) or name in seen_p:
+                continue
+            blob = file.replace("\\", "/")
+            if "/op_kernel/" in blob or blob.startswith("op_kernel/"):
+                continue
+            seen_p.add(name)
+            if not file:
+                unresolved_p += 1
+            producers.append({"name": name, "file": _norm_file(file), "line": int(row[2] or 0)})
+        for row in reads:
+            name = str(row[0] or "")
+            file = str(row[1] or "")
+            if not name or _is_noise_name_sql(name) or name in seen_c:
+                continue
+            blob = file.replace("\\", "/")
+            if not ("/op_kernel/" in blob or blob.startswith("op_kernel/")):
+                continue
+            seen_c.add(name)
+            if not file:
+                unresolved_c += 1
+            consumers.append({"name": name, "file": _norm_file(file), "line": int(row[2] or 0)})
+        seen_t: set[str] = set()
+        for row in binds:
+            name = str(row[0] or "")
+            if not name or _is_noise_name_sql(name) or name in seen_t:
+                continue
+            seen_t.add(name)
+            transport.append(name)
+        if not producers and not consumers and not transport:
+            return None
+        return {
+            "producers": producers,
+            "consumers": consumers,
+            "transport": transport,
+            "coverage": {
+                "producers_confirmed": len(producers),
+                "producers_unresolved": unresolved_p,
+                "consumers_confirmed": len(consumers),
+                "consumers_unresolved": unresolved_c,
+                "exhaustive": unresolved_p == 0 and unresolved_c == 0,
+            },
+        }
+
     def attach_card_facets(self, payload: dict[str, Any]) -> dict[str, Any]:
         cards = [c for c in (payload.get("cards") or []) if isinstance(c, dict)]
         enclosing = payload.get("enclosing")
         if isinstance(enclosing, dict):
             cards = [*cards, enclosing]
         for card in cards:
-            eid = str(card.get("id") or "")
+            eid = str(card.get("id") or card.get("_entity_id") or "")
             if not eid:
                 continue
             facets = card.get("facets") if isinstance(card.get("facets"), dict) else {}
@@ -7340,6 +7888,37 @@ class UoSqlQuery:
                 facets["used_by"] = used
             if facets:
                 card["facets"] = facets
+        seed = ""
+        for key in ("pattern",):
+            seed = str(payload.get(key) or "").strip()
+            if seed:
+                break
+        if not seed:
+            primary = cards[0] if cards else {}
+            seed = str(primary.get("name") or "")
+        if ":" in seed and any(ch.isdigit() for ch in seed):
+            seed = str((cards[0] if cards else {}).get("name") or "")
+        if seed:
+            assignments = self.assignments_for(seed)
+            if assignments:
+                payload["assignments"] = assignments
+                primary = cards[0] if cards else None
+                if isinstance(primary, dict):
+                    facets = primary.get("facets") if isinstance(primary.get("facets"), dict) else {}
+                    facets["assignments"] = assignments
+                    primary["facets"] = facets
+            hk = self.host_kernel_for(seed)
+            if hk:
+                payload["host_kernel"] = hk
+                primary = cards[0] if cards else None
+                if isinstance(primary, dict):
+                    facets = primary.get("facets") if isinstance(primary.get("facets"), dict) else {}
+                    facets["host_kernel"] = hk
+                    primary["facets"] = facets
+            if not payload.get("compiled_support"):
+                support = self.compiled_support_for(seed)
+                if support:
+                    payload["compiled_support"] = support
         return payload
 
     def _confirmed_neighbors(
@@ -7407,12 +7986,14 @@ class UoSqlQuery:
         for rkind, _ekind, name, _file, _line, _edata, _rdata in self._confirmed_neighbors(
             entity_id, ("CONTROLS", "MATERIALIZES_AS")
         ):
-            if not name:
+            if not name or _is_noise_name_sql(name):
                 continue
             if rkind == "CONTROLS":
-                controls.append(name)
+                if name not in controls:
+                    controls.append(name)
             elif rkind == "MATERIALIZES_AS":
-                materializes.append(name)
+                if name not in materializes:
+                    materializes.append(name)
         if not controls and not materializes:
             return None
         return {"controls": controls, "materializes_as": materializes}
@@ -7446,6 +8027,8 @@ class UoSqlQuery:
             "resolved": total - unresolved,
             "total": total,
             "unresolved": unresolved,
+            "confirmed": total - unresolved,
+            "exhaustive": unresolved == 0,
             "flows": counts,
         }
 
@@ -7455,6 +8038,8 @@ class UoSqlQuery:
             entity_id, ("CALLS", "READS", "FLOWS_TO")
         ):
             if rkind not in {"CALLS", "READS", "FLOWS_TO"} or not name:
+                continue
+            if _is_noise_name_sql(name):
                 continue
             counts[name] = counts.get(name, 0) + 1
         return counts or None

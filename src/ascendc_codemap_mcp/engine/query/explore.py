@@ -627,9 +627,43 @@ def _loc_only(row: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def sanitize_agent_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """One sanitizer for resolve / evidence / around: dedup, noise, no triple source."""
+    out = dict(payload)
+    snippet = str(out.get("snippet") or "")
+    if snippet:
+        for key in ("seeds", "hits", "cards"):
+            rows = out.get(key)
+            if not isinstance(rows, list):
+                continue
+            cleaned = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                item = dict(row)
+                item.pop("snippet", None)
+                cleaned.append(item)
+            out[key] = cleaned
+    used = out.get("used_at")
+    if isinstance(used, list):
+        out["used_at"] = [
+            row
+            for row in used
+            if isinstance(row, dict) and not _is_noise_name(str(row.get("name") or ""))
+        ]
+    neighbors = out.get("neighbors")
+    if isinstance(neighbors, list):
+        out["neighbors"] = [
+            row
+            for row in neighbors
+            if isinstance(row, dict) and not _is_noise_name(str(row.get("name") or ""))
+        ]
+    return out
+
+
 def slim_explore_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """One copy of each fact. Snippets live in markdown, not in JSON."""
-    out = dict(payload)
+    out = sanitize_agent_payload(payload)
     out.pop("proof", None)
     contract = out.get("contract")
     if isinstance(contract, dict):
@@ -1011,8 +1045,86 @@ def _render_find_markdown(payload: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _render_proof(confirmed: int, unresolved: int, exhaustive: Any, *, total: int | None = None) -> str:
+    shown = total if total is not None else confirmed + unresolved
+    flag = "yes" if exhaustive else "no"
+    if unresolved:
+        return f"{confirmed}/{shown} · unresolved {unresolved} · exhaustive={flag}"
+    return f"{confirmed}/{shown} · exhaustive={flag}"
+
+
+def _render_assignments(facet: dict[str, Any]) -> list[str]:
+    groups = [g for g in (facet.get("groups") or []) if isinstance(g, dict)]
+    if not groups:
+        return []
+    confirmed = int(facet.get("confirmed") or 0)
+    unresolved = int(facet.get("unresolved") or 0)
+    total = int(facet.get("total") or (confirmed + unresolved))
+    lines = [
+        "Assignments "
+        + _render_proof(confirmed, unresolved, facet.get("exhaustive"), total=total)
+    ]
+    for group in groups:
+        writer = str(group.get("writer") or "")
+        if writer:
+            lines.append(f"  {writer}")
+        for site in group.get("sites") or []:
+            if not isinstance(site, dict):
+                continue
+            line = int(site.get("line") or 0)
+            rhs = str(site.get("rhs") or "").strip()
+            when = str(site.get("when") or "").strip()
+            bit = f"    {line}" if line else "    ?"
+            if rhs:
+                bit += f" = {rhs}"
+            if when:
+                bit += f"   when {when}"
+            lines.append(bit)
+    consumed = [str(n) for n in (facet.get("consumed_by") or []) if n]
+    if consumed:
+        lines.append("Consumed by")
+        lines.append("  " + "  ".join(consumed[:8]))
+    lines.append("")
+    return lines
+
+
+def _render_host_kernel(facet: dict[str, Any]) -> list[str]:
+    producers = [r for r in (facet.get("producers") or []) if isinstance(r, dict)]
+    consumers = [r for r in (facet.get("consumers") or []) if isinstance(r, dict)]
+    transport = [str(n) for n in (facet.get("transport") or []) if n]
+    if not producers and not consumers and not transport:
+        return []
+    cov = facet.get("coverage") if isinstance(facet.get("coverage"), dict) else {}
+    lines: list[str] = []
+    if producers:
+        lines.append("Host producers")
+        for row in producers[:8]:
+            lines.append(f"  {row.get('name') or ''}".rstrip())
+    if transport:
+        lines.append("Transport")
+        for name in transport[:6]:
+            lines.append(f"  {name}")
+    if consumers:
+        lines.append("Kernel consumers")
+        for row in consumers[:8]:
+            lines.append(f"  {row.get('name') or ''}".rstrip())
+    pc = int(cov.get("producers_confirmed") or len(producers))
+    pu = int(cov.get("producers_unresolved") or 0)
+    cc = int(cov.get("consumers_confirmed") or len(consumers))
+    cu = int(cov.get("consumers_unresolved") or 0)
+    exhaustive = cov.get("exhaustive")
+    lines.append("Coverage")
+    lines.append(f"  producers: {pc}/{pc + pu}")
+    lines.append(f"  consumers: {cc}/{cc + cu}")
+    lines.append(f"  exhaustive: {'true' if exhaustive else 'false'}")
+    lines.append("")
+    return lines
+
+
 def _render_facets(facets: dict[str, Any], *, projection: str = "summary") -> list[str]:
     lines: list[str] = []
+    lines.extend(_render_assignments(facets.get("assignments") if isinstance(facets.get("assignments"), dict) else {}))
+    lines.extend(_render_host_kernel(facets.get("host_kernel") if isinstance(facets.get("host_kernel"), dict) else {}))
     storage = facets.get("storage") if isinstance(facets.get("storage"), dict) else None
     if storage:
         lines.append("Storage")
@@ -1046,6 +1158,8 @@ def _render_facets(facets: dict[str, Any], *, projection: str = "summary") -> li
         unresolved = int(memory.get("unresolved") or 0)
         if unresolved:
             lines.append(f"{unresolved} unresolved endpoints")
+        if memory.get("exhaustive") is not None:
+            lines.append(f"exhaustive={'yes' if memory.get('exhaustive') else 'no'}")
         lines.append("")
     used = facets.get("used_by") if isinstance(facets.get("used_by"), dict) else None
     if used:
@@ -1061,42 +1175,79 @@ def _render_facets(facets: dict[str, Any], *, projection: str = "summary") -> li
     return lines
 
 
+def _render_state_changes(changes: Any) -> list[str]:
+    rows = [c for c in (changes or []) if isinstance(c, dict) and c.get("name")]
+    if not rows:
+        return []
+    lines = ["State changes"]
+    for group in rows:
+        name = str(group.get("name") or "")
+        lines.append(f"  {name}")
+        sites = [s for s in (group.get("sites") or []) if isinstance(s, dict)]
+        for site in sites:
+            line = int(site.get("line") or 0)
+            rhs = str(site.get("rhs") or "").strip()
+            when = str(site.get("when") or "").strip()
+            bit = f"    {line}" if line else "    ?"
+            if rhs:
+                bit += f" ← {rhs}"
+            if when:
+                bit += f" [{when}]"
+            lines.append(bit)
+    lines.append("")
+    return lines
+
+
 def _render_site_markdown(payload: dict[str, Any], *, projection: str) -> list[str]:
     file = str(payload.get("file") or "")
     line = int(payload.get("line") or 0)
     snippet = str(payload.get("snippet") or "")
+    enclosing = payload.get("enclosing") if isinstance(payload.get("enclosing"), dict) else {}
+    unit_start = int(payload.get("unit_start") or enclosing.get("line_start") or line or 0)
+    unit_end = int(payload.get("unit_end") or enclosing.get("line_end") or line or 0)
+    ident = str(enclosing.get("name") or "")
     lines: list[str] = []
-    if file and line:
+    if ident:
+        lines.append(ident)
+    if file and unit_start and unit_end and unit_end != unit_start:
+        lines.append(f"{file}:{unit_start}-{unit_end}")
+    elif file and line:
         lines.append(f"{file}:{line}")
+    if lines:
         lines.append("")
     if snippet:
         lines.append("Source")
         for no, text in _snippet_rows(snippet, line):
             lines.append(f"{no}|  {text}")
         lines.append("")
+    lines.extend(_render_state_changes(payload.get("state_changes")))
     site_rows = [c for c in (payload.get("cards") or payload.get("seeds") or []) if isinstance(c, dict)]
-    if site_rows:
+    extras: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    ident_leaf = _last_ident(ident).lower()
+    for row in site_rows:
+        kind = str(row.get("kind") or "")
+        name = str(row.get("name") or "")
+        key = (kind, name)
+        if key in seen or not (kind or name):
+            continue
+        if ident_leaf and _last_ident(name).lower() == ident_leaf:
+            continue
+        seen.add(key)
+        extras.append(row)
+    if extras:
         lines.append("At this site")
-        seen: set[tuple[str, str]] = set()
-        for row in site_rows:
-            kind = str(row.get("kind") or "")
-            name = str(row.get("name") or "")
-            key = (kind, name)
-            if key in seen or not (kind or name):
-                continue
-            seen.add(key)
-            lines.append(f"  {kind} {name}".rstrip())
+        for row in extras:
+            lines.append(f"  {row.get('kind') or ''} {row.get('name') or ''}".rstrip())
         lines.append("")
-    enclosing = payload.get("enclosing") if isinstance(payload.get("enclosing"), dict) else {}
-    if enclosing.get("name"):
-        lines.append("Context")
-        lines.append(
-            f"  enclosing {enclosing.get('kind') or 'FUNCTION'} {enclosing.get('name')}"
-        )
-        lines.append("")
-    for row in [*site_rows, enclosing]:
-        facets = row.get("facets") if isinstance(row.get("facets"), dict) else {}
-        lines.extend(_render_facets(facets, projection=projection))
+    facet_src = enclosing if enclosing.get("facets") else {}
+    if not facet_src.get("facets"):
+        for row in (*extras, enclosing, *site_rows):
+            if isinstance(row, dict) and isinstance(row.get("facets"), dict) and row["facets"]:
+                facet_src = row
+                break
+    facets = facet_src.get("facets") if isinstance(facet_src.get("facets"), dict) else {}
+    lines.extend(_render_facets(facets, projection=projection))
     return lines
 
 
@@ -1146,15 +1297,25 @@ def _render_resolve_markdown(payload: dict[str, Any], *, projection: str) -> lis
     support = payload.get("compiled_support")
     if not isinstance(support, dict):
         support = (primary.get("facets") or {}).get("compiled_support") if isinstance(primary.get("facets"), dict) else None
+    assignments = payload.get("assignments") if isinstance(payload.get("assignments"), dict) else None
+    if not assignments:
+        assignments = (primary.get("facets") or {}).get("assignments") if isinstance(primary.get("facets"), dict) else None
+    host_kernel = payload.get("host_kernel") if isinstance(payload.get("host_kernel"), dict) else None
+    if not host_kernel:
+        host_kernel = (primary.get("facets") or {}).get("host_kernel") if isinstance(primary.get("facets"), dict) else None
+    if isinstance(assignments, dict):
+        lines.extend(_render_assignments(assignments))
+    if isinstance(host_kernel, dict):
+        lines.extend(_render_host_kernel(host_kernel))
     host_from_compiled = bool(
         isinstance(support, dict) and support.get("host_encoding")
     )
-    if writers and not host_from_compiled:
+    if writers and not host_from_compiled and not host_kernel:
         lines.append("Host")
         for row in _dedup_rows([r for r in writers if isinstance(r, dict)])[:3]:
             lines.append(_loc(row))
         lines.append("")
-    if readers:
+    if readers and not host_kernel:
         lines.append("Kernel")
         for row in _dedup_rows([r for r in readers if isinstance(r, dict)])[:3]:
             lines.append(_loc(row))
@@ -1163,7 +1324,9 @@ def _render_resolve_markdown(payload: dict[str, Any], *, projection: str) -> lis
     used = [
         row
         for row in used
-        if not _is_unrelated_type_neighbor(seed_name, row) and not _is_tpl_machinery(str(row.get("name") or ""))
+        if not _is_unrelated_type_neighbor(seed_name, row)
+        and not _is_tpl_machinery(str(row.get("name") or ""))
+        and not _is_noise_name(str(row.get("name") or ""))
     ]
     if used:
         lines.append("**References**")
@@ -1193,6 +1356,9 @@ def _render_resolve_markdown(payload: dict[str, Any], *, projection: str) -> lis
             bits.append(f"variants={variants}")
         if dim:
             bits.append(f"dim={dim}")
+        checked = support.get("checked") or support.get("legal_key_count") or variants
+        if checked not in (None, ""):
+            bits.append(f"{checked} legal keys checked")
         lines.append("- " + " · ".join(bits))
         values = support.get("values") if isinstance(support.get("values"), dict) else {}
         if values:
@@ -1228,7 +1394,9 @@ def _render_resolve_markdown(payload: dict[str, Any], *, projection: str) -> lis
         lines.append("**Dims**")
         lines.append("- " + ", ".join(dim_names))
         lines.append("")
-    facets = primary.get("facets") if isinstance(primary.get("facets"), dict) else {}
+    facets = dict(primary.get("facets") or {}) if isinstance(primary.get("facets"), dict) else {}
+    facets.pop("assignments", None)
+    facets.pop("host_kernel", None)
     lines.extend(_render_facets(facets, projection=projection))
     hint = str(payload.get("hint") or "")
     if hint:

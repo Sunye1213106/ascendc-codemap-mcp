@@ -375,3 +375,34 @@ def test_cli_query_passes_symbol(monkeypatch) -> None:
     with redirect_stdout(io.StringIO()):
         assert main(["query", "--codemap-id", "p:1::Op@arch35", "--symbol", "IsDrop"]) == 0
     assert seen["symbol"] == "IsDrop"
+
+
+def test_query_operator_prompt_has_no_stale_protocol() -> None:
+    from ascendc_codemap_mcp.mcp_adapter import query_operator
+
+    text = query_operator(codemap_id="p:1::Op@arch35")
+    assert "find needs kind" not in text
+    assert "completeness=COMPLETE" not in text
+    assert "resolve" in text
+    assert "search" in text
+
+
+def test_query_schema_documents_search_file_filter() -> None:
+    from ascendc_codemap_mcp.mcp_adapter import create_server
+
+    tool = _find_tool(create_server(), "codemap_query")
+    schema = getattr(tool, "parameters", None) or getattr(tool, "input_schema", None) or {}
+    props = schema.get("properties") or {}
+    file_prop = props.get("file") or {}
+    desc = str(file_prop.get("description") or "") + " " + str(getattr(tool, "description", "") or "")
+    assert "glob" in desc.lower() or "path filter" in desc.lower() or "filter" in desc.lower()
+
+
+def test_evidence_description_is_debug_only() -> None:
+    from ascendc_codemap_mcp.mcp_adapter import create_server, DEFAULT_MCP_TOOLS
+
+    assert "codemap_evidence" in DEFAULT_MCP_TOOLS
+    tool = _find_tool(create_server(), "codemap_evidence")
+    desc = str(getattr(tool, "description", "") or "")
+    assert "debug" in desc.lower() or "explicit" in desc.lower()
+    assert "resolve" in desc.lower()

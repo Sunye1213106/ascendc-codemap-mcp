@@ -255,7 +255,7 @@ def codemap_query(
     to_symbol: str = "",
     expected_snapshot_id: str = "",
 ) -> CallToolResult:
-    """search ≈ regex over the indexed source snapshot. resolve ≈ read + semantic context. Identity is codemap_id or project+architecture."""
+    """search ≈ regex over the indexed source snapshot. file: optional glob/path filter for search. resolve ≈ read + semantic context. Identity is codemap_id or project+architecture."""
     return _query_result(
         query_impl(
             operation=operation,
@@ -289,7 +289,7 @@ def codemap_evidence(
     cursor: str = "",
     expected_snapshot_id: str = "",
 ) -> Envelope:
-    """Resolve a prior evidence handle (span:... / entity id) or a file+line copied from a card. Prefer evidence_id. Pass expected_snapshot_id from evidence[].snapshot_id."""
+    """Debug/explicit evidence expansion only. Do not use to read ordinary source; use resolve(file,line). Prefer evidence_id. Pass expected_snapshot_id from evidence[].snapshot_id."""
     return _envelope(
         evidence_impl(
             codemap_id=codemap_id,
@@ -418,9 +418,9 @@ def query_operator(codemap_id: str, focus: str = "") -> str:
     return (
         f"Query AscendC CodeMap `{codemap_id}` with MCP tools on server {SERVER_NAME}."
         f"{extra}\n"
-        "Use codemap_query with operation=resolve and a symbol, or file+line. "
-        "find needs kind. The returned source is already Read — do not open those files again. "
-        "completeness=COMPLETE is the only finished answer."
+        "Unknown name → search. Known symbol or file+line → resolve. "
+        "search file= is an optional glob/path filter. "
+        "The returned source is already Read — do not open those files again."
     )
 
 

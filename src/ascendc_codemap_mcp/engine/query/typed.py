@@ -607,6 +607,9 @@ def execute(query: Any, plan: QueryPlan) -> dict[str, Any]:
 
 def _resolve_seed(query: Any, plan: QueryPlan) -> dict[str, Any]:
     if plan.file and plan.line > 0:
+        site = getattr(query, "query_site_unit", None)
+        if callable(site):
+            return site(plan.file, plan.line, highlight=str(plan.symbol or ""), limit=plan.limit)
         return query.query_around(
             plan.file, plan.line, line_end=int(plan.line_end or plan.line), limit=plan.limit
         )

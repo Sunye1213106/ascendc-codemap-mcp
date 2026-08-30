@@ -12,15 +12,18 @@ Known or file:line → resolve
 Query reads snapshot only
 
 search works like regex search over the indexed source snapshot.
-Add kind= to search semantic entities.
+file= is an optional glob/path filter for search.
+kind= is optional.
 
 search → file:line → resolve(file,line)
 known symbol → resolve(symbol)
 
-resolve returns source plus CodeMap semantic context.
+resolve returns the enclosing source unit plus CodeMap semantic context
+(Assignments, Host→Kernel, Compiled legal keys). Do not use evidence to read ordinary source.
 
 ```text
 ascendc-codemap-mcp query --codemap-id ID --operation search --name L1
+ascendc-codemap-mcp query --codemap-id ID --operation search --name isBn2 --file op_host/**
 ascendc-codemap-mcp query --codemap-id ID --symbol IsRope
 ascendc-codemap-mcp query --codemap-id ID --file op_kernel/k.h --line 10
 ```

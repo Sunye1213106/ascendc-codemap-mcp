@@ -82,3 +82,31 @@ def test_review20_searches_to_first_useful_locator() -> None:
     assert over_budget <= 4, f"too many >2 search Review-20 items: {rows}"
     hit_rate = sum(1 for r in rows if r["hit"]) / len(rows)
     assert hit_rate >= 0.7
+
+
+def _resolve(**kwargs) -> str:
+    payload = query(project=str(FAG), architecture="arch35", operation="resolve", **kwargs)
+    return str((payload.get("data") or {}).get("text") or "")
+
+
+@pytest.mark.skipif(not FAG_UO.is_file(), reason="FAG arch35 .uo missing")
+def test_review20_resolve_file_line_anchors_set_split_axis() -> None:
+    status(project=str(FAG), architecture="arch35")
+    text = _resolve(
+        file="op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp",
+        line=1673,
+    )
+    assert "SetSplitAxis" in text
+    assert "1673|" in text or "isBn2MultiBlk" in text
+    assert "CheckLogLevel" not in text.split("Used by", 1)[-1] if "Used by" in text else True
+    assert text.count("Used by") <= 1
+
+
+@pytest.mark.skipif(not FAG_UO.is_file(), reason="FAG arch35 .uo missing")
+def test_review20_resolve_assignments_and_compiled() -> None:
+    status(project=str(FAG), architecture="arch35")
+    assigns = _resolve(symbol="isBn2MultiBlk")
+    assert "Assignments" in assigns or "SetSplitAxis" in assigns
+    compiled = _resolve(symbol="hasRope")
+    assert "Compiled" in compiled
+    assert "legal" in compiled.lower()
