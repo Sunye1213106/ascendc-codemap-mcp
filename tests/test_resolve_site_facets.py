@@ -174,6 +174,8 @@ def test_resolve_file_line_returns_enclosing_function(tmp_path: Path) -> None:
     assert "bnSparseLimit" in text
     assert "false" in text
     assert "dropMaskOuter" in text
+    assert "Controls" not in text
+    assert "Used by" not in text
 
 
 def test_resolve_file_line_stays_in_enclosing_function(tmp_path: Path) -> None:
@@ -403,6 +405,8 @@ def test_memory_facet_reports_coverage(tmp_path: Path) -> None:
     assert "2/3 transfers resolved" in text
     assert "GM → UB" in text
     assert "1 unresolved endpoints" in text
+    assert "exhaustive=no" in text
+    assert "exhaustive=yes" not in text
 
 
 def test_used_by_aggregates_callees(tmp_path: Path) -> None:

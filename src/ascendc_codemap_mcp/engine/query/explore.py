@@ -1205,14 +1205,20 @@ def _render_site_markdown(payload: dict[str, Any], *, projection: str) -> list[s
     enclosing = payload.get("enclosing") if isinstance(payload.get("enclosing"), dict) else {}
     unit_start = int(payload.get("unit_start") or enclosing.get("line_start") or line or 0)
     unit_end = int(payload.get("unit_end") or enclosing.get("line_end") or line or 0)
+    fn_start = int(payload.get("function_start") or enclosing.get("line_start") or 0)
+    fn_end = int(payload.get("function_end") or enclosing.get("line_end") or 0)
     ident = str(enclosing.get("name") or "")
     lines: list[str] = []
     if ident:
         lines.append(ident)
-    if file and unit_start and unit_end and unit_end != unit_start:
-        lines.append(f"{file}:{unit_start}-{unit_end}")
+    identity_start = fn_start or unit_start
+    identity_end = fn_end or unit_end
+    if file and identity_start and identity_end and identity_end != identity_start:
+        lines.append(f"{file}:{identity_start}-{identity_end}")
     elif file and line:
         lines.append(f"{file}:{line}")
+    if fn_start and fn_end and (unit_start != fn_start or unit_end != fn_end):
+        lines.append(f"Showing {unit_start}-{unit_end}")
     if lines:
         lines.append("")
     if snippet:
@@ -1240,14 +1246,9 @@ def _render_site_markdown(payload: dict[str, Any], *, projection: str) -> list[s
         for row in extras:
             lines.append(f"  {row.get('kind') or ''} {row.get('name') or ''}".rstrip())
         lines.append("")
-    facet_src = enclosing if enclosing.get("facets") else {}
-    if not facet_src.get("facets"):
-        for row in (*extras, enclosing, *site_rows):
-            if isinstance(row, dict) and isinstance(row.get("facets"), dict) and row["facets"]:
-                facet_src = row
-                break
-    facets = facet_src.get("facets") if isinstance(facet_src.get("facets"), dict) else {}
-    lines.extend(_render_facets(facets, projection=projection))
+    hint = str(payload.get("hint") or "").strip()
+    if hint:
+        lines.append(hint)
     return lines
 
 

@@ -18,8 +18,9 @@ kind= is optional.
 search → file:line → resolve(file,line)
 known symbol → resolve(symbol)
 
-resolve returns the enclosing source unit plus CodeMap semantic context
-(Assignments, Host→Kernel, Compiled legal keys). Do not use evidence to read ordinary source.
+resolve(file,line) returns the enclosing function (same span for any line
+inside a function of 240 lines or fewer). resolve(symbol) adds Assignments,
+Host→Kernel, Compiled legal keys. Do not use evidence to read ordinary source.
 
 ```text
 ascendc-codemap-mcp query --codemap-id ID --operation search --name L1

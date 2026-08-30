@@ -156,7 +156,8 @@ def test_resolve_symbol_lists_assignments(tmp_path: Path) -> None:
     text = str((payload.get("data") or {}).get("text") or "")
     assert "Assignments" in text
     assert "3/3" in text
-    assert "exhaustive" in text.lower()
+    assert "exhaustive=no" in text
+    assert "exhaustive=yes" not in text
     assert "SetSplitAxis" in text
     assert "45" in text
     assert "bnSparseLimit" in text
@@ -268,7 +269,8 @@ def test_resolve_symbol_host_kernel_coverage(tmp_path: Path) -> None:
     assert "Kernel consumers" in text
     assert "CalDeterMaxLoopNum" in text
     assert "producers" in text.lower()
-    assert "exhaustive" in text.lower()
+    assert "exhaustive: false" in text
+    assert "exhaustive: true" not in text
 
 
 def test_resolve_symbol_compiled_from_legal_keys(tmp_path: Path) -> None:

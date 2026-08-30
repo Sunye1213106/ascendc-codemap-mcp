@@ -53,8 +53,8 @@ SNIPPET_BEFORE = 3
 MACRO_CONT_MAX = 80
 STATEMENT_BEFORE = 8
 STATEMENT_AFTER = 8
-SITE_UNIT_SOFT = 120
 SITE_UNIT_HARD = 240
+NO_ENCLOSE_RADIUS = 120
 _STMT_EXPAND_KINDS = {
     EntityKind.COMPILE_VAR.value,
     EntityKind.MACRO.value,
@@ -115,6 +115,8 @@ _PROTECTED_PAYLOAD_KEYS = frozenset(
         "state_changes",
         "unit_start",
         "unit_end",
+        "function_start",
+        "function_end",
         "resolve_mode",
         "assignments",
         "host_kernel",
@@ -561,8 +563,8 @@ def _encloses_line(hit: dict[str, Any], line: int) -> bool:
     return start <= loc <= end
 
 
-_SITE_UNIT_SOFT = 120
 _SITE_UNIT_HARD = 240
+_NO_ENCLOSE_RADIUS = 120
 
 
 def _is_noise_name_sql(name: str) -> bool:
@@ -7047,6 +7049,44 @@ class UoSqlQuery:
             )
         return hits[0] if hits else None
 
+    def _covering_source_span(
+        self, file: str, line: int
+    ) -> tuple[int, int, str] | None:
+        needle = _strip_dot_slash(str(file or "").replace("\\", "/"))
+        loc = int(line or 0)
+        if not needle or loc <= 0:
+            return None
+        leaf = needle.rsplit("/", 1)[-1]
+        with self._connect() as conn:
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT file, line_start, line_end, snippet
+                    FROM source_span
+                    WHERE IFNULL(line_start, 0) > 0
+                      AND IFNULL(line_end, 0) >= line_start
+                      AND ? BETWEEN line_start AND line_end
+                      AND (
+                            REPLACE(REPLACE(IFNULL(file, ''), '\\', '/'), '\\', '/') = ?
+                         OR REPLACE(REPLACE(IFNULL(file, ''), '\\', '/'), '\\', '/') LIKE '%' || ?
+                      )
+                    ORDER BY (line_end - line_start) ASC
+                    LIMIT 8
+                    """,
+                    (loc, needle, leaf),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return None
+        for row in rows:
+            path = _norm_file(str(_row_get(row, "file") or ""))
+            if path and not _file_same(path, needle):
+                continue
+            start = int(_row_get(row, "line_start") or 0)
+            end = int(_row_get(row, "line_end") or 0)
+            if start > 0 and end >= start:
+                return start, end, str(_row_get(row, "snippet") or "")
+        return None
+
     def _state_changes_in_span(
         self,
         file: str,
@@ -7083,18 +7123,13 @@ class UoSqlQuery:
                 """
             ).fetchall()
         by_rel: dict[str, list[str]] = {}
-        by_line: dict[int, list[str]] = {}
         for row in guards:
             name = str(_row_get(row, "guard_name") or "").strip()
             if not name or _is_noise_name_sql(name):
                 continue
-            data = _parse_data(_row_get(row, "r.data") or _row_get(row, "data"))
             src = str(_row_get(row, "r.src") or _row_get(row, "src") or "")
-            gl = int(data.get("line") or _row_get(row, "line_start") or 0)
             if src:
                 by_rel.setdefault(src, []).append(name)
-            if gl:
-                by_line.setdefault(gl, []).append(name)
         for row in rows:
             data = _parse_data(_row_get(row, "r.data") or _row_get(row, "data"))
             path = str(data.get("file") or "")
@@ -7110,9 +7145,9 @@ class UoSqlQuery:
                 continue
             rid = str(_row_get(row, "r.id") or _row_get(row, "id") or "")
             when = ""
-            for cand in by_rel.get(rid, []) + by_line.get(line, []):
-                if cand and cand not in when:
-                    when = cand if not when else when
+            for cand in by_rel.get(rid, []):
+                if cand:
+                    when = cand
                     break
             writes.append(
                 {
@@ -7145,7 +7180,7 @@ class UoSqlQuery:
         highlight: str = "",
         limit: int = 8,
     ) -> dict[str, Any]:
-        """Source-centric resolve(file,line): enclosing function or smallest compound."""
+        """Source-centric resolve(file,line): stable enclosing function or local window."""
         path = str(file or "").strip()
         loc = int(line or 0)
         if not path or loc <= 0:
@@ -7157,40 +7192,47 @@ class UoSqlQuery:
                 "hint": "Pass file and line from a previous card.",
             }
         enclosing = self._enclosing_def(path, loc)
-        unit_start = int((enclosing or {}).get("line_start") or loc)
-        unit_end = int((enclosing or {}).get("line_end") or loc)
-        with self._connect() as conn:
-            rows = _source_line_rows(conn, path, unit_start, unit_end)
-            if not rows:
-                window = _source_line_window(conn, path, loc)
-                rows = [
-                    (int(no), txt)
-                    for no, txt in (
-                        (part.partition(":")[0], part.partition(":")[2])
-                        for part in str(window).splitlines()
-                        if ":" in part[:8]
-                    )
-                    if str(no).isdigit()
-                ]
-        if enclosing and rows and (unit_end - unit_start + 1) > _SITE_UNIT_SOFT:
-            compound = _smallest_compound_span(rows, loc, cap=_SITE_UNIT_SOFT)
-            if compound:
-                unit_start, unit_end = compound
-                rows = [(n, t) for n, t in rows if unit_start <= n <= unit_end]
-        if not enclosing and rows:
-            compound = _smallest_compound_span(rows, loc, cap=_SITE_UNIT_HARD)
-            if compound:
-                unit_start, unit_end = compound
-                rows = [(n, t) for n, t in rows if unit_start <= n <= unit_end]
-        if rows and (unit_end - unit_start + 1) > _SITE_UNIT_HARD:
-            lo = max(unit_start, loc - _SITE_UNIT_HARD // 2)
-            hi = min(unit_end, lo + _SITE_UNIT_HARD - 1)
-            unit_start, unit_end = lo, hi
-            rows = [(n, t) for n, t in rows if lo <= n <= hi]
-        snippet = "\n".join(f"{ln}:{txt}" for ln, txt in rows)
-        if not snippet:
+        fn_start = int((enclosing or {}).get("line_start") or 0)
+        fn_end = int((enclosing or {}).get("line_end") or 0)
+        missing_snapshot = False
+        if enclosing and fn_start > 0 and fn_end >= fn_start:
+            fn_len = fn_end - fn_start + 1
+            if fn_len <= _SITE_UNIT_HARD:
+                unit_start, unit_end = fn_start, fn_end
+            else:
+                tile_idx = max(0, (loc - fn_start) // _SITE_UNIT_HARD)
+                unit_start = fn_start + tile_idx * _SITE_UNIT_HARD
+                unit_end = min(fn_end, unit_start + _SITE_UNIT_HARD - 1)
             with self._connect() as conn:
-                snippet = _source_line_window(conn, path, loc)
+                rows = _source_line_rows(conn, path, unit_start, unit_end)
+        else:
+            covered = self._covering_source_span(path, loc)
+            span_snippet = ""
+            if covered:
+                unit_start, unit_end, span_snippet = covered
+            else:
+                unit_start = max(1, loc - _NO_ENCLOSE_RADIUS)
+                unit_end = loc + _NO_ENCLOSE_RADIUS
+            with self._connect() as conn:
+                rows = _source_line_rows(conn, path, unit_start, unit_end)
+            if not rows:
+                if covered:
+                    if span_snippet:
+                        rows = [(unit_start, span_snippet)]
+                else:
+                    missing_snapshot = True
+                    unit_start, unit_end = loc, loc
+            else:
+                compound = _smallest_compound_span(rows, loc, cap=_SITE_UNIT_HARD)
+                if compound:
+                    unit_start, unit_end = compound
+                    rows = [(n, t) for n, t in rows if unit_start <= n <= unit_end]
+                if rows and (unit_end - unit_start + 1) > _SITE_UNIT_HARD:
+                    lo = max(unit_start, loc - _SITE_UNIT_HARD // 2)
+                    hi = min(unit_end, lo + _SITE_UNIT_HARD - 1)
+                    unit_start, unit_end = lo, hi
+                    rows = [(n, t) for n, t in rows if lo <= n <= hi]
+        snippet = "\n".join(f"{ln}:{txt}" for ln, txt in rows) if rows else ""
         seeds = self._around_seed_hits(path, loc, loc, limit=max(1, int(limit)))
         site_hits = [
             hit
@@ -7199,17 +7241,25 @@ class UoSqlQuery:
         ]
         compact = [_compact_around_hit(hit, snippet=False) for hit in (site_hits or seeds[:1])]
         enc = enclosing or (compact[0] if compact else {})
-        state = self._state_changes_in_span(
-            path, unit_start, unit_end, highlight=str(highlight or "")
+        state = (
+            []
+            if missing_snapshot
+            else self._state_changes_in_span(
+                path, unit_start, unit_end, highlight=str(highlight or "")
+            )
         )
+        identity_start = fn_start or unit_start
+        identity_end = fn_end or unit_end
         payload = {
-            "ok": bool(snippet or enc),
+            "ok": bool(snippet or enc) and not missing_snapshot,
             "shape": "around",
             "resolve_mode": "site",
             "file": path,
             "line": loc,
             "unit_start": unit_start,
             "unit_end": unit_end,
+            "function_start": fn_start,
+            "function_end": fn_end,
             "snippet": snippet,
             "seeds": compact,
             "cards": compact,
@@ -7218,16 +7268,23 @@ class UoSqlQuery:
                 "name": enc.get("name"),
                 "kind": enc.get("kind") or "FUNCTION",
                 "file": _norm_file(str(enc.get("file") or path)),
-                "line": int(enc.get("line") or enc.get("line_start") or unit_start),
-                "line_start": unit_start,
-                "line_end": unit_end,
+                "line": int(enc.get("line") or enc.get("line_start") or identity_start),
+                "line_start": identity_start,
+                "line_end": identity_end,
             },
             "state_changes": state,
             "hits": compact,
             "count": len(compact),
             "truncated": False,
         }
-        attach_query_hints(payload, path, count=int(payload.get("count") or 0), mode="around")
+        if missing_snapshot:
+            payload["hint"] = (
+                "this file is not in snapshot; resolve a search locator "
+                "or Read the workspace file"
+            )
+            payload["error"] = "not_in_snapshot"
+        else:
+            attach_query_hints(payload, path, count=int(payload.get("count") or 0), mode="around")
         return _fit_payload(payload)
 
     def query_around(
@@ -7596,7 +7653,7 @@ class UoSqlQuery:
             is_pure_literal,
             line_matches,
             path_matches,
-            rank_path,
+            rank_hit,
         )
         from ascendc_codemap_mcp.engine.store.accel import has_source_fts, has_source_line
 
@@ -7625,7 +7682,7 @@ class UoSqlQuery:
             if not line_matches(cre, str(text or "")):
                 continue
             matched.append((str(path or ""), int(line or 0), str(text or "").rstrip()))
-        matched.sort(key=lambda r: (*rank_path(r[0], arch)[:2], r[1]))
+        matched.sort(key=lambda r: rank_hit(r[0], r[1], r[2], phrase, arch))
         total = len(matched)
         page = matched[start : start + cap]
         cards = [{"file": p, "line": ln, "text": tx} for p, ln, tx in page]
@@ -7686,18 +7743,13 @@ class UoSqlQuery:
                 """
             ).fetchall()
         by_rel: dict[str, str] = {}
-        by_line: dict[int, str] = {}
         for row in guards:
             gname = str(_row_get(row, "e.name") or _row_get(row, "name") or "")
             if not gname or _is_noise_name_sql(gname):
                 continue
-            data = _parse_data(_row_get(row, "r.data") or _row_get(row, "data"))
             src = str(_row_get(row, "r.src") or _row_get(row, "src") or "")
-            gl = int(data.get("line") or _row_get(row, "line_start") or 0)
             if src:
                 by_rel[src] = gname
-            if gl:
-                by_line[gl] = gname
         seen: set[tuple[str, int, str]] = set()
         for row in rows:
             data = _parse_data(_row_get(row, "r.data") or _row_get(row, "data"))
@@ -7722,7 +7774,7 @@ class UoSqlQuery:
                     "file": _norm_file(file),
                     "line": line,
                     "rhs": rhs,
-                    "when": by_rel.get(rid) or by_line.get(line) or "",
+                    "when": by_rel.get(rid) or "",
                 }
             )
         if not sites and not unresolved:
@@ -7740,7 +7792,7 @@ class UoSqlQuery:
         return {
             "confirmed": confirmed,
             "unresolved": unresolved,
-            "exhaustive": unresolved == 0,
+            "exhaustive": False,
             "total": confirmed + unresolved,
             "groups": [{"writer": w, "sites": groups[w]} for w in order],
             "consumed_by": consumed,
@@ -7860,11 +7912,13 @@ class UoSqlQuery:
                 "producers_unresolved": unresolved_p,
                 "consumers_confirmed": len(consumers),
                 "consumers_unresolved": unresolved_c,
-                "exhaustive": unresolved_p == 0 and unresolved_c == 0,
+                "exhaustive": False,
             },
         }
 
     def attach_card_facets(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if str(payload.get("resolve_mode") or "") == "site":
+            return payload
         cards = [c for c in (payload.get("cards") or []) if isinstance(c, dict)]
         enclosing = payload.get("enclosing")
         if isinstance(enclosing, dict):
@@ -8028,7 +8082,7 @@ class UoSqlQuery:
             "total": total,
             "unresolved": unresolved,
             "confirmed": total - unresolved,
-            "exhaustive": unresolved == 0,
+            "exhaustive": False,
             "flows": counts,
         }
 
@@ -8059,7 +8113,7 @@ class UoSqlQuery:
             compile_search,
             line_matches,
             path_matches,
-            rank_path,
+            rank_hit,
         )
 
         cre = compile_search(phrase)
@@ -8089,7 +8143,15 @@ class UoSqlQuery:
                     "id": str(eid or ""),
                 }
             )
-        matched.sort(key=lambda r: (*rank_path(str(r.get("file") or ""), arch)[:2], int(r.get("line") or 0)))
+        matched.sort(
+            key=lambda r: rank_hit(
+                str(r.get("file") or ""),
+                int(r.get("line") or 0),
+                str(r.get("text") or r.get("name") or ""),
+                phrase,
+                arch,
+            )
+        )
         total = len(matched)
         return matched[start : start + cap], total
 

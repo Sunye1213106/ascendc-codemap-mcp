@@ -98,8 +98,8 @@ def test_review20_resolve_file_line_anchors_set_split_axis() -> None:
     )
     assert "SetSplitAxis" in text
     assert "1673|" in text or "isBn2MultiBlk" in text
-    assert "CheckLogLevel" not in text.split("Used by", 1)[-1] if "Used by" in text else True
-    assert text.count("Used by") <= 1
+    assert "Used by" not in text
+    assert "Controls" not in text
 
 
 @pytest.mark.skipif(not FAG_UO.is_file(), reason="FAG arch35 .uo missing")
@@ -110,3 +110,48 @@ def test_review20_resolve_assignments_and_compiled() -> None:
     compiled = _resolve(symbol="hasRope")
     assert "Compiled" in compiled
     assert "legal" in compiled.lower()
+
+
+@pytest.mark.skipif(not FAG_UO.is_file(), reason="FAG arch35 .uo missing")
+def test_review20_cal_deter_max_loop_num_span_is_stable() -> None:
+    status(project=str(FAG), architecture="arch35")
+    path = "op_kernel/arch35/flash_attention_score_grad_kernel_deter.h"
+    spans = []
+    texts = []
+    for loc in (642, 668, 680, 702, 598):
+        payload = query(
+            project=str(FAG),
+            architecture="arch35",
+            operation="resolve",
+            file=path,
+            line=loc,
+        )
+        data = payload.get("data") or {}
+        spans.append((int(data.get("unit_start") or 0), int(data.get("unit_end") or 0)))
+        texts.append(str(data.get("text") or ""))
+    assert len(set(spans)) == 1
+    start, end = spans[0]
+    assert start <= 598
+    assert end >= 732
+    for text in texts:
+        assert "CalDeterMaxLoopNum" in text
+        assert "598|" in text
+
+
+@pytest.mark.skipif(not FAG_UO.is_file(), reason="FAG arch35 .uo missing")
+def test_review20_shared_registry_header_is_readable() -> None:
+    status(project=str(FAG), architecture="arch35")
+    payload = query(
+        project=str(FAG),
+        architecture="arch35",
+        operation="resolve",
+        file="../common/op_host/fia_tiling_templates_registry.h",
+        line=94,
+    )
+    data = payload.get("data") or {}
+    text = str(data.get("text") or "")
+    start = int(data.get("unit_start") or 0)
+    end = int(data.get("unit_end") or 0)
+    assert end > start
+    assert text.count("|") >= 8
+    assert "DoTilingImpl" in text or "FiaTiling" in text
