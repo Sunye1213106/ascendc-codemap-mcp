@@ -32,6 +32,7 @@ from ascendc_codemap_mcp.engine.passes.source_inventory import inventory_source_
 from ascendc_codemap_mcp.engine.passes.source_resolution import resolve_source_gaps
 from ascendc_codemap_mcp.engine.passes.symbol_roles import project_symbol_roles
 from ascendc_codemap_mcp.engine.passes.tiling_field_complete import complete_tiling_fields
+from ascendc_codemap_mcp.engine.passes.tiling_accessors import link_tiling_accessors
 from ascendc_codemap_mcp.engine.passes.tiling_host_writes import enrich_tiling_host_writes
 from ascendc_codemap_mcp.engine.passes.value_defining_sites import enrich_value_defining_sites
 from ascendc_codemap_mcp.engine.passes.host_checks import enrich_host_checks
@@ -274,6 +275,7 @@ def compile_codemap(
             ("symbol_roles", project_symbol_roles, {"needs_irs": True}),
             ("tiling_template_registry", enrich_tiling_template_registry, {}),
             ("tiling_fields", complete_tiling_fields, {"needs_irs": True}),
+            ("tiling_accessors", link_tiling_accessors, {}),
             ("host_tiling_key", bind_host_tiling_key_expressions, {}),
             ("host_defuse", trace_host_key_roots, {"needs_irs": True}),
             ("host_defuse_validate", validate_host_defuse, {}),

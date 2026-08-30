@@ -143,6 +143,7 @@ _PURGE_REL_PROVENANCE = {
 }
 _PURGE_ENTITY_PROVENANCE = {"source_scope", "source_call_site", "source_frontier"}
 _BOUND_CALL_PROVENANCE = {"source_kernel_call_bound", "source_kernel_macro_call_bound"}
+_CONFIRMED_STATUS = {"confirmed", "extracted", "verified"}
 
 
 @dataclass(frozen=True)
@@ -1034,10 +1035,24 @@ def _rebuild_kernel_calls(codemap: CodeMap, scopes: list[_Scope], class_names: s
                         )
                     bound += 1
                     continue
+            if not candidates and receiver:
+                candidates = _same_name_scopes(methods, free_functions, name)
+            if candidates:
+                n_cand = len(candidates)
+                amb = {**site, "ambiguous_dispatch": True, "dispatch_candidates": n_cand}
+                for target in candidates:
+                    _link_site(
+                        codemap,
+                        RelationKind.CALLS,
+                        scope.entity.id,
+                        target.entity.id,
+                        provenance,
+                        amb,
+                        status="partial",
+                    )
                 _unresolved_call(codemap, scope, site, candidates)
                 unresolved_internal += 1
-                continue
-            if internal_hint:
+            elif internal_hint:
                 _unresolved_call(codemap, scope, site, [])
                 unresolved_internal += 1
             else:
@@ -1279,7 +1294,11 @@ def _entry_reachable(codemap: CodeMap) -> set[str]:
     starts = {e.id for e in codemap.by_kind(EntityKind.KERNEL) if e.attrs.get("source_definition") or e.attrs.get("source_signature")}
     adj: dict[str, set[str]] = defaultdict(set)
     for rel in codemap.relations.values():
-        if rel.kind_name() == RelationKind.CALLS.value and str(rel.attrs.get("provenance") or "") in _BOUND_CALL_PROVENANCE:
+        if (
+            rel.kind_name() == RelationKind.CALLS.value
+            and str(rel.attrs.get("provenance") or "") in _BOUND_CALL_PROVENANCE
+            and str(rel.status or "").lower() in _CONFIRMED_STATUS
+        ):
             adj[rel.src].add(rel.dst)
     seen = set(starts)
     q = deque(starts)
@@ -1555,10 +1574,31 @@ def _unresolved_call(codemap: CodeMap, scope: _Scope, site: dict[str, Any], cand
     )
 
 
-def _link_site(codemap: CodeMap, kind: RelationKind, src: str, dst: str, provenance: str, site: dict[str, Any]) -> None:
+def _link_site(
+    codemap: CodeMap,
+    kind: RelationKind,
+    src: str,
+    dst: str,
+    provenance: str,
+    site: dict[str, Any],
+    *,
+    status: str = "confirmed",
+) -> None:
+    from ascendc_codemap_mcp.engine.ir.codemap import relation_id
+
+    rid = relation_id(kind.value if isinstance(kind, RelationKind) else str(kind), src, dst)
+    existing = codemap.relations.get(rid)
+    if (
+        existing is not None
+        and status == "partial"
+        and str(existing.status or "").lower() in _CONFIRMED_STATUS
+    ):
+        return
     rel = codemap.mint_candidate_relation(
-        kind, src, dst, provenance=provenance, extra=dict(site), status="confirmed"
+        kind, src, dst, provenance=provenance, extra=dict(site), status=status
     )
+    if status == "confirmed":
+        rel.status = "confirmed"
     rel.attrs["provenance"] = provenance
     sites = rel.attrs.setdefault("sites", [])
     clean = dict(site)
@@ -1654,6 +1694,20 @@ def _type_candidates(fragment: str, known_types: set[str], aliases: dict[str, se
     for token in tokens:
         out.update(aliases.get(token) or ())
     return out
+
+
+def _same_name_scopes(
+    methods: dict[tuple[str, str], list[_Scope]],
+    free_functions: dict[str, list[_Scope]],
+    name: str,
+) -> list[_Scope]:
+    found: list[_Scope] = []
+    for (owner, mname), scopes in methods.items():
+        del owner
+        if mname == name:
+            found.extend(scopes)
+    found.extend(free_functions.get(name) or ())
+    return _dedupe_scopes(found)
 
 
 def _dedupe_scopes(scopes: Iterable[_Scope]) -> list[_Scope]:

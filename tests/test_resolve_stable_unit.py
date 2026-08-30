@@ -309,6 +309,26 @@ def test_assignments_and_host_kernel_do_not_claim_exhaustive(tmp_path: Path) -> 
             name="isBn2MultiBlk",
             file=_HOST,
             line=45,
+            data=json.dumps(
+                {
+                    "value_defining_sites": [
+                        {
+                            "file": _HOST,
+                            "line": 45,
+                            "rhs": "true",
+                            "function": "SetSplitAxis",
+                        }
+                    ],
+                    "producer_sites": [
+                        {
+                            "file": _HOST,
+                            "line": 45,
+                            "rhs": "true",
+                            "function": "SetSplitAxis",
+                        }
+                    ],
+                }
+            ),
         )
         _insert_entity(
             conn, eid="fn_split", kind="FUNCTION", name="SetSplitAxis", file=_HOST, line=32, line_end=59
@@ -337,10 +357,11 @@ def test_assignments_and_host_kernel_do_not_claim_exhaustive(tmp_path: Path) -> 
     text = _text(
         query(project=str(op), architecture="arch35", operation="resolve", symbol="isBn2MultiBlk")
     )
-    assert "Assignments" in text
-    assert "1/1" in text
-    assert "exhaustive=no" in text
-    assert "Host producers" in text or "Kernel consumers" in text
-    assert "exhaustive: false" in text or "exhaustive=false" in text
+    assert "Assignments" in text or "Host value definitions" in text
+    assert "1/1" not in text or "Host value definitions" in text
+    assert "exhaustive=no" not in text
+    assert "Host value definitions" in text or "Kernel consumers" in text
+    assert "exhaustive: false" not in text
+    assert "exhaustive=false" not in text
     assert "exhaustive=yes" not in text
     assert "exhaustive: true" not in text

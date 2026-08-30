@@ -318,8 +318,6 @@ _KB_EDGE_MAP: dict[str, RelationKind] = {
     "LAUNCHES": RelationKind.LAUNCHES,
     "AVAILABLE_ON": RelationKind.AVAILABLE_ON,
     "ACTIVE_UNDER": RelationKind.ACTIVE_UNDER,
-    "SAVES": RelationKind.SAVES,
-    "RESTORES": RelationKind.RESTORES,
     "CONTAINS": RelationKind.CONTAINS,
     "RETURNS": RelationKind.RETURNS,
     "ALIASES": RelationKind.ALIASES,

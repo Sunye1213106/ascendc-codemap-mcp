@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -18,11 +20,13 @@ def write_uo_fixture(
     symbol: str = "IsPse",
     revision: str = "abc123",
     entity_id: str = "e1",
+    attrs: dict[str, Any] | None = None,
 ) -> Path:
     dest = op / ".ascendc-codemap" / arch / f"{op.name}.{arch}.uo"
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.exists():
         dest.unlink()
+    blob = json.dumps(attrs) if attrs is not None else "{}"
     conn = sqlite3.connect(str(dest))
     try:
         conn.executescript(SCHEMA_SQL)
@@ -43,7 +47,7 @@ def write_uo_fixture(
                 "op_host/tiling.cpp",
                 10,
                 12,
-                "{}",
+                blob,
             ),
         )
         conn.execute(

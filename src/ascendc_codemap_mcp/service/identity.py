@@ -48,6 +48,7 @@ class Registry:
         self._by_id: dict[str, CodemapRef] = {}
         self._alias: dict[str, list[str]] = {}
         self._loaded = False
+        self._last_id = ""
 
     def _load_unlocked(self) -> None:
         if self._loaded:
@@ -110,6 +111,18 @@ class Registry:
             return refs[0]
         return refs
 
+    def remember(self, ref: CodemapRef) -> None:
+        with self._lock:
+            self._last_id = str(ref.id or "")
+
+    def last(self) -> CodemapRef | None:
+        with self._lock:
+            self._load_unlocked()
+            cid = str(self._last_id or "").strip()
+            if not cid:
+                return None
+            return self._by_id.get(cid)
+
     def get(self, codemap_id: str) -> CodemapRef | None:
         hit = self.lookup(codemap_id)
         if isinstance(hit, list):
@@ -125,6 +138,7 @@ class Registry:
         with self._lock:
             self._by_id.clear()
             self._alias.clear()
+            self._last_id = ""
             self._loaded = True
 
 
@@ -436,6 +450,17 @@ def resolve(
             f"unknown codemap_id {cid}; call codemap_discover with project= first",
             error_code="CODEMAP_NOT_REGISTERED",
         )
+
+    if not cid and not proj:
+        last = registry.last()
+        if last is not None:
+            if require_indexed and (last.product is None or not Path(last.product).is_file()):
+                return fail(
+                    f"no .uo for {last.id}",
+                    error_code="CODEMAP_NOT_INDEXED",
+                    extra={"codemap": {"id": last.id, "alias": last.alias, "architecture": last.architecture}},
+                )
+            return last
 
     if not proj:
         return fail("project is required", error_code="PROJECT_REQUIRED")

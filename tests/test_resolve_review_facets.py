@@ -15,16 +15,48 @@ from tests.test_query_surface import _insert_entity, _insert_rel
 def test_resolve_symbol_lists_assignments(tmp_path: Path) -> None:
     op = tmp_path / "toy_op"
     op.mkdir()
-    dest = write_uo_fixture(op)
+    dest = write_uo_fixture(
+        op,
+        attrs={
+            "packing_value_sites": [
+                {"file": "op_host/tiling.cpp", "line": 10, "rhs": "1"}
+            ]
+        },
+    )
     conn = sqlite3.connect(str(dest))
     try:
         _insert_entity(
             conn,
             eid="fld",
-            kind="TILING_FIELD",
+            kind="FIELD",
             name="isBn2MultiBlk",
             file="op_host/arch35/common_regbase.cpp",
             line=45,
+            data=json.dumps(
+                {
+                    "producer_sites": [
+                        {
+                            "file": "op_host/arch35/common_regbase.cpp",
+                            "line": 45,
+                            "rhs": "bnSparseLimit && !hasRope",
+                            "function": "SetSplitAxis",
+                        },
+                        {
+                            "file": "op_host/arch35/common_regbase.cpp",
+                            "line": 50,
+                            "rhs": "false",
+                            "function": "SetSplitAxis",
+                            "guards": [{"condition": "dropMaskOuter"}],
+                        },
+                        {
+                            "file": "op_host/arch35/normal_regbase.cpp",
+                            "line": 109,
+                            "rhs": "false",
+                            "function": "DoSparse",
+                        },
+                    ]
+                }
+            ),
         )
         _insert_entity(
             conn,
@@ -155,15 +187,14 @@ def test_resolve_symbol_lists_assignments(tmp_path: Path) -> None:
     )
     text = str((payload.get("data") or {}).get("text") or "")
     assert "Assignments" in text
-    assert "3/3" in text
-    assert "exhaustive=no" in text
-    assert "exhaustive=yes" not in text
     assert "SetSplitAxis" in text
     assert "45" in text
     assert "bnSparseLimit" in text
     assert "dropMaskOuter" in text
     assert "DoSparse" in text
     assert "GetWorkspaceSize" in text
+    assert "exhaustive=no" not in text
+    assert "exhaustive=yes" not in text
 
 
 def test_resolve_symbol_host_kernel_coverage(tmp_path: Path) -> None:
@@ -179,6 +210,31 @@ def test_resolve_symbol_host_kernel_coverage(tmp_path: Path) -> None:
             name="deterMaxRound",
             file="op_kernel/tiling_data.h",
             line=8,
+            data=json.dumps(
+                {
+                    "value_defining_sites": [
+                        {
+                            "file": "op_host/arch35/deter.cpp",
+                            "line": 24,
+                            "rhs": "r1 + r2",
+                            "function": "CalcleBandDeterParam",
+                        },
+                        {
+                            "file": "op_host/arch35/deter.cpp",
+                            "line": 90,
+                            "rhs": "rUpper",
+                            "function": "DetermineBlockSchedule",
+                        },
+                    ],
+                    "host_writer_sites": [
+                        {
+                            "file": "op_kernel/tiling_data.h",
+                            "line": 8,
+                            "receiver": "BaseDeterParam",
+                        }
+                    ],
+                }
+            ),
         )
         _insert_entity(
             conn,
@@ -261,15 +317,14 @@ def test_resolve_symbol_host_kernel_coverage(tmp_path: Path) -> None:
         symbol="deterMaxRound",
     )
     text = str((payload.get("data") or {}).get("text") or "")
-    assert "Host producers" in text
+    assert "Host value definitions" in text
     assert "CalcleBandDeterParam" in text
     assert "DetermineBlockSchedule" in text
     assert "Transport" in text
     assert "BaseDeterParam" in text
     assert "Kernel consumers" in text
     assert "CalDeterMaxLoopNum" in text
-    assert "producers" in text.lower()
-    assert "exhaustive: false" in text
+    assert "exhaustive: false" not in text
     assert "exhaustive: true" not in text
 
 

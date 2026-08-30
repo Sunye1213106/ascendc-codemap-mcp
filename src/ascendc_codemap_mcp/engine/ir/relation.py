@@ -42,9 +42,6 @@ class RelationKind(str, Enum):
     AVAILABLE_ON = "AVAILABLE_ON"
     ACTIVE_UNDER = "ACTIVE_UNDER"
 
-    SAVES = "SAVES"
-    RESTORES = "RESTORES"
-
     CONTAINS = "CONTAINS"
     RETURNS = "RETURNS"
     ALIASES = "ALIASES"

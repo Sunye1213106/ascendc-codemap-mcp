@@ -55,7 +55,6 @@ def test_review20_searches_to_first_useful_locator() -> None:
     status(project=str(FAG), architecture="arch35")
     zero = 0
     over_budget = 0
-    evidence_calls = 0
     rows: list[dict[str, object]] = []
     for qid, phrases, needle in REVIEW20:
         found_at = 0
@@ -77,7 +76,6 @@ def test_review20_searches_to_first_useful_locator() -> None:
                 "preview": text[:160],
             }
         )
-    assert evidence_calls == 0
     assert zero <= 4, f"too many zero-hit Review-20 items: {rows}"
     assert over_budget <= 4, f"too many >2 search Review-20 items: {rows}"
     hit_rate = sum(1 for r in rows if r["hit"]) / len(rows)

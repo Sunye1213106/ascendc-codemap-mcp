@@ -7,6 +7,11 @@ import re
 from typing import Any
 
 from ascendc_codemap_mcp.engine.ir.entity import Entity, EntityKind
+from ascendc_codemap_mcp.engine.query.bundle import (
+    FULL_FACT_KEYS as _FULL_FACT_KEYS,
+    KIND_FACTS as _KIND_FACTS,
+    first_rhs as _first_rhs,
+)
 from ascendc_codemap_mcp.engine.semantics.ascendc_sync import (
     BARRIER_CALLEES,
     FLAG_SYNC_CALLEES,
@@ -87,140 +92,6 @@ _KERNEL_API_CALLEES = _SYNC_CALLEES | _PRECISION_CALLEES | frozenset(
     }
 )
 
-_KIND_FACTS: dict[str, tuple[str, ...]] = {
-    EntityKind.TILING_KEY.value: (
-        "bit_lo",
-        "bit_hi",
-        "bit_width",
-        "domain",
-        "value_domain",
-        "packing_value_sites",
-        "packing_expr",
-    ),
-    EntityKind.TILING_FIELD.value: (
-        "owner",
-        "ctype",
-        "rhs",
-        "host_writer_sites",
-        "value_defining_sites",
-        "producer_sites",
-        "check_sites",
-        "fused_outer_candidates",
-        "local_aliases",
-        "write_sites",
-    ),
-    EntityKind.FIELD.value: (
-        "layer",
-        "rhs",
-        "guards",
-        "check_sites",
-        "owner",
-        "cpp_type",
-        "default_initializer",
-        "definition_sites",
-        "write_sites",
-    ),
-    EntityKind.TYPE.value: (
-        "cpp_kind",
-        "role",
-        "alias_of",
-        "root",
-        "root_kind",
-        "type_name",
-        "owner",
-        "catalog",
-        "spelling",
-        "wraps_storage",
-        "wraps_lock",
-        "wraps_flag",
-        "conditional_flag",
-    ),
-    EntityKind.BUFFER.value: (
-        "memory_space",
-        "tposition",
-        "wrapper",
-        "scope",
-        "type_name",
-        "role",
-        "allocated",
-        "stack_pop",
-        "wraps_lock",
-        "wraps_storage",
-        "conditional_flag",
-        "mutex_policy",
-    ),
-    EntityKind.REGISTER.value: ("register_class", "memory_space", "scope", "type_name"),
-    EntityKind.OPERATION.value: (
-        "callee",
-        "receiver",
-        "function",
-        "args",
-        "argument",
-        "template_args",
-        "category",
-        "mechanism",
-        "flag_paired",
-        "kernel_phase",
-        "layer",
-        "catalog",
-    ),
-    EntityKind.PIPE.value: (
-        "identity",
-        "scope",
-        "type_name",
-        "pipe_ordinal",
-        "kernel_phase",
-        "role",
-        "catalog",
-        "pointer",
-        "kernel_file",
-    ),
-    EntityKind.EVENT.value: ("identity", "scope", "event_type", "mechanism", "cross_core"),
-    EntityKind.QUEUE.value: ("identity", "scope", "type_name", "tposition", "memory_space"),
-    EntityKind.BRANCH.value: (
-        "predicate",
-        "condition",
-        "branch_kind",
-        "layer",
-        "function",
-        "dimensions",
-        "operators",
-        "literals",
-        "references",
-        "enum_values",
-    ),
-    EntityKind.KERNEL.value: ("source_signature", "variants"),
-    EntityKind.INPUT.value: (
-        "dtype",
-        "shape",
-        "optional",
-        "declaration",
-        "check_sites",
-        "api_kind",
-        "api_index",
-        "api_attr_index",
-    ),
-    EntityKind.OUTPUT.value: ("dtype", "shape", "declaration", "api_kind", "api_index"),
-    EntityKind.FUNCTION.value: ("definition_sites", "write_sites"),
-    EntityKind.METHOD.value: ("definition_sites", "write_sites"),
-    EntityKind.VARIABLE.value: ("layer", "rhs", "write_sites"),
-    EntityKind.MACRO.value: ("value", "value_expr", "definition", "layer"),
-    EntityKind.COMPILE_VAR.value: ("value", "value_expr", "origin", "layer"),
-    EntityKind.PREDICATE.value: (
-        "predicate_role",
-        "entry_role",
-        "class",
-        "priority",
-        "arch_expr",
-        "is_capable_file",
-        "is_capable_line",
-        "operators",
-        "literals",
-        "references",
-        "enum_values",
-    ),
-}
-
 _DROP_ATTRS = frozenset({"type_text", "snippet"})
 
 
@@ -275,19 +146,6 @@ def _as_mapping(value: Any) -> dict[str, Any]:
 
 
 _LONG_EXPR_KEYS = frozenset({"rhs", "expression", "guard", "predicate", "condition", "value_expr", "definition"})
-_FULL_FACT_KEYS = frozenset(
-    {
-        "packing_value_sites",
-        "host_writer_sites",
-        "value_defining_sites",
-        "producer_sites",
-        "check_sites",
-        "definition_sites",
-        "fused_outer_candidates",
-        "local_aliases",
-        "write_sites",
-    }
-)
 _ARG_CUT_RE = re.compile(r";|\bif\b")
 
 
@@ -314,18 +172,6 @@ def _short_args(value: Any, *, depth: int = 0) -> Any:
                 out[key] = _short_args(item, depth=depth + 1)
         return out
     return value
-
-
-def _first_rhs(attrs: dict[str, Any]) -> str:
-    for key in ("value_defining_sites", "host_writer_sites", "producer_sites"):
-        for site in attrs.get(key) or []:
-            if not isinstance(site, dict):
-                continue
-            for field in ("rhs", "expression"):
-                text = str(site.get(field) or "").strip()
-                if text:
-                    return text[:120]
-    return str(attrs.get("rhs") or attrs.get("default_initializer") or "").strip()[:120]
 
 
 def project_entity(

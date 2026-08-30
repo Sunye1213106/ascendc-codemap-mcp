@@ -45,6 +45,7 @@ _CALL_RE = re.compile(
 )
 _DEFINE_HEAD_RE = re.compile(r"\s*#\s*define\s+([A-Za-z_]\w*)")
 _CALL_PROV = {"source_kernel_call_bound_v2", "source_kernel_macro_call_bound_v2"}
+_CONFIRMED_STATUS = {"confirmed", "extracted", "verified"}
 _LINE_CACHE: dict[int, list[int]] = {}
 _LINE_LOCK = threading.Lock()
 
@@ -417,11 +418,33 @@ def _bind_calls(codemap: CodeMap, scopes: list[_Scope], class_names: set[str]) -
                     _link_site(codemap, scope.entity, target.entity, prov, {**site, "conditional_dispatch": True})
                     bound_edges += 1
                 bound_sites += 1
-            elif internal_hint:
-                _call_unresolved(codemap, scope, site, candidates)
-                unresolved += 1
             else:
-                external += 1
+                if not candidates and receiver and name in any_defs:
+                    candidates = _same_name_scopes(methods, funcs, name)
+                if candidates:
+                    n_cand = len(candidates)
+                    amb = {
+                        **site,
+                        "ambiguous_dispatch": True,
+                        "dispatch_candidates": n_cand,
+                    }
+                    for target in candidates:
+                        _link_site(
+                            codemap,
+                            scope.entity,
+                            target.entity,
+                            prov,
+                            amb,
+                            status="partial",
+                        )
+                        bound_edges += 1
+                    _call_unresolved(codemap, scope, site, candidates)
+                    unresolved += 1
+                elif internal_hint:
+                    _call_unresolved(codemap, scope, site, [])
+                    unresolved += 1
+                else:
+                    external += 1
     return {"bound_sites": bound_sites, "bound_edges": bound_edges, "external": external, "unresolved_internal": unresolved}
 
 
@@ -515,7 +538,11 @@ def _reachable_scopes(codemap: CodeMap) -> set[str]:
     starts = {e.id for e in codemap.by_kind(EntityKind.KERNEL) if e.attrs.get("source_signature")}
     adj: dict[str, set[str]] = defaultdict(set)
     for rel in codemap.relations.values():
-        if rel.kind_name() == RelationKind.CALLS.value and str(rel.attrs.get("provenance") or "") in _CALL_PROV:
+        if (
+            rel.kind_name() == RelationKind.CALLS.value
+            and str(rel.attrs.get("provenance") or "") in _CALL_PROV
+            and str(rel.status or "").lower() in _CONFIRMED_STATUS
+        ):
             adj[rel.src].add(rel.dst)
     seen = set(starts)
     q = deque(starts)
@@ -641,15 +668,35 @@ def _consume_declaration(
         out[var].update(types)
 
 
-def _link_site(codemap: CodeMap, src: Entity, dst: Entity, provenance: str, site: dict) -> None:
+def _link_site(
+    codemap: CodeMap,
+    src: Entity,
+    dst: Entity,
+    provenance: str,
+    site: dict,
+    *,
+    status: str = "confirmed",
+) -> None:
+    from ascendc_codemap_mcp.engine.ir.codemap import relation_id
+
+    rid = relation_id(RelationKind.CALLS.value, src.id, dst.id)
+    existing = codemap.relations.get(rid)
+    if (
+        existing is not None
+        and status == "partial"
+        and str(existing.status or "").lower() in _CONFIRMED_STATUS
+    ):
+        return
     rel = codemap.mint_candidate_relation(
         RelationKind.CALLS,
         src.id,
         dst.id,
         provenance=provenance,
         extra=dict(site),
-        status="confirmed",
+        status=status,
     )
+    if status == "confirmed":
+        rel.status = "confirmed"
     rel.attrs["provenance"] = provenance
     sites = rel.attrs.setdefault("sites", [])
     if site not in sites:
@@ -749,6 +796,20 @@ def _split_args(text: str) -> list[str]:
     if buf:
         out.append("".join(buf).strip())
     return out
+
+
+def _same_name_scopes(
+    methods: dict[tuple[str, str], list[_Scope]],
+    funcs: dict[str, list[_Scope]],
+    name: str,
+) -> list[_Scope]:
+    found: list[_Scope] = []
+    for (owner, mname), scopes in methods.items():
+        del owner
+        if mname == name:
+            found.extend(scopes)
+    found.extend(funcs.get(name) or ())
+    return _dedupe(found)
 
 
 def _dedupe(scopes: Iterable[_Scope]) -> list[_Scope]:
