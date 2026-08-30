@@ -12,7 +12,6 @@ from ascendc_codemap_mcp.service.query import query
 EXPECTED_TOOLS = [
     "codemap_discover",
     "codemap_query",
-    "codemap_evidence",
     "codemap_doctor",
     "codemap_index",
     "codemap_update",
@@ -83,13 +82,13 @@ def test_query_schema_has_operation_enum() -> None:
     props = schema.get("properties") or {}
     op = props.get("operation") or {}
     enum = op.get("enum") or []
-    assert "resolve" in enum
-    assert "search" in enum
-    assert "trace" in enum
-    assert "find" not in enum
-    assert "contract" not in enum
-    assert "impact" not in enum
-    assert "entry" not in enum
+    assert enum == ["search", "resolve"]
+    assert "pattern" in props
+    assert "name" in props
+    assert "from_symbol" not in props
+    assert "to_symbol" not in props
+    assert "projection" not in props
+    assert "expected_snapshot_id" not in props
     assert "callee" not in props
     assert "entity_id" not in props
     assert "ctx" not in props
@@ -346,17 +345,14 @@ def test_cli_query_reaches_service_query(monkeypatch) -> None:
                 "--codemap-id",
                 "p:1::Op@arch35",
                 "--operation",
-                "find",
-                "--kind",
-                "OPERATION",
-                "--callee",
+                "search",
+                "--name",
                 "SyncAll",
             ]
         )
     assert code == 0
-    assert seen["operation"] == "find"
-    assert seen["kind"] == "OPERATION"
-    assert seen["callee"] == "SyncAll"
+    assert seen["operation"] == "search"
+    assert seen["name"] == "SyncAll"
 
 
 def test_cli_query_passes_symbol(monkeypatch) -> None:
@@ -401,7 +397,7 @@ def test_query_schema_documents_search_file_filter() -> None:
 def test_evidence_description_is_debug_only() -> None:
     from ascendc_codemap_mcp.mcp_adapter import create_server, DEFAULT_MCP_TOOLS
 
-    assert "codemap_evidence" in DEFAULT_MCP_TOOLS
+    assert "codemap_evidence" not in DEFAULT_MCP_TOOLS
     tool = _find_tool(create_server(), "codemap_evidence")
     desc = str(getattr(tool, "description", "") or "")
     assert "debug" in desc.lower() or "explicit" in desc.lower()

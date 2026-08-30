@@ -60,7 +60,7 @@ Codebase Memory 与 CodeGraph 是通用代码图：多语言、通用导航。Co
 
 他们更擅长「代码在哪、谁调用谁」。CodeMap 更希望回答：**这个算子为什么走到这个 Kernel，以及这个值怎么从 Host 传下来。**
 
-本仓库不把 memory / ADR / 文档检索、默认 Cypher/SQL 或可视化做成产品功能。`impact` 仍是 `codemap_query` 的一个 operation，会等 resolve dossier 覆盖后再从公开 enum 删除。
+本仓库不把 memory / ADR / 文档检索、默认 Cypher/SQL 或可视化做成产品功能。公开查询只有 `search` 与 `resolve`。
 
 ## 为什么用 Clang
 
@@ -85,7 +85,7 @@ __aicore__ inline void Process(...)
 
 ```text
 READS / WRITES    CALLS    BINDS    SELECTS    LAUNCHES
-GUARDED_BY        FLOWS_TO    SAVES / RESTORES    SIGNALS / AWAITS
+GUARDED_BY        FLOWS_TO    SIGNALS / AWAITS
 ```
 
 串起来仍是：Host 条件 → TilingData 字段 → TilingKey / Template → Kernel → AscendC API。
@@ -293,8 +293,8 @@ CLI：
 ```bash
 ascendc-codemap-mcp discover --project <算子目录>
 ascendc-codemap-mcp query --codemap-id <id> --symbol IsPse
-ascendc-codemap-mcp query --codemap-id <id> --operation search --name BufferNum
-ascendc-codemap-mcp query --codemap-id <id> --operation find --kind OPERATION --callee SyncAll
+ascendc-codemap-mcp query --codemap-id <id> --operation search --pattern BufferNum
+ascendc-codemap-mcp query --codemap-id <id> --symbol SyncAll
 ```
 
 Agent 用 typed 工具。`operation` 是闭集 enum，缺省 `resolve`。`symbol` 必须是一个标识符；自然语言句子返回 `INVALID_QUERY`（合法 filter 清单 + 已解析 token），不会模糊排名。
@@ -305,13 +305,12 @@ Agent 用 typed 工具。`operation` 是闭集 enum，缺省 `resolve`。`symbol
 | 扫目录、拿到 `codemap.id`       | `codemap_discover`                                         |
 | 新鲜度                       | `codemap://map/{codemap_id}`（CLI 仍可用 `status`）            |
 | 图查询（ident / Dim / 集合）     | `codemap_query`（`operation` + 闭集 filters）                 |
-| 从卡片继续                     | `codemap_evidence`（`evidence_id` + `expected_snapshot_id`） |
 | 构建前检查                     | `codemap_doctor`                                           |
 | 冷构建                       | `codemap_index`                                            |
 | 增量刷新                      | `codemap_update`                                           |
 
 
-`codemap_query` 的 `operation`：`resolve`（缺省） / `search`（源码行） / `find`（集合） / `trace`（A→B）。`contract` / `impact` / `entry` 仍可用，优先走 resolve。Dim 用 `dim` + `value`，不要写 `Dim=` 字符串。兼容别名：`index_operator`、`update_operator`。只读工具带 `readOnlyHint`。查询结果走统一 envelope（`ok`、`codemap`、`verdict`、`layer`、`data`、`evidence`、`coverage`、`next_cursor`）和 `structuredContent`。
+`codemap_query` 的 `operation`：`search`（源码行）/ `resolve`（缺省，一次闭合的语义读）。Dim 用 `dim` + `value`，不要写 `Dim=` 字符串。兼容别名：`index_operator`、`update_operator`。只读工具带 `readOnlyHint`。查询结果走统一 envelope（`ok`、`codemap`、`verdict`、`layer`、`data`、`coverage`、`next_cursor`）和 `structuredContent`。 `codemap_evidence` 不在默认工具集，可用 `ASCENDC_CODEMAP_MCP_TOOLS` 打开。
 
 跟 `evidence[].id`（`span:...`）走，并把当时的 `snapshot_id` 当作 `expected_snapshot_id`；对不上是 `SNAPSHOT_CHANGED`。`coverage.truncated` 且带了 `next_cursor` 再翻页。`count: 0` 不等于「图上没有」，跟 `hint`。
 

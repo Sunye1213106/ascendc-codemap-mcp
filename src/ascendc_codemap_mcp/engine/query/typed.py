@@ -15,6 +15,11 @@ from ascendc_codemap_mcp.engine.ir.entity import EntityKind
 from ascendc_codemap_mcp.engine.ir.relation import RelationKind
 from ascendc_codemap_mcp.engine.passes.consumer_role import CONSUMER_ROLES
 from ascendc_codemap_mcp.engine.query.completeness import COMPLETE, UNKNOWN
+from ascendc_codemap_mcp.engine.query.contract import (
+    PUBLIC_OPERATIONS,
+    SEARCH_FILTERS,
+    SEARCH_PATTERN_ALIASES,
+)
 from ascendc_codemap_mcp.engine.query.predicate_ast import OPERATORS as AST_OPERATORS
 
 OPERATIONS = ("resolve", "contract", "impact", "entry", "find", "search", "trace")
@@ -35,13 +40,16 @@ FIND_KINDS = (
     EntityKind.COMPILE_VAR.value,
     EntityKind.BUFFER.value,
     EntityKind.QUEUE.value,
+    EntityKind.PIPE.value,
     EntityKind.EVENT.value,
+    EntityKind.REGISTER.value,
     EntityKind.TYPE.value,
 )
 
 FILTER_KEYS = (
     "symbol",
     "name",
+    "pattern",
     "entity_id",
     "file",
     "line",
@@ -72,9 +80,9 @@ _CONTRACT_FILTERS = _RESOLVE_FILTERS
 _IMPACT_FILTERS = frozenset({"symbol", "entity_id", "file", "line", "kind"})
 _ENTRY_FILTERS = frozenset({"layer", "entry_role", "function", "referenced_symbol"})
 _TRACE_FILTERS = frozenset({"from_symbol", "to_symbol", "relation"})
-_SEARCH_FILTERS = frozenset({"name", "file", "kind"})
-# `name` is a name-pattern discovery filter: substring, or glob when it holds
-# * / ?. It is the only filter that does not require knowing an exact ident.
+_SEARCH_FILTERS = frozenset(SEARCH_FILTERS)
+# `pattern` is regex over indexed source lines. `name` is a silent alias
+# (SEARCH_PATTERN_ALIASES) and is normalized before the illegal-filter check.
 _FIND_COMMON = frozenset({"kind", "layer", "function", "name"})
 _FIND_BY_KIND: dict[str, frozenset[str]] = {
     EntityKind.BRANCH.value: _FIND_COMMON
@@ -91,7 +99,9 @@ _FIND_BY_KIND: dict[str, frozenset[str]] = {
     EntityKind.COMPILE_VAR.value: _FIND_COMMON | {"dim"},
     EntityKind.BUFFER.value: _FIND_COMMON,
     EntityKind.QUEUE.value: _FIND_COMMON,
+    EntityKind.PIPE.value: _FIND_COMMON,
     EntityKind.EVENT.value: _FIND_COMMON,
+    EntityKind.REGISTER.value: _FIND_COMMON,
     EntityKind.TYPE.value: _FIND_COMMON,
 }
 
@@ -131,6 +141,7 @@ class QueryPlan:
     projection: str = "summary"
     symbol: str = ""
     name: str = ""
+    pattern: str = ""
     entity_id: str = ""
     file: str = ""
     line: int = 0
@@ -196,23 +207,21 @@ def suggest_calls(
     """Re-bind rejected identifier values onto the legal filters of this operation.
 
     Purely mechanical: no ranking, no source lookup. An empty list means the
-    caller gave nothing that could be moved. Cross-operation: resolve `name=`
-    becomes find `name=`.
+    caller gave nothing that could be moved. Suggestions stay on the public
+    operations ``search`` and ``resolve``.
     """
     kept = {k: v for k, v in filled.items() if k in allowed}
     targets = [f for f in _IDENT_VALUED if f in allowed and f not in kept]
     out: list[dict[str, Any]] = []
-    name_pat = str(filled.get("name") or "")
+    name_pat = str(filled.get("pattern") or filled.get("name") or "")
     if (
         operation in {"resolve", "contract", "impact"}
         and name_pat
-        and "name" in illegal
+        and ("name" in illegal or "pattern" in illegal)
     ):
-        if "*" in name_pat or "?" in name_pat:
-            out.append({"operation": "find", "name": name_pat})
-        else:
-            out.append({"operation": "search", "name": name_pat})
-            out.append({"operation": "find", "name": name_pat})
+        out.append({"operation": "search", "pattern": name_pat})
+        if "*" not in name_pat and "?" not in name_pat and _looks_like_ident(name_pat):
+            out.append({"operation": "resolve", "symbol": name_pat})
     for key in illegal:
         value = str(filled.get(key) or "").strip()
         if not value:
@@ -220,7 +229,22 @@ def suggest_calls(
         if not _looks_like_ident(value) and not _looks_like_name_pattern(value):
             continue
         if not _looks_like_ident(value):
-            # A glob is only legal as find name=; do not rebind it onto symbol.
+            out.append({"operation": "search", "pattern": value})
+            if len(out) >= _MAX_SUGGESTIONS:
+                return out
+            continue
+        if operation not in PUBLIC_OPERATIONS:
+            kind = str(kept.get("kind") or "")
+            search_call = {"operation": "search", "pattern": value}
+            if kind:
+                search_call["kind"] = kind
+            if search_call not in out:
+                out.append(search_call)
+            resolve_call = {"operation": "resolve", "symbol": value}
+            if resolve_call not in out:
+                out.append(resolve_call)
+            if len(out) >= _MAX_SUGGESTIONS:
+                return out
             continue
         for target in targets:
             call = {"operation": operation, **kept, target: value}
@@ -329,7 +353,7 @@ def _has_concrete_seed(operation: str, filled: dict[str, str]) -> bool:
             or filled.get("operator")
         )
     if operation == "search":
-        return bool(filled.get("name"))
+        return bool(filled.get("pattern") or filled.get("name"))
     if operation == "entry":
         return True
     if operation == "trace":
@@ -343,7 +367,7 @@ def validate_plan(**kwargs: Any) -> QueryPlan:
     if operation not in OPERATIONS:
         raise InvalidQuery(
             f"unknown operation: {operation}",
-            legal_filters=list(OPERATIONS),
+            legal_filters=list(PUBLIC_OPERATIONS),
             parsed_tokens=parsed_tokens(operation),
             operation=operation,
         )
@@ -364,6 +388,27 @@ def validate_plan(**kwargs: Any) -> QueryPlan:
             filled["symbol"] = eid
         filled.pop("entity_id", None)
         dropped.append("entity_id")
+    # search: pattern is canonical; name is a silent alias.
+    if operation == "search":
+        for alias_key in SEARCH_PATTERN_ALIASES:
+            alias = str(filled.get(alias_key) or "").strip()
+            if alias and not filled.get("pattern"):
+                filled["pattern"] = alias
+                filled.pop(alias_key, None)
+            elif alias_key in filled:
+                filled.pop(alias_key, None)
+                dropped.append(alias_key)
+    # resolve(name=) is resolve(symbol=) when name is an identifier.
+    if (
+        operation in {"resolve", "contract", "impact"}
+        and filled.get("name")
+        and not filled.get("symbol")
+    ):
+        raw = str(filled.get("name") or "")
+        if _looks_like_ident(raw):
+            filled["symbol"] = raw
+            filled.pop("name", None)
+            dropped.append("name")
     # resolve already has a seed: extra name= is not a second question.
     if (
         operation in {"resolve", "contract", "impact"}
@@ -372,11 +417,16 @@ def validate_plan(**kwargs: Any) -> QueryPlan:
     ):
         filled.pop("name", None)
         dropped.append("name")
+    if operation in {"resolve", "contract", "impact"} and filled.get("pattern"):
+        if not filled.get("symbol") and _looks_like_ident(str(filled.get("pattern") or "")):
+            filled["symbol"] = filled["pattern"]
+        filled.pop("pattern", None)
+        dropped.append("pattern")
     tokens = parsed_tokens(*filled.values())
-    name_pattern = str(filled.get("name") or "")
+    name_pattern = str(filled.get("pattern") or filled.get("name") or "")
     if operation == "search" and not name_pattern:
         raise InvalidQuery(
-            "search requires name",
+            "search requires pattern (regex over source lines)",
             legal_filters=sorted(_SEARCH_FILTERS),
             parsed_tokens=tokens,
             operation=operation,
@@ -398,10 +448,43 @@ def validate_plan(**kwargs: Any) -> QueryPlan:
     illegal = sorted(k for k in filled if k not in allowed)
     if illegal:
         remaining = {k: v for k, v in filled.items() if k in allowed}
+        ident_dropped = [
+            k
+            for k in illegal
+            if _looks_like_ident(str(filled.get(k) or ""))
+            or _looks_like_name_pattern(str(filled.get(k) or ""))
+        ]
+        remaining_ident = bool(
+            remaining.get("symbol")
+            or remaining.get("entity_id")
+            or remaining.get("dim")
+            or remaining.get("pattern")
+            or remaining.get("name")
+        )
+        if (
+            operation in {"resolve", "contract", "impact"}
+            and ident_dropped
+            and not remaining_ident
+        ):
+            ident_val = str(filled.get(ident_dropped[0]) or "")
+            if _looks_like_ident(ident_val):
+                suggestions = [
+                    {"operation": "resolve", "symbol": ident_val},
+                    {"operation": "search", "pattern": ident_val},
+                ]
+            else:
+                suggestions = [{"operation": "search", "pattern": ident_val}]
+            raise InvalidQuery(
+                f"unsupported filter: {ident_dropped[0]}",
+                legal_filters=sorted(allowed),
+                parsed_tokens=tokens,
+                operation=operation,
+                did_you_mean=suggestions,
+            )
         if _has_concrete_seed(operation, remaining):
             dropped.extend(illegal)
             filled = remaining
-            name_pattern = str(filled.get("name") or "")
+            name_pattern = str(filled.get("pattern") or filled.get("name") or "")
             tokens = parsed_tokens(*filled.values())
         else:
             suggestions = suggest_calls(
@@ -480,8 +563,8 @@ def validate_plan(**kwargs: Any) -> QueryPlan:
         alternatives: list[dict[str, Any]] = []
         if endpoint and _looks_like_ident(endpoint):
             alternatives = [
-                {"operation": "impact", "symbol": endpoint},
-                {"operation": "find", "kind": EntityKind.OPERATION.value, "callee": endpoint},
+                {"operation": "resolve", "symbol": endpoint},
+                {"operation": "search", "pattern": endpoint},
             ]
         raise InvalidQuery(
             "trace requires from_symbol and to_symbol",
@@ -496,6 +579,7 @@ def validate_plan(**kwargs: Any) -> QueryPlan:
         projection=projection,
         symbol=symbol,
         name=name_pattern,
+        pattern=str(filled.get("pattern") or "") if operation == "search" else "",
         entity_id=str(filled.get("entity_id") or ""),
         file=str(filled.get("file") or ""),
         line=int(kwargs.get("line") or 0),
@@ -632,7 +716,18 @@ def _resolve_seed(query: Any, plan: QueryPlan) -> dict[str, Any]:
         return query.query_cover(pattern, limit=plan.limit)
     if not symbol:
         return query.query_index(limit=plan.limit)
-    return query.query_name_card(symbol, limit=plan.limit)
+    payload = query.query_name_card(symbol, limit=plan.limit)
+    wanted = str(plan.kind or "").strip().upper()
+    if wanted:
+        cards = [
+            c
+            for c in (payload.get("cards") or [])
+            if isinstance(c, dict) and str(c.get("kind") or "").upper() == wanted
+        ]
+        if cards:
+            payload["cards"] = cards
+            payload["count"] = len(cards)
+    return payload
 
 
 def _attach(query: Any, payload: dict[str, Any], plan: QueryPlan, *, unique_seed: bool) -> dict[str, Any]:
@@ -642,6 +737,7 @@ def _attach(query: Any, payload: dict[str, Any], plan: QueryPlan, *, unique_seed
     pattern = (
         plan.symbol
         or plan.callee
+        or plan.pattern
         or plan.name
         or plan.dim
         or (f"{plan.file}:{plan.line}" if plan.file else "")

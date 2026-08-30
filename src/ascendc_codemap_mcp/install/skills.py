@@ -16,7 +16,7 @@ _AGENTS_BODY = """# AscendC CodeMap MCP
 
 Use MCP server `ascendc-codemap-mcp`. Identity: `codemap_discover` then `codemap.id`, or project+architecture on `codemap_query`. Missing → `codemap_doctor` / `codemap_index`. Stale/dirty → `codemap_update`.
 
-Unknown → `codemap_query operation=search name=`. Known or file:line → `operation=resolve`. Query reads the snapshot only.
+Unknown → `codemap_query operation=search pattern=` (name= is an alias; regex over source lines). Known or file:line → `operation=resolve`. Query reads the snapshot only.
 
 Query reads the `.uo` snapshot only. Architecture: see the package `docs/ARCHITECTURE.md`.
 """

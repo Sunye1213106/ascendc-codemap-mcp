@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""search name= is regex over source_line. FTS is an accelerator, not a dialect."""
+"""search pattern= is regex over source_line. name= is a silent alias. FTS is an accelerator, not a dialect."""
 from __future__ import annotations
 
 import sqlite3

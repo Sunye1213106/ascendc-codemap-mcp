@@ -24,6 +24,7 @@ from mcp.types import (
 )
 
 from ascendc_codemap_mcp.constants import SERVER_NAME, SERVER_VERSION
+from ascendc_codemap_mcp.engine.query.contract import INSTRUCTIONS
 from ascendc_codemap_mcp.service import runtime
 from ascendc_codemap_mcp.service.control import (
     doctor as doctor_impl,
@@ -38,11 +39,7 @@ from ascendc_codemap_mcp.service.query import (
     query as query_impl,
 )
 
-INSTRUCTIONS = """\
-Unknown → search
-Known or file:line → resolve
-Query reads snapshot only
-"""
+INSTRUCTIONS = INSTRUCTIONS  # PublicQueryContract; re-export for tests.
 
 READ = ToolAnnotations(
     read_only_hint=True,
@@ -112,6 +109,9 @@ def _agent_followup(payload: dict[str, Any]) -> dict[str, Any]:
     nxt = payload.get("next_cursor")
     if nxt not in (None, ""):
         out["next_cursor"] = nxt
+    for key in ("server_ms", "render_ms", "response_chars"):
+        if payload.get(key) not in (None, ""):
+            out[key] = payload[key]
     failed = (not payload.get("ok", True)) or payload.get("error_code") or payload.get("error")
     if failed:
         for key in _FOLLOWUP_KEYS:
@@ -153,7 +153,6 @@ _explore_result = _query_result
 
 DEFAULT_MCP_TOOLS = (
     "codemap_query",
-    "codemap_evidence",
     "codemap_doctor",
     "codemap_index",
     "codemap_update",
@@ -239,23 +238,20 @@ def codemap_status(
 
 @mcp.tool(title="Query CodeMap", annotations=READ, structured_output=True)
 def codemap_query(
-    operation: Literal["search", "resolve", "trace"] = "resolve",
+    operation: Literal["search", "resolve"] = "resolve",
     codemap_id: str = "",
     project: str = "",
     architecture: str = "",
     name: str = "",
+    pattern: str = "",
     symbol: str = "",
     file: str = "",
     line: int = 0,
     kind: str = "",
-    projection: Literal["summary", "source", "locations"] = "summary",
     cursor: str = "",
     limit: int = 20,
-    from_symbol: str = "",
-    to_symbol: str = "",
-    expected_snapshot_id: str = "",
 ) -> CallToolResult:
-    """search ≈ regex over the indexed source snapshot. file: optional glob/path filter for search. resolve ≈ read + semantic context. Identity is codemap_id or project+architecture."""
+    """search ≈ regex over the indexed source snapshot (pattern=; name= is an alias). Enum values, strings, macros, and comments all match — not just symbol names. file= is an optional glob; ** matches zero directories. resolve ≈ read + semantic context. Identity is codemap_id or project+architecture."""
     return _query_result(
         query_impl(
             operation=operation,
@@ -263,16 +259,13 @@ def codemap_query(
             project=project,
             architecture=architecture,
             name=name,
+            pattern=pattern,
             symbol=symbol,
             file=file,
             line=line,
             kind=kind,
-            projection=projection,
             cursor=cursor,
             limit=limit,
-            from_symbol=from_symbol,
-            to_symbol=to_symbol,
-            expected_snapshot_id=expected_snapshot_id,
         )
     )
 

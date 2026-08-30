@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -476,6 +477,7 @@ def _run_query(
         page = max(1, min(int(limit or 8), 32))
         offset = int(decoded.get("o") or 0)
         fetch_limit = page + offset
+        t0 = time.perf_counter()
         with runtime.cache.open(product) as query:
             if plan is not None:
                 from ascendc_codemap_mcp.engine.query.typed import (
@@ -524,20 +526,31 @@ def _run_query(
         layer = _infer_layer(payload)
         if nxt:
             payload["next_cursor"] = nxt
+        render_ms = 0.0
         if engine in {"codemap_query", "codemap_evidence"} or payload.get("text"):
             from ascendc_codemap_mcp.engine.query.explore import render_explore_markdown
 
+            t_render = time.perf_counter()
             payload["text"] = render_explore_markdown(
                 payload,
                 verdict=verdict,
                 layer=layer,
                 projection=str(payload.get("projection") or "summary"),
             )
+            render_ms = (time.perf_counter() - t_render) * 1000.0
+        text = str(payload.get("text") or "")
+        server_ms = (time.perf_counter() - t0) * 1000.0
+        timing = {
+            "server_ms": server_ms,
+            "render_ms": render_ms,
+            "response_chars": len(text),
+        }
         extra = {
             "engine": engine or "codemap_query",
             "shape": payload.get("shape"),
             "count": payload.get("count"),
             "version": SERVER_VERSION,
+            **timing,
         }
         body = envelope(
             ok=bool(payload.get("ok", True)),
@@ -548,7 +561,7 @@ def _run_query(
             evidence=ev,
             coverage=coverage,
             next_cursor=nxt,
-            extra=extra if flatten else {"engine": extra["engine"]},
+            extra=extra if flatten else {"engine": extra["engine"], **timing},
         )
         if flatten:
             skip = set(body)
@@ -557,6 +570,8 @@ def _run_query(
                     body[key] = value
             if engine:
                 body["engine"] = engine
+        if body.get("ok"):
+            runtime.registry.remember(ref)
         return body
     finally:
         runtime.locks.release_read(ref.id)
@@ -608,6 +623,7 @@ def query(
     operation: str = "resolve",
     symbol: str = "",
     name: str = "",
+    pattern: str = "",
     entity_id: str = "",
     file: str = "",
     line: int = 0,
@@ -645,6 +661,7 @@ def query(
             projection=projection,
             symbol=symbol,
             name=name,
+            pattern=pattern,
             entity_id=entity_id,
             file=file,
             line=line,
@@ -689,7 +706,7 @@ def query(
         return ref  # type: ignore[return-value]
     return _run_query(
         ref,
-        pattern=plan.symbol or plan.callee or plan.dim or plan.name,
+        pattern=plan.symbol or plan.callee or plan.dim or plan.pattern or plan.name,
         file=plan.file,
         line=plan.line,
         line_end=plan.line_end,

@@ -113,11 +113,12 @@ def _main(argv: list[str] | None = None) -> int:
         parser.add_argument("--architecture", default="")
         parser.add_argument("--codemap-id", default="", dest="codemap_id")
         parser.add_argument("pattern", nargs="?", default="")
-        from ascendc_codemap_mcp.engine.query.typed import OPERATIONS
+        from ascendc_codemap_mcp.engine.query.contract import PUBLIC_OPERATIONS
 
-        parser.add_argument("--operation", default="resolve", choices=OPERATIONS)
+        parser.add_argument("--operation", default="resolve", choices=PUBLIC_OPERATIONS)
         parser.add_argument("--symbol", default="")
         parser.add_argument("--name", default="")
+        parser.add_argument("--pattern", default="", dest="search_pattern")
         parser.add_argument("--kind", default="")
         parser.add_argument("--layer", default="")
         parser.add_argument("--callee", default="")
@@ -169,13 +170,21 @@ def _main(argv: list[str] | None = None) -> int:
                     codemap_id=ns.codemap_id,
                 )
             )
+        search_pattern = str(ns.search_pattern or "")
+        positional = str(ns.pattern or "")
+        if ns.operation == "search":
+            search_pattern = search_pattern or ns.name or positional
+            symbol = str(ns.symbol or "")
+        else:
+            symbol = str(ns.symbol or positional or "")
         return _print(
             query_mod.query(
                 project=ns.project,
                 architecture=ns.architecture,
                 operation=ns.operation,
-                symbol=str(ns.symbol or ns.pattern or ""),
+                symbol=symbol,
                 name=ns.name,
+                pattern=search_pattern,
                 file=ns.file,
                 line=ns.line,
                 line_end=ns.line_end,

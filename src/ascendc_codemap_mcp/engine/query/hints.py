@@ -57,7 +57,7 @@ def nl_or_multi_token_payload(pattern: str) -> dict[str, Any]:
         "cards": [],
         "count": 0,
         "hint": "Whole-sentence / multi-token queries are rejected. "
-        "Use search name=, resolve symbol=, find kind=, or file+line.",
+        "Use search pattern= (name= is an alias), resolve symbol=, find kind=, or file+line.",
         "pattern_tokens": tokens,
     }
 
@@ -119,7 +119,7 @@ def attach_query_hints(
     if regex:
         payload.setdefault("empty_reason", "pattern_looks_like_regex")
         payload["hint"] = (
-            "Use search name= for a regex over snapshot source lines."
+            "Use search pattern= (name= is an alias) for a regex over snapshot source lines."
         )
         payload["pattern_tokens"] = tokens
     elif count == 0 and str(mode or "") == "around":
