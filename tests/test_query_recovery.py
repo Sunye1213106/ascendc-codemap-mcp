@@ -28,15 +28,10 @@ def test_resolve_drops_extra_name_when_symbol_is_set() -> None:
     assert "name" in plan.dropped
 
 
-def test_resolve_name_only_does_not_suggest_dim() -> None:
-    try:
-        validate_plan(operation="resolve", name="GetTilingKey")
-    except InvalidQuery as exc:
-        assert exc.did_you_mean
-        assert all("dim" not in c for c in exc.did_you_mean)
-        assert any(c.get("operation") == "find" and c.get("name") == "GetTilingKey" for c in exc.did_you_mean)
-    else:
-        raise AssertionError("expected INVALID_QUERY")
+def test_resolve_name_is_symbol_alias() -> None:
+    plan = validate_plan(operation="resolve", name="GetTilingKey")
+    assert plan.symbol == "GetTilingKey"
+    assert plan.name == ""
 
 
 def test_entity_id_that_is_a_name_becomes_symbol() -> None:

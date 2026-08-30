@@ -35,20 +35,31 @@ def test_find_accepts_name_pattern_without_kind() -> None:
     assert plan.kind == ""
 
 
-def test_search_requires_name() -> None:
+def test_search_requires_pattern() -> None:
     try:
         validate_plan(operation="search")
     except InvalidQuery as exc:
-        assert "name" in str(exc).lower()
+        assert "pattern" in str(exc).lower()
+        assert "regex" in str(exc).lower()
+        assert "pattern" in exc.legal_filters
+        assert "name" not in exc.legal_filters
     else:
         raise AssertionError("expected INVALID_QUERY")
 
 
-def test_search_accepts_name_and_file() -> None:
+def test_search_name_is_silent_alias_for_pattern() -> None:
     plan = validate_plan(operation="search", name="BufferNum", file="block_cube.h")
     assert plan.operation == "search"
+    assert plan.pattern == "BufferNum"
     assert plan.name == "BufferNum"
     assert plan.file == "block_cube.h"
+    assert "name" not in plan.dropped
+
+
+def test_search_accepts_pattern() -> None:
+    plan = validate_plan(operation="search", pattern="DT_HIFLOAT8")
+    assert plan.pattern == "DT_HIFLOAT8"
+    assert plan.name == "DT_HIFLOAT8"
 
 
 def test_search_accepts_kind() -> None:
@@ -62,22 +73,23 @@ def test_illegal_filter_suggests_legal_rebinding() -> None:
     except InvalidQuery as exc:
         calls = exc.did_you_mean
         assert calls, "expected a repaired call"
-        assert all(c.get("operation") == "find" for c in calls)
-        assert all(c.get("kind") == "FUNCTION" for c in calls)
-        assert {"callee", "function", "name"} & set().union(*(set(c) for c in calls))
-        assert all("symbol" not in c for c in calls)
+        assert all(c.get("operation") in {"search", "resolve"} for c in calls)
+        assert all("symbol" not in c or c.get("operation") == "resolve" for c in calls)
         assert all("SyncALLCores" in c.values() for c in calls)
     else:
         raise AssertionError("expected INVALID_QUERY")
 
 
-def test_trace_with_one_endpoint_suggests_impact() -> None:
+def test_trace_with_one_endpoint_suggests_resolve() -> None:
     try:
         validate_plan(operation="trace", from_symbol="SyncALLCores")
     except InvalidQuery as exc:
         ops = {c.get("operation") for c in exc.did_you_mean}
-        assert "impact" in ops
-        assert "find" in ops
+        assert ops <= {"search", "resolve"}
+        assert "resolve" in ops
+        assert "search" in ops
+        assert "impact" not in ops
+        assert "find" not in ops
     else:
         raise AssertionError("expected INVALID_QUERY")
 
@@ -305,12 +317,13 @@ def test_index_and_miss_still_list_dims(tmp_path: Path) -> None:
     assert miss.get("verdict") == "UNKNOWN"
 
 
-def test_resolve_name_glob_suggests_find() -> None:
+def test_resolve_name_glob_suggests_search() -> None:
     try:
         validate_plan(operation="resolve", name="*Buffer*")
     except InvalidQuery as exc:
         assert exc.did_you_mean
-        assert exc.did_you_mean[0] == {"operation": "find", "name": "*Buffer*"}
+        assert exc.did_you_mean[0] == {"operation": "search", "pattern": "*Buffer*"}
+        assert all(c.get("operation") in {"search", "resolve"} for c in exc.did_you_mean)
     else:
         raise AssertionError("expected INVALID_QUERY")
 
