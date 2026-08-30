@@ -347,7 +347,10 @@ def test_calls_are_per_site() -> None:
         callee.id,
         attrs={"file": "op_host/a.cpp", "line": 20},
     )
-    assert r1.id != r2.id
+    assert r1.id == r2.id
     calls = [r for r in cm.relations.values() if r.kind_name() == RelationKind.CALLS.value]
-    assert len(calls) == 2
+    assert len(calls) == 1
+    sites = calls[0].attrs.get("sites") or []
+    lines = {int(s.get("line") or 0) for s in sites if isinstance(s, dict)}
+    assert {10, 20} <= lines
 

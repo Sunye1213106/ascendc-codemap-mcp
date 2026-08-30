@@ -19,6 +19,12 @@ from typing import Any, Iterable
 
 from ascendc_codemap_mcp.engine.ir.codemap import CodeMap
 from ascendc_codemap_mcp.engine.ir.entity import Entity, EntityKind
+from ascendc_codemap_mcp.engine.ir.identity import (
+    bind_or_create,
+    find_declaration,
+    is_alias_not_field,
+    is_forbidden_callable_name,
+)
 from ascendc_codemap_mcp.engine.ir.relation import RelationKind
 from ascendc_codemap_mcp.engine.semantics.const_expr import occupancy_overlap, worth_sharing
 from ascendc_codemap_mcp.engine.source_layout import iter_cpp, selected_host_files, selected_kernel_files
@@ -74,6 +80,7 @@ _RESOURCE_TYPES = (
 _CALL_SKIP = {
     "if", "while", "for", "switch", "sizeof", "alignof", "decltype", "static_cast",
     "reinterpret_cast", "const_cast", "dynamic_cast", "return", "likely", "unlikely",
+    "constexpr", "consteval", "constinit",
 }
 _METHOD_NAME_SKIP = _CALL_SKIP | {
     "else",
@@ -345,13 +352,27 @@ def _macro_scopes(text: str, file: str) -> list[_Scope]:
     return out
 
 
-def _scope_entity(codemap: CodeMap, scope: _Scope) -> Entity:
+def _scope_entity(codemap: CodeMap, scope: _Scope) -> Entity | None:
     if scope.kind == "function":
         kernel = _find_kernel(codemap, scope.name)
         if kernel is not None:
             kernel.attrs.setdefault("source_definition", True)
             return kernel
         kind = EntityKind.METHOD if "::" in scope.name else EntityKind.FUNCTION
+        if is_forbidden_callable_name(scope.name):
+            return None
+        bound = bind_or_create(
+            codemap,
+            kind,
+            scope.name.split("::")[-1],
+            file=scope.file,
+            line=scope.start,
+            owner=scope.name.rsplit("::", 1)[0] if "::" in scope.name else "",
+            architecture=str(getattr(codemap, "architecture", "") or ""),
+            attrs={"layer": "kernel", "source_scope": True, "provenance": "source_scope"},
+            status="confirmed",
+        )
+        return bound
     else:
         kind = EntityKind.MACRO
     return codemap.upsert(
@@ -413,6 +434,8 @@ def _extract_calls_macros_and_frontiers(
         for function in functions:
             body = text[function.body_start:function.body_end]
             caller = scope_entities[function]
+            if caller is None:
+                continue
             if macro_re is None:
                 continue
             seen_macros: set[str] = set()
@@ -422,10 +445,13 @@ def _extract_calls_macros_and_frontiers(
                     continue
                 seen_macros.add(mname)
                 macro = macro_by_name[mname]
+                macro_ent = scope_entities[macro]
+                if macro_ent is None:
+                    continue
                 codemap.link(
                     RelationKind.CALLS,
                     caller.id,
-                    scope_entities[macro].id,
+                    macro_ent.id,
                     attrs={"provenance": "source_macro_invocation", "file": file},
                     status="confirmed",
                 )
@@ -433,6 +459,8 @@ def _extract_calls_macros_and_frontiers(
 
         for scope in all_scopes:
             caller = scope_entities[scope]
+            if caller is None:
+                continue
             body = text[scope.body_start:scope.body_end]
             body_abs = scope.body_start
 
@@ -440,7 +468,11 @@ def _extract_calls_macros_and_frontiers(
             # real call edge; unknown callees are retained as method call targets.
             for match in _CALL_RE.finditer(body):
                 target_name = match.group("name")
-                if target_name in _CALL_SKIP or target_name == scope.name.split("::")[-1]:
+                if (
+                    target_name in _CALL_SKIP
+                    or is_forbidden_callable_name(target_name)
+                    or target_name == scope.name.split("::")[-1]
+                ):
                     continue
                 absolute = body_abs + match.start()
                 line = _line_at(newlines, absolute)
@@ -450,20 +482,23 @@ def _extract_calls_macros_and_frontiers(
                     direct_kernel_calls += 1
                 else:
                     receiver = str(match.group("receiver") or "").strip()
-                    display = f"{receiver}.{target_name}" if receiver else target_name
-                    target = codemap.upsert(
+                    target = bind_or_create(
+                        codemap,
                         EntityKind.METHOD,
-                        display,
-                        eid=f"CALLTARGET::{file}::{line}::{display}",
+                        target_name,
+                        file=file,
+                        line=line,
+                        owner=receiver,
+                        architecture=str(getattr(codemap, "architecture", "") or ""),
                         attrs={
                             "call_target": target_name,
                             "receiver": receiver,
                             "provenance": "source_call_site",
                         },
-                        file=file,
-                        line=line,
                         status="confirmed",
                     )
+                    if target is None:
+                        continue
                 codemap.link(
                     RelationKind.CALLS,
                     caller.id,
@@ -581,15 +616,9 @@ def _resolve_tiling_reads(codemap: CodeMap, sources: list[_KernelSource]) -> dic
             if scope is not None:
                 owner = _scope_entity(codemap, scope)
             else:
-                owner = codemap.upsert(
-                    EntityKind.METHOD,
-                    f"{src.path.stem}:source_scope",
-                    eid=f"SRCMETHOD::{file}::source_scope",
-                    attrs={"layer": "kernel", "provenance": "source_tilingdata_read"},
-                    file=file,
-                    line=_line_at(src.newlines, match.start()),
-                    status="confirmed",
-                )
+                owner = None
+            if owner is None:
+                continue
             for field in candidates:
                 if inner and field.name != inner:
                     continue
@@ -679,20 +708,25 @@ def _extract_compile_facts(
                 compile_vars += 1
         for m in _TYPE_ALIAS_RE.finditer(text):
             alias, target = m.groups()
-            codemap.upsert(
+            if is_alias_not_field(alias, f"using {alias} = {target}"):
+                continue
+            bound = bind_or_create(
+                codemap,
                 EntityKind.TYPE,
                 alias,
-                eid=f"SRCTYPEALIAS::{file}::{alias}",
+                file=file,
+                line=_line_at(newlines, m.start()),
+                architecture=architecture,
                 attrs={
                     "role": "type_alias",
                     "alias_of": target,
                     "provenance": "source_type_alias",
                     "architecture": architecture,
                 },
-                file=file,
-                line=_line_at(newlines, m.start()),
                 status="confirmed",
             )
+            if bound is None:
+                continue
             type_aliases += 1
     shared = _link_shared_compile_values(codemap)
     return {
@@ -853,15 +887,18 @@ def _extract_runtime_structs_and_resources(
                 close_pos = _matching_brace(text, open_pos)
                 if close_pos < 0:
                     continue
-                owner_ent = codemap.upsert(
+                owner_ent = bind_or_create(
+                    codemap,
                     EntityKind.TYPE,
                     owner,
-                    eid=f"SRCTYPE::{file}::{owner}",
-                    attrs={"cpp_kind": kind_name, "architecture": architecture, "provenance": "source_runtime_type"},
                     file=file,
                     line=_line_at(newlines, m.start()),
+                    architecture=architecture,
+                    attrs={"cpp_kind": kind_name, "architecture": architecture, "provenance": "source_runtime_type"},
                     status="confirmed",
                 )
+                if owner_ent is None:
+                    continue
                 structs += 1
                 pending: str | None = None
                 pending_line = 0
@@ -940,13 +977,17 @@ def _extract_runtime_structs_and_resources(
                 body = text[open_pos + 1 : close_pos]
                 for hit in _CLASS_METHOD_RE.finditer(body):
                     name = hit.group("name")
-                    if not name or name in _METHOD_NAME_SKIP:
+                    if not name or name in _METHOD_NAME_SKIP or is_forbidden_callable_name(name):
                         continue
                     line = _line_at(newlines, open_pos + 1 + hit.start("name"))
-                    method = codemap.upsert(
+                    method = bind_or_create(
+                        codemap,
                         EntityKind.METHOD,
                         name,
-                        eid=f"SRCKDEF::{file}::{line}::{owner}::{name}",
+                        file=file,
+                        line=line,
+                        owner=owner,
+                        architecture=architecture,
                         attrs={
                             "owner": owner,
                             "source_definition": True,
@@ -954,10 +995,10 @@ def _extract_runtime_structs_and_resources(
                             "provenance": "source_runtime_method",
                             "qualified_name": f"{owner}::{name}",
                         },
-                        file=file,
-                        line=line,
                         status="confirmed",
                     )
+                    if method is None:
+                        continue
                     codemap.link(
                         RelationKind.DECLARES,
                         owner_ent.id,
@@ -986,15 +1027,26 @@ def _mint_runtime_field(
         return False
     if not ctype or ctype.startswith("#"):
         return False
-    field = codemap.upsert(
+    if is_alias_not_field(name, ctype):
+        return False
+    existing_type = find_declaration(
+        codemap, EntityKind.TYPE, symbol=name, owner=owner, file=file
+    )
+    if existing_type is not None:
+        return False
+    field = bind_or_create(
+        codemap,
         EntityKind.FIELD,
         name,
-        eid=f"SRCFIELD::{file}::{owner}::{name}",
-        attrs={"owner": owner, "cpp_type": ctype, "provenance": "source_runtime_member"},
         file=file,
         line=line,
+        owner=owner,
+        architecture=str(getattr(codemap, "architecture", "") or ""),
+        attrs={"owner": owner, "cpp_type": ctype, "provenance": "source_runtime_member"},
         status="confirmed",
     )
+    if field is None:
+        return False
     codemap.link(
         RelationKind.DECLARES,
         owner_ent.id,

@@ -8,6 +8,83 @@ from typing import Any
 from ascendc_codemap_mcp.engine.ir.codemap import CodeMap
 from ascendc_codemap_mcp.engine.ir.entity import Entity, EntityKind
 
+#: C++ keywords / specifiers that are never a FUNCTION or METHOD name.
+CXX_SPECIFIERS = frozenset(
+    {
+        "if",
+        "else",
+        "for",
+        "while",
+        "do",
+        "switch",
+        "case",
+        "default",
+        "break",
+        "continue",
+        "return",
+        "goto",
+        "try",
+        "catch",
+        "throw",
+        "sizeof",
+        "alignof",
+        "decltype",
+        "static_assert",
+        "constexpr",
+        "consteval",
+        "constinit",
+        "const",
+        "volatile",
+        "static",
+        "extern",
+        "inline",
+        "virtual",
+        "explicit",
+        "friend",
+        "typedef",
+        "using",
+        "typename",
+        "template",
+        "namespace",
+        "class",
+        "struct",
+        "enum",
+        "union",
+        "public",
+        "private",
+        "protected",
+        "new",
+        "delete",
+        "this",
+        "true",
+        "false",
+        "nullptr",
+        "operator",
+        "noexcept",
+        "co_await",
+        "co_return",
+        "co_yield",
+        "concept",
+        "requires",
+        "static_cast",
+        "reinterpret_cast",
+        "const_cast",
+        "dynamic_cast",
+        "likely",
+        "unlikely",
+    }
+)
+
+_DECLARATION_KINDS = frozenset(
+    {
+        EntityKind.TYPE.value,
+        EntityKind.FIELD.value,
+        EntityKind.METHOD.value,
+        EntityKind.FUNCTION.value,
+    }
+)
+_ALIAS_MEMBER_NAMES = frozenset({"TYPE", "type", "value_type", "type_t"})
+
 
 def _norm_file(path: str) -> str:
     return str(path or "").replace("\\", "/")
@@ -23,6 +100,34 @@ def qualified_name(symbol: str, *, owner: str = "") -> str:
     if owner_s and leaf and not leaf.startswith(owner_s + "::"):
         return f"{owner_s}::{leaf}"
     return leaf or str(symbol or "")
+
+
+def is_forbidden_callable_name(name: str) -> bool:
+    """True when *name* cannot be a C++ function or method identifier."""
+    leaf = _leaf(name)
+    if not leaf or not leaf.isidentifier():
+        return True
+    return leaf in CXX_SPECIFIERS
+
+
+def is_alias_not_field(name: str, ctype: str = "") -> bool:
+    """True when a member scan is a ``using`` / typedef alias, not a FIELD."""
+    leaf = _leaf(name)
+    text = str(ctype or "").strip()
+    compact = " ".join(text.split())
+    if compact.startswith(("using ", "typedef ", "typename ")) or compact in {
+        "using",
+        "typedef",
+        "typename",
+    }:
+        return True
+    if leaf in _ALIAS_MEMBER_NAMES and (
+        compact.startswith(("using", "typedef"))
+        or "conditional" in compact
+        or "typename" in compact
+    ):
+        return True
+    return False
 
 
 def declaration_id(
@@ -45,6 +150,14 @@ def declaration_id(
     )
 
 
+def _owner_of(ent: Entity) -> str:
+    return str(
+        ent.attrs.get("lexical_owner")
+        or ent.attrs.get("owner")
+        or ""
+    ).strip()
+
+
 def find_declaration(
     codemap: CodeMap,
     kind: EntityKind | str,
@@ -63,7 +176,7 @@ def find_declaration(
         ent_leaf = _leaf(name)
         if ent_leaf != leaf:
             continue
-        ent_owner = str(ent.attrs.get("lexical_owner") or "")
+        ent_owner = _owner_of(ent)
         ent_file = _norm_file(ent.file)
         if owner:
             if not (
@@ -100,14 +213,25 @@ def bind_or_create(
     architecture: str = "",
     attrs: dict[str, Any] | None = None,
     status: str = "extracted",
-) -> Entity:
-    """Reuse a Clang (or earlier) declaration; mint owner-aware id only if absent."""
+) -> Entity | None:
+    """Reuse a Clang (or earlier) declaration; mint owner-aware id only if absent.
+
+    TYPE / FIELD / METHOD / FUNCTION C++ declarations enter the graph here.
+    Returns ``None`` when *symbol* is a C++ keyword/specifier for METHOD/FUNCTION.
+    """
+    kind_name = kind.value if isinstance(kind, EntityKind) else str(kind)
+    if kind_name in {EntityKind.METHOD.value, EntityKind.FUNCTION.value}:
+        if is_forbidden_callable_name(symbol):
+            return None
+    if kind_name == EntityKind.FIELD.value and is_alias_not_field(symbol, str((attrs or {}).get("cpp_type") or "")):
+        return None
     existing = find_declaration(
         codemap, kind, symbol=symbol, owner=owner, file=file
     )
     payload = dict(attrs or {})
     if owner:
         payload.setdefault("lexical_owner", owner)
+        payload.setdefault("owner", owner)
     if architecture:
         payload.setdefault("architecture", architecture)
     name = qualified_name(symbol, owner=owner)
@@ -133,3 +257,18 @@ def bind_or_create(
         line=line,
         status=status,
     )
+
+
+def declaration_key(ent: Entity) -> tuple[str, str, str, str]:
+    """Canonical (kind, file, owner, leaf) for duplicate-declaration probes."""
+    return (
+        ent.kind_name(),
+        _norm_file(ent.file),
+        _owner_of(ent),
+        _leaf(ent.name),
+    )
+
+
+def is_declaration_kind(kind: EntityKind | str) -> bool:
+    kind_name = kind.value if isinstance(kind, EntityKind) else str(kind)
+    return kind_name in _DECLARATION_KINDS

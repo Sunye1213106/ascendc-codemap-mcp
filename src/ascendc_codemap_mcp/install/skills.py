@@ -30,6 +30,14 @@ def bundled_root() -> Path:
     raise FileNotFoundError("bundled AscendC CodeMap skills are missing")
 
 
+def _skill_folder_names() -> tuple[str, ...]:
+    names: list[str] = []
+    for name in SKILL_NAMES:
+        names.append(f"ascendc-codemap-{name}")
+        names.append(name)
+    return tuple(names)
+
+
 def _copy_skills(dest: Path) -> None:
     src = bundled_root()
     dest.mkdir(parents=True, exist_ok=True)
@@ -41,16 +49,18 @@ def _copy_skills(dest: Path) -> None:
             target.write_text(body, encoding="utf-8")
 
 
-def _remove_skills(dest: Path) -> None:
+def _remove_skills(dest: Path) -> list[str]:
+    removed: list[str] = []
     if not dest.is_dir():
-        return
+        return removed
     import shutil
 
-    for name in SKILL_NAMES:
-        for folder in (f"ascendc-codemap-{name}", name):
-            path = dest / folder
-            if path.is_dir():
-                shutil.rmtree(path)
+    for folder in _skill_folder_names():
+        path = dest / folder
+        if path.is_dir():
+            shutil.rmtree(path)
+            removed.append(str(path))
+    return removed
 
 
 def _upsert_agents(path: Path) -> None:
@@ -81,11 +91,17 @@ def _remove_agents(path: Path) -> None:
     start = existing.find(AGENTS_MARK_BEGIN)
     end = existing.find(AGENTS_MARK_END)
     if start < 0 or end < start:
+        if not existing.strip():
+            path.unlink()
         return
     end_at = end + len(AGENTS_MARK_END)
     while end_at < len(existing) and existing[end_at] in "\r\n":
         end_at += 1
-    path.write_text(existing[:start] + existing[end_at:], encoding="utf-8")
+    remaining = existing[:start] + existing[end_at:]
+    if remaining.strip():
+        path.write_text(remaining, encoding="utf-8")
+    else:
+        path.unlink()
 
 
 def _client_skill_dir(client: str) -> Path | None:
@@ -126,12 +142,17 @@ def install_for(client: str, *, dry_run: bool = False) -> dict[str, Any]:
 def uninstall_for(client: str, *, dry_run: bool = False) -> dict[str, Any]:
     dest = _client_skill_dir(client)
     if dest is None or dry_run:
-        return {"ok": dest is not None, "client": client, "path": str(dest or "")}
-    _remove_skills(dest)
+        return {
+            "ok": dest is not None,
+            "client": client,
+            "path": str(dest or ""),
+            "removed": [],
+        }
+    removed = _remove_skills(dest)
     agents = _client_agents_path(client)
     if agents is not None:
         _remove_agents(agents)
-    return {"ok": True, "client": client, "path": str(dest)}
+    return {"ok": True, "client": client, "path": str(dest), "removed": removed}
 
 
 def install_shared(*, dry_run: bool = False) -> None:
@@ -141,7 +162,30 @@ def install_shared(*, dry_run: bool = False) -> None:
     _copy_skills(dest)
 
 
-def uninstall_shared(*, dry_run: bool = False) -> None:
+def uninstall_shared(*, dry_run: bool = False) -> list[str]:
     if dry_run:
-        return
-    _remove_skills(Path.home() / ".agents" / "skills")
+        return []
+    return _remove_skills(Path.home() / ".agents" / "skills")
+
+
+def leftover_skill_folders() -> list[Path]:
+    dests: list[Path] = []
+    for client in ("Cursor", "Claude Code", "Codex", "OpenCode"):
+        dest = _client_skill_dir(client)
+        if dest is not None:
+            dests.append(dest)
+    dests.append(Path.home() / ".agents" / "skills")
+    found: list[Path] = []
+    seen: set[Path] = set()
+    for dest in dests:
+        key = dest.resolve() if dest.exists() else dest
+        if key in seen:
+            continue
+        seen.add(key)
+        if not dest.is_dir():
+            continue
+        for folder in _skill_folder_names():
+            path = dest / folder
+            if path.is_dir():
+                found.append(path)
+    return found

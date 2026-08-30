@@ -34,6 +34,7 @@ from typing import Any, Iterable
 from ascendc_codemap_mcp.engine.cpp_lex import method_identity
 from ascendc_codemap_mcp.engine.ir.codemap import CodeMap
 from ascendc_codemap_mcp.engine.ir.entity import Entity, EntityKind
+from ascendc_codemap_mcp.engine.ir.identity import bind_or_create, is_forbidden_callable_name
 from ascendc_codemap_mcp.engine.ir.relation import RelationKind
 from ascendc_codemap_mcp.engine.ir.tiling_binding import (
     kernels_for_use_site,
@@ -901,10 +902,16 @@ def _rebuild_kernel_scopes(
                 if end_line > int(ent.line_end or 0):
                     ent.line_end = end_line
             else:
-                ent = codemap.upsert(
+                if is_forbidden_callable_name(short):
+                    continue
+                ent = bind_or_create(
+                    codemap,
                     kind,
                     short,
-                    eid=f"SRCKDEF::{file}::{line}::{owner}::{short}",
+                    file=file,
+                    line=line,
+                    owner=owner,
+                    architecture=architecture,
                     attrs={
                         "owner": owner,
                         "source_definition": True,
@@ -912,11 +919,12 @@ def _rebuild_kernel_scopes(
                         "provenance": "source_kernel_definition",
                         "signature": signature,
                     },
-                    file=file,
-                    line=line,
-                    line_end=end_line,
                     status="confirmed",
                 )
+                if ent is None:
+                    continue
+                if end_line > int(ent.line_end or 0):
+                    ent.line_end = end_line
             params = match.params or ""
             scopes.append(
                 _Scope(

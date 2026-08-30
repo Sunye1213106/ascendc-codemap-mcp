@@ -31,11 +31,13 @@ class RelationKind(str, Enum):
     SELECTS = "SELECTS"
     LAUNCHES = "LAUNCHES"
 
-    # Configuration-contract edges. CALLS is per-site (kind|src|dst|file:line).
+    # Configuration-contract edges. CALLS is topology-unique (kind|src|dst);
+    # extra call sites live on attrs.sites[].
     # CALLS_UNDER_GUARD carries a guard BRANCH as src so each predicate is distinct.
     CALLS_UNDER_GUARD = "CALLS_UNDER_GUARD"
     MATERIALIZES_AS = "MATERIALIZES_AS"
     ALLOCATES = "ALLOCATES"
+    INSTANCE_OF = "INSTANCE_OF"
 
     AVAILABLE_ON = "AVAILABLE_ON"
     ACTIVE_UNDER = "ACTIVE_UNDER"

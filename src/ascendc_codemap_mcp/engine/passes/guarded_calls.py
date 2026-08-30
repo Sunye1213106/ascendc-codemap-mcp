@@ -14,6 +14,7 @@ from typing import Any, Iterable
 from ascendc_codemap_mcp.engine.ids import branch_id
 from ascendc_codemap_mcp.engine.ir.codemap import CodeMap
 from ascendc_codemap_mcp.engine.ir.entity import Entity, EntityKind
+from ascendc_codemap_mcp.engine.ir.identity import bind_or_create, is_forbidden_callable_name
 from ascendc_codemap_mcp.engine.ir.evidence import SOURCE_CLANG_AST
 from ascendc_codemap_mcp.engine.ir.relation import RelationKind
 from ascendc_codemap_mcp.engine.query.predicate_ast import annotate_attrs
@@ -115,8 +116,10 @@ def _site_field(site: Any, name: str, default: Any = "") -> Any:
     return getattr(site, name, default)
 
 
-def _resolve_callable(codemap: CodeMap, name: str, *, layer: str) -> Entity:
+def _resolve_callable(codemap: CodeMap, name: str, *, layer: str) -> Entity | None:
     leaf = str(name or "").split("::")[-1]
+    if is_forbidden_callable_name(leaf):
+        return None
     hits: list[Entity] = []
     for kind in _CALLABLE_KINDS:
         hits.extend(codemap.by_name(leaf, kind=kind))
@@ -129,7 +132,8 @@ def _resolve_callable(codemap: CodeMap, name: str, *, layer: str) -> Entity:
     if len(layered) == 1:
         return layered[0]
     kind = EntityKind.FUNCTION if layer == "host" else EntityKind.METHOD
-    return codemap.upsert(
+    return bind_or_create(
+        codemap,
         kind,
         leaf or name,
         attrs={"layer": layer, "provenance": "clang_walk"},
@@ -183,6 +187,8 @@ def ingest_guarded_calls(
             continue
         caller = _resolve_callable(codemap, caller_name, layer=layer)
         callee = _resolve_callable(codemap, callee_name, layer=layer)
+        if caller is None or callee is None:
+            continue
         for pc in conds:
             gtext = _pc_pretty(pc)
             if not gtext:

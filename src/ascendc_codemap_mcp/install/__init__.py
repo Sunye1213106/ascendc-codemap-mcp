@@ -93,7 +93,20 @@ def run_uninstall(*, dry_run: bool = False, hosts: list[str] | None = None) -> i
         print(f"{row.get('client')}: {mark} {row.get('path') or ''} {row.get('detail') or ''}".rstrip())
         if not dry_run:
             # Skills are ours even when the MCP entry is already gone.
-            skill_install.uninstall_for(str(row.get("client") or ""), dry_run=False)
+            skill_out = skill_install.uninstall_for(
+                str(row.get("client") or ""), dry_run=False
+            )
+            for path in skill_out.get("removed") or []:
+                print(f"  skill: removed {path}")
     if not dry_run and (selected is None or "codex" in selected):
-        skill_install.uninstall_shared(dry_run=False)
+        for path in skill_install.uninstall_shared(dry_run=False) or []:
+            print(f"  skill: removed {path}")
+    if not dry_run:
+        leftover = skill_install.leftover_skill_folders()
+        for path in leftover:
+            print(f"  skill: leftover {path}")
+        if leftover and selected is not None:
+            print(
+                "  skill: leftover copies remain; uninstall --host all to remove them"
+            )
     return 0

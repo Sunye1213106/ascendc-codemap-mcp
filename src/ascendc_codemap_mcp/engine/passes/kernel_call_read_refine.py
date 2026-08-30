@@ -20,6 +20,7 @@ from typing import Iterable
 from ascendc_codemap_mcp.engine.cpp_lex import iter_function_defs, line_at, line_index, method_identity
 from ascendc_codemap_mcp.engine.ir.codemap import CodeMap
 from ascendc_codemap_mcp.engine.ir.entity import Entity, EntityKind
+from ascendc_codemap_mcp.engine.ir.identity import bind_or_create, is_forbidden_callable_name
 from ascendc_codemap_mcp.engine.ir.relation import RelationKind
 from ascendc_codemap_mcp.engine.passes.tiling_gaps import record_unresolved_tiling
 from ascendc_codemap_mcp.engine.source_layout import includes_architecture, keep_lexical_kernel_path
@@ -276,17 +277,27 @@ def _discover_scopes(
                     ent.line_end = end_line
             else:
                 kind = EntityKind.METHOD if owner else EntityKind.FUNCTION
-                ent = codemap.upsert(
+                if is_forbidden_callable_name(short):
+                    continue
+                ent = bind_or_create(
+                    codemap,
                     kind,
                     short,
-                    eid=f"SRCKDEFV2::{file}::{line}::{owner}::{short}",
+                    file=file,
+                    line=line,
+                    owner=owner,
+                    architecture=architecture,
                     attrs={
                         "owner": owner, "source_definition": True,
                         "architecture": architecture, "provenance": "source_kernel_definition_v2",
                         "signature": signature,
                     },
-                    file=file, line=line, line_end=end_line, status="confirmed",
+                    status="confirmed",
                 )
+                if ent is None:
+                    continue
+                if end_line > int(ent.line_end or 0):
+                    ent.line_end = end_line
             scopes.append(_Scope(ent, short, owner, file, raw, masked, brace + 1, close, params, "method" if owner else "function"))
     # one entity/scope per physical source definition
     unique: dict[tuple[str, int, int], _Scope] = {}

@@ -28,7 +28,7 @@ FILE_SECTION_PREFIX = "### "
 _INTERNAL_ID_RE = re.compile(
     r"(?:SRCPOL(?:COND)?|SRCMACRO|SRCFRONTIER|E_TYPE_|REL::|entity_id=)[^\s]*"
 )
-_PROOF_LINES = 3
+_PROOF_LINES = 16
 _MAX_RANGE_LINES = 40
 #: Whole-card source budget. A set answer with many hits must not spend it all
 #: on one file.
@@ -221,6 +221,20 @@ def _clip_source(
                 if rows:
                     return "\n".join(f"{ln}:{txt}" for ln, txt in rows)
             half = max(0, int(max_lines) // 2)
+            from ascendc_codemap_mcp.engine.query.sql import STATEMENT_AFTER, STATEMENT_BEFORE
+
+            window_rows = _source_line_rows(
+                conn,
+                file,
+                max(1, int(line) - max(half, STATEMENT_BEFORE)),
+                int(line) + max(half, STATEMENT_AFTER, int(max_lines)),
+            )
+            if window_rows:
+                from ascendc_codemap_mcp.engine.query.agent_card import clip_logical_unit
+
+                unit = clip_logical_unit(window_rows, int(line), max_lines=max(int(max_lines), 16))
+                if unit:
+                    return "\n".join(f"{ln}:{txt}" for ln, txt in unit)
             window = _source_line_window(
                 conn, file, int(line), before=half, after=max(half, int(max_lines) - half)
             )
@@ -408,6 +422,8 @@ def _expand_statement_snippet(
             EntityKind.COMPILE_VAR.value,
             EntityKind.MACRO.value,
             EntityKind.TILING_KEY.value,
+            EntityKind.TYPE.value,
+            EntityKind.FIELD.value,
         }:
             candidates.append(other)
     preferred = sorted(
@@ -634,9 +650,25 @@ def slim_explore_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 continue
             item = {
                 key: card[key]
-                for key in ("kind", "name", "file", "line")
+                for key in (
+                    "kind",
+                    "name",
+                    "file",
+                    "line",
+                    "line_start",
+                    "line_end",
+                    "summary",
+                    "source",
+                    "text",
+                    "snippet",
+                    "match",
+                )
                 if key in card and card[key] not in (None, "")
             }
+            if "line" not in item:
+                start = int(card.get("line_start") or card.get("line") or 0)
+                if start:
+                    item["line"] = start
             hidden = str(card.get("id") or card.get("entity_id") or "")
             if hidden:
                 item["_entity_id"] = hidden
@@ -647,11 +679,14 @@ def slim_explore_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 item["writers"] = writers
             if readers:
                 item["readers"] = readers
+            if isinstance(card.get("facets"), dict):
+                item["facets"] = card["facets"]
+            if isinstance(card.get("counts"), dict):
+                item["counts"] = card["counts"]
             slim_cards.append(item)
         out["cards"] = slim_cards
     out.pop("declared_coverage", None)
     out.pop("product_coverage", None)
-    out.pop("truncated", None)
     cov = out.get("coverage")
     if isinstance(cov, dict) and out.get("dim_coverage"):
         cov = dict(cov)
@@ -891,7 +926,16 @@ def _render_search_markdown(payload: dict[str, Any]) -> list[str]:
 def _render_find_markdown(payload: dict[str, Any]) -> list[str]:
     cards = [c for c in (payload.get("cards") or []) if isinstance(c, dict)]
     total = int(payload.get("total") or len(cards))
-    lines = [f"Matches: {total}", "", "Top candidates:"]
+    returned = int(payload.get("returned") or len(cards))
+    exhaustive = payload.get("exhaustive")
+    if exhaustive is None:
+        exhaustive = returned >= total and not payload.get("truncated")
+    lines = [
+        f"Matches: {total}",
+        f"returned {returned} of {total} · exhaustive={'yes' if exhaustive else 'no'}",
+        "",
+        "Top candidates:",
+    ]
     for index, row in enumerate(cards, 1):
         file, line, name, _ = _site_line(row)
         kind_s = _card_kinds(row)
@@ -920,7 +964,7 @@ def _render_find_markdown(payload: dict[str, Any]) -> list[str]:
             " · ".join(f"{g.get('kind')} {g.get('count')}" for g in groups if g.get("kind"))
         )
         lines.append("")
-    if total > len(cards):
+    if total > len(cards) and str(payload.get("projection") or "") != "locations":
         lines.append("Refine with kind= / file= or a tighter name=")
         lines.append("")
     op_sites = [r for r in (payload.get("operation_sites") or []) if isinstance(r, dict)]
@@ -932,7 +976,9 @@ def _render_find_markdown(payload: dict[str, Any]) -> list[str]:
                 lines.append(f"- {file}:{line}")
         site_total = int(payload.get("operation_sites_total") or len(op_sites))
         if payload.get("operation_sites_truncated"):
-            lines.append(f"(showing {len(op_sites)} of {site_total})")
+            lines.append(
+                f"returned {len(op_sites)} of {site_total} · exhaustive=no"
+            )
         lines.append("")
     elif not _is_name_list(payload) and cards:
         lines.append("**Call sites**")
@@ -1031,6 +1077,51 @@ def _render_resolve_markdown(payload: dict[str, Any], *, projection: str) -> lis
             lines.append(f"{len(used)} references across {len(counts)} files")
         lines.append("")
     dim_names = [str(n).strip() for n in (payload.get("dim_names") or []) if str(n).strip()]
+    support = payload.get("compiled_support")
+    if not isinstance(support, dict):
+        facets = primary.get("facets") if isinstance(primary.get("facets"), dict) else {}
+        support = facets.get("compiled_support") if isinstance(facets, dict) else None
+    if isinstance(support, dict) and support:
+        lines.append("**Compiled support**")
+        legal = "yes" if support.get("legal") else "no"
+        dim = str(support.get("dim") or "")
+        variants = support.get("variants")
+        bits = [f"legal={legal}"]
+        if variants not in (None, ""):
+            bits.append(f"variants={variants}")
+        if dim:
+            bits.append(f"dim={dim}")
+        lines.append("- " + " · ".join(bits))
+        values = support.get("values") if isinstance(support.get("values"), dict) else {}
+        if values:
+            parts = [f"{k}: {v}" for k, v in list(values.items())[:12]]
+            lines.append(f"- values: {{{', '.join(parts)}}}")
+        host_rows = [r for r in (support.get("host_encoding") or []) if isinstance(r, dict)]
+        if host_rows:
+            lines.append("Host encoding")
+            for row in host_rows[:4]:
+                loc = _loc(row)
+                expr = str(row.get("expr") or "")
+                lines.append(f"- {loc}" + (f"  {expr}" if expr else ""))
+        kernel = support.get("kernel") if isinstance(support.get("kernel"), dict) else {}
+        if kernel:
+            lines.append("Kernel specialization")
+            for kdim, cmap in list(kernel.items())[:8]:
+                if isinstance(cmap, dict):
+                    parts = [f"{k}: {v}" for k, v in list(cmap.items())[:8]]
+                    lines.append(f"- {kdim}: {{{', '.join(parts)}}}")
+                elif isinstance(cmap, list):
+                    lines.append(f"- {kdim}: {{{', '.join(str(v) for v in cmap[:8])}}}")
+        cf = support.get("counterfactual") if isinstance(support.get("counterfactual"), dict) else {}
+        if cf:
+            cf_legal = "yes" if cf.get("legal") else "no"
+            conds = [
+                f"{k}={v}"
+                for k, v in cf.items()
+                if k not in {"legal", "variants"}
+            ]
+            lines.append(f"Counterfactual: {', '.join(conds)} → legal={cf_legal}")
+        lines.append("")
     if dim_names and not seed_name:
         lines.append("**Dims**")
         lines.append("- " + ", ".join(dim_names))
@@ -1215,17 +1306,23 @@ def render_explore_markdown(
 
 
 #: Kinds that actually carry a host → TilingKey → kernel contract. Only these
-#: can be graded by the C1–C8 fence; a plain function or struct has no producer
-#: to miss, so grading it there reported INCOMPLETE for a complete answer.
+#: can be graded by the C1–C8 fence. A bare FIELD / TYPE alias is not transport.
 _CONTRACT_KINDS = frozenset(
     {
         EntityKind.TILING_FIELD.value,
-        EntityKind.FIELD.value,
         EntityKind.TILING_KEY.value,
         EntityKind.TEMPLATE_ARG.value,
         EntityKind.COMPILE_VAR.value,
         EntityKind.INPUT.value,
         EntityKind.OUTPUT.value,
+    }
+)
+_TRANSPORT_REL_HINTS = frozenset(
+    {
+        RelationKind.BINDS.value,
+        RelationKind.MATERIALIZES_AS.value,
+        RelationKind.SELECTS.value,
+        RelationKind.LAUNCHES.value,
     }
 )
 
@@ -1265,6 +1362,29 @@ def _definition_site_candidates(cards: list[dict[str, Any]]) -> list[dict[str, A
             seen.add(key)
             out.append(site)
     return out
+
+
+def _has_transport_edges(card: dict[str, Any]) -> bool:
+    extras = card.get("extras") if isinstance(card.get("extras"), dict) else {}
+    for key in ("binds", "transport", "materializes"):
+        rows = extras.get(key) or card.get(key)
+        if isinstance(rows, list) and rows:
+            return True
+    for rel in extras.get("relations") or []:
+        if isinstance(rel, dict) and str(rel.get("kind") or "") in _TRANSPORT_REL_HINTS:
+            return True
+    return False
+
+
+def _contract_applicable(primary: dict[str, Any], *, seed_kind: str = "") -> bool:
+    kind = str(primary.get("kind") or seed_kind or "")
+    if kind == EntityKind.TILING_FIELD.value:
+        return True
+    if kind in _CONTRACT_KINDS and _has_transport_edges(primary):
+        return True
+    if kind == EntityKind.TILING_KEY.value:
+        return True
+    return False
 
 
 def _has_definition(card: dict[str, Any]) -> bool:
@@ -1320,6 +1440,48 @@ def _overlay_site(card: dict[str, Any], site: dict[str, Any], query: Any) -> dic
         out["line_end"] = line_end
     if snippet:
         out["snippet"] = snippet
+    elif site.get("snippet"):
+        out["snippet"] = str(site.get("snippet") or "")
+    if site.get("cpp_kind"):
+        out["cpp_kind"] = site.get("cpp_kind")
+    return out
+
+
+def _prefer_definition_card(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Class/struct definition outranks a using/alias mention of the same ident."""
+    if len(cards) < 2:
+        return cards
+    defs = [c for c in cards if isinstance(c, dict) and _looks_like_definition(c)]
+    if not defs:
+        return cards
+    head = defs[0]
+    rest = [c for c in cards if c is not head]
+    return [head, *rest]
+
+
+def _sibling_use_sites(
+    primary: dict[str, Any], cards: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    pfile, pline, _, _ = _site_line(primary)
+    seen: set[tuple[str, int]] = {(pfile.replace("\\", "/"), pline)}
+    out: list[dict[str, Any]] = []
+    for card in cards:
+        if not isinstance(card, dict):
+            continue
+        file, line, name, snippet = _site_line(card)
+        key = (file.replace("\\", "/"), line)
+        if not file or line <= 0 or key in seen:
+            continue
+        seen.add(key)
+        out.append(
+            {
+                "file": file,
+                "line": line,
+                "name": name or str(card.get("name") or ""),
+                "kind": str(card.get("kind") or ""),
+                "snippet": snippet,
+            }
+        )
     return out
 
 
@@ -1370,6 +1532,8 @@ def attach_explore_fields(
             a for a in (aliases or []) if isinstance(a, dict) and a.get("id")
         ]
     cards = _merge_canonical_identities(cards)
+    if unique_seed:
+        cards = _prefer_definition_card(cards)
     payload["cards"] = cards
     if not cards:
         payload.setdefault("completeness", UNKNOWN)
@@ -1407,6 +1571,74 @@ def attach_explore_fields(
     if not unique_seed:
         payload.setdefault("completeness", COMPLETE if cards else UNKNOWN)
         payload.setdefault("total", payload.get("total") or len(cards))
+        payload["text"] = render_explore_markdown(payload, projection=projection)
+        return slim_explore_payload(payload)
+    apply_contract = _contract_applicable(primary, seed_kind=seed_kind)
+    if not apply_contract:
+        if _has_definition(primary):
+            payload["completeness"] = COMPLETE
+            payload["unresolved_reason"] = ""
+        else:
+            payload["completeness"] = UNKNOWN
+            payload["unresolved_reason"] = "DEFINITION_MISSING"
+        payload.pop("contract", None)
+        payload.setdefault("explore_pattern", pattern)
+        sites = _definition_site_candidates(cards)
+        if not sites:
+            sites = [
+                {
+                    "file": str(c.get("file") or ""),
+                    "line": int(c.get("line") or c.get("line_start") or 0),
+                    "line_end": int(c.get("line_end") or 0),
+                    "kind": str(c.get("kind") or ""),
+                    "name": str(c.get("name") or ""),
+                    "snippet": str(c.get("snippet") or ""),
+                    "cpp_kind": str(c.get("cpp_kind") or ""),
+                }
+                for c in cards
+                if isinstance(c, dict)
+            ]
+        def_like = [s for s in sites if _looks_like_definition(s)]
+        if file_filter:
+            match = next(
+                (s for s in sites if _file_matches(str(s.get("file") or ""), file_filter)),
+                None,
+            )
+            if match is not None:
+                primary = _overlay_site(primary, match, query)
+                if match.get("snippet"):
+                    primary["snippet"] = str(match.get("snippet") or "")
+                cards[0] = primary
+                payload["cards"] = cards
+        elif def_like:
+            pick = def_like[0]
+            primary = _overlay_site(primary, pick, query)
+            if pick.get("snippet") and not _looks_like_definition(primary):
+                primary["snippet"] = str(pick.get("snippet") or "")
+            cards[0] = primary
+            payload["cards"] = cards
+        uses = _sibling_use_sites(primary, cards)
+        pfile = str(primary.get("file") or "")
+        seen = {(str(u.get("file") or "").replace("\\", "/"), int(u.get("line") or 0)) for u in uses}
+        for site in sites:
+            file = str(site.get("file") or "")
+            line = int(site.get("line") or 0)
+            key = (file.replace("\\", "/"), line)
+            if not file or line <= 0 or key in seen or _file_matches(file, pfile):
+                continue
+            seen.add(key)
+            uses.append(
+                {
+                    "file": file,
+                    "line": line,
+                    "name": site.get("name") or primary.get("name"),
+                    "kind": site.get("kind"),
+                    "snippet": site.get("snippet") or "",
+                }
+            )
+        if uses:
+            payload["used_at"] = uses
+        _attach_call_site_fanout(query, payload, primary)
         payload["text"] = render_explore_markdown(payload, projection=projection)
         return slim_explore_payload(payload)
     try:

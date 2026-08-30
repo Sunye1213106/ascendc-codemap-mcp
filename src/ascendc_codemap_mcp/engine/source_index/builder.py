@@ -102,6 +102,9 @@ _CXX_CALL_SKIP = frozenset(
         "ASCENDC_TPL_ARGS_SEL",
         "ASCENDC_TPL_BOOL_DECL",
         "ASCENDC_TPL_UINT_DECL",
+        "constexpr",
+        "consteval",
+        "constinit",
     }
 )
 _CXX_SKIP_BASE = frozenset(
@@ -147,6 +150,7 @@ def _norm_file(path: str, root: str = "") -> str:
 # runs some of them once per line of every scanned file, and an inline pattern
 # pays a `re._compile` cache lookup each time -- 3M of those cost the analyze
 # stage 3.2s. Compiling at import makes the cost a single attribute load.
+_CONTROL_BEFORE_NAME_RE = re.compile(r"\b(?:if|else|for|while|switch)\s+$")
 _CV_QUAL_RE = re.compile(r"\b(?:const|volatile|static|mutable|typename|template)\b")
 _WS_RUN_RE = re.compile(r"\s+")
 _NON_NEWLINE_RE = re.compile(r"[^\n]")
@@ -258,15 +262,26 @@ def _strip_line_noise(line: str) -> str:
 
 
 def _update_enclosing_func(line: str, current: str) -> str:
+    from ascendc_codemap_mcp.engine.ir.identity import is_forbidden_callable_name
+
     m_method = _METHOD_DEF_RE.search(line)
     if m_method:
-        return m_method.group("name")
+        name = m_method.group("name")
+        if not is_forbidden_callable_name(name):
+            return name
     mdef = _FUNC_DEF_RE.search(line)
-    if mdef and not line.strip().startswith(("if", "for", "while", "switch", "else")):
-        cand = mdef.group("name")
-        if cand not in {"if", "for", "while", "switch", "return", "sizeof"}:
-            return cand
-    return current
+    if not mdef:
+        return current
+    cand = mdef.group("name")
+    if is_forbidden_callable_name(cand):
+        return current
+    prefix = line[: mdef.start("name")]
+    if _CONTROL_BEFORE_NAME_RE.search(prefix):
+        return current
+    stripped = line.strip()
+    if stripped.startswith(("if", "for", "while", "switch", "else")):
+        return current
+    return cand
 
 
 def _is_false_lexical_callee(name: str, line: str, match_start: int) -> bool:
@@ -535,6 +550,10 @@ def _emit_member(
 ) -> None:
     if not is_valid_storage_name(name):
         return
+    from ascendc_codemap_mcp.engine.ir.identity import is_alias_not_field
+
+    if is_alias_not_field(name, type_text):
+        return
     base = _base_type_name(type_text)
     if not base or base in _CXX_SKIP_BASE:
         return
@@ -563,6 +582,10 @@ def _collect_calls(
     for m in _CALL_RE.finditer(cleaned):
         name = m.group("name")
         if not name or not name.isidentifier():
+            continue
+        from ascendc_codemap_mcp.engine.ir.identity import is_forbidden_callable_name
+
+        if is_forbidden_callable_name(name):
             continue
         if _is_false_lexical_callee(name, cleaned, m.start()):
             continue

@@ -1,14 +1,14 @@
 # AscendC CodeMap MCP uninstaller (Windows)
 #
 # Usage:
-#   .\uninstall.ps1                 # OpenCode (default)
+#   .\uninstall.ps1                 # all hosts (default)
 #   .\uninstall.ps1 opencode|cursor|claude|codex|all
 #
 # Removes only this product's MCP entry and skills. Does not glob other
 # agents/plugins (Pilot leftovers, cannbot-auth.js, …).
 param(
   [Parameter(Position = 0)]
-  [string]$Platform = "opencode"
+  [string]$Platform = "all"
 )
 
 $ErrorActionPreference = "Stop"

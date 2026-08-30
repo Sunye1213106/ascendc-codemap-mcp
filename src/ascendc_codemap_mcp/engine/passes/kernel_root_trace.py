@@ -29,6 +29,11 @@ from ascendc_codemap_mcp.engine.perf import TimeBudget, kernel_root_trace_budget
 from ascendc_codemap_mcp.engine.ids import buffer_site_id, make_id, operation_site_id, register_site_id
 from ascendc_codemap_mcp.engine.ir.codemap import CodeMap, relation_id
 from ascendc_codemap_mcp.engine.ir.entity import EntityKind
+from ascendc_codemap_mcp.engine.ir.identity import (
+    bind_or_create,
+    find_declaration,
+    is_forbidden_callable_name,
+)
 from ascendc_codemap_mcp.engine.ir.evidence import TRUST_ADVISORY
 from ascendc_codemap_mcp.engine.ir.relation import RelationKind
 from ascendc_codemap_mcp.engine.passes import kernel_scan as kscan
@@ -223,7 +228,19 @@ _CXX_SKIP_BASE = frozenset(
         "int64_t",
         "half",
         "bfloat16_t",
+        "constexpr",
+        "consteval",
+        "constinit",
     }
+)
+
+
+_VIEW_GETTERS = frozenset(
+    {"Get", "GetTensor", "GetPre", "GetReused", "AllocTensor", "DeQue"}
+)
+_ASSIGN_LHS_RE = re.compile(r"\b([A-Za-z_]\w*)\s*=")
+_MEMORY_TRANSFER_CALLEES = frozenset(
+    {"DataCopy", "DataCopyPad", "Copy", "DataCopyScatter"}
 )
 
 
@@ -663,6 +680,56 @@ def _is_catalog_storage_base(name: str) -> bool:
         "TQueBind",
         "TQue",
     }
+
+
+def _is_catalog_type_entity(ent: Any) -> bool:
+    if ent is None:
+        return False
+    if ent.kind_name() != EntityKind.TYPE.value:
+        return False
+    if str(ent.attrs.get("catalog") or "") == "ascendc":
+        return True
+    return _is_catalog_storage_base(str(ent.name or ""))
+
+
+def _is_storage_object(ent: Any) -> bool:
+    """TBuf / TQue / InitBuffer-allocated BUFFER, QUEUE, or REGISTER — not a view TYPE."""
+    if ent is None:
+        return False
+    kind = ent.kind_name()
+    if kind == EntityKind.REGISTER.value:
+        return True
+    if kind == EntityKind.QUEUE.value:
+        return True
+    if kind != EntityKind.BUFFER.value:
+        return False
+    if str(ent.attrs.get("catalog") or "") == "ascendc":
+        return False
+    type_name = str(ent.attrs.get("type_name") or "")
+    root = str(ent.attrs.get("root") or "").replace("AscendC::", "").split("::")[-1]
+    if root in {"TBuf", "TQue", "TBufPool", "TQueBind"}:
+        return True
+    if "TBuf" in type_name or "TQue" in type_name:
+        return True
+    if "LocalTensor" in type_name or "GlobalTensor" in type_name:
+        return False
+    space = str(
+        ent.attrs.get("physical_space") or ent.attrs.get("memory_space") or ""
+    ).strip()
+    if space and space != "UNKNOWN":
+        return True
+    return bool(ent.attrs.get("allocated"))
+
+
+def _assign_lhs_on_line(text: str, line: int) -> str:
+    if not text or int(line or 0) <= 0:
+        return ""
+    rows = str(text).splitlines()
+    if line > len(rows):
+        return ""
+    hit = _ASSIGN_LHS_RE.search(rows[line - 1])
+    name = str(hit.group(1) or "") if hit else ""
+    return name if name.isidentifier() and not is_forbidden_callable_name(name) else ""
 
 
 def _wraps_lock_type(type_text: str) -> bool:
@@ -1527,10 +1594,13 @@ def _link_backed_by(
     file: str = "",
     line: int = 0,
 ) -> None:
-    """Tensor/View → StorageOwner. physical_space lives on the owner (and this edge)."""
+    """Tensor/View → storage object. Never a catalog LocalTensor/GlobalTensor TYPE."""
     if not view_id or not owner_id or view_id == owner_id:
         return
     if view_id not in codemap.entities or owner_id not in codemap.entities:
+        return
+    owner = codemap.entities.get(owner_id)
+    if _is_catalog_type_entity(owner) or not _is_storage_object(owner):
         return
     payload: dict[str, Any] = {"via": via}
     space_s = str(space or "").strip()
@@ -2779,19 +2849,12 @@ def finalize_kernel_root_trace(
             rid = _ensure_ascendc_root(codemap, root_spell, root_kind="STORAGE")
             _link(codemap, RelationKind.WRAPS, ent.id, rid, attrs={"via": "storage_root"})
             _link(codemap, RelationKind.ROOTED_AT, ent.id, rid)
-            owner_id = (
-                type_ents[base]
-                if is_wrapper and base in type_ents and _is_catalog_storage_base(base)
-                else rid
-            )
-            _link_backed_by(
+            _link(
                 codemap,
+                RelationKind.INSTANCE_OF,
                 ent.id,
-                owner_id,
-                space=space,
-                via="storage_owner",
-                file=nfile,
-                line=line,
+                rid,
+                attrs={"via": "view_type", "file": nfile, "line": line},
             )
 
     for decl in decls or []:
@@ -3048,19 +3111,12 @@ def finalize_kernel_root_trace(
                 _link(codemap, RelationKind.WRAPS, ent.id, type_ents[base], attrs={"via": "decl_type"})
             _link(codemap, RelationKind.WRAPS, ent.id, rid, attrs={"via": "storage_root"})
             _link(codemap, RelationKind.ROOTED_AT, ent.id, rid)
-            owner_id = (
-                type_ents[base]
-                if is_wrapper and base in type_ents and _is_catalog_storage_base(base)
-                else rid
-            )
-            _link_backed_by(
+            _link(
                 codemap,
+                RelationKind.INSTANCE_OF,
                 ent.id,
-                owner_id,
-                space=space,
-                via="storage_owner",
-                file=nfile,
-                line=line,
+                rid,
+                attrs={"via": "view_type", "file": nfile, "line": line},
             )
 
     # --- 5. METHOD + OPERATION call sites (all source calls) -------------
@@ -3076,7 +3132,7 @@ def finalize_kernel_root_trace(
         owner: str = "",
     ) -> str:
         short = str(name or "").split("::")[-1]
-        if not short or not short.isidentifier():
+        if is_forbidden_callable_name(short):
             return ""
         q = str(qualified or "").strip()
         if not q and owner:
@@ -3085,9 +3141,6 @@ def finalize_kernel_root_trace(
         # qualifier — collapse it so caller/callee METHOD nodes unify.
         if q and "::" not in q and q.split("::")[-1] == short:
             q = ""
-        # Identity: USR > qualified > owner::name > spelling.
-        # Do not key by call-site line — that forks caller/callee METHOD nodes
-        # for the same lexical function and breaks CALLS closure.
         if usr:
             key = f"usr:{usr}"
         elif q:
@@ -3098,11 +3151,44 @@ def finalize_kernel_root_trace(
             key = f"name:{short}"
         if key in method_ents:
             return method_ents[key]
-        mid = make_id("Method", "kernel", key, file or "kernel", line)
-        ent = codemap.upsert(
+        existing = find_declaration(
+            codemap, EntityKind.METHOD, symbol=short, owner=owner, file=file
+        )
+        if existing is None and owner:
+            existing = find_declaration(
+                codemap, EntityKind.METHOD, symbol=short, owner=owner
+            )
+        if existing is not None:
+            method_ents[key] = existing.id
+            return existing.id
+        if not usr:
+            hits = [
+                e
+                for e in codemap.by_name(short, kind=EntityKind.METHOD)
+                if str(e.name or "").split("::")[-1] == short
+            ]
+            if owner:
+                owned = [
+                    e
+                    for e in hits
+                    if str(e.attrs.get("owner") or e.attrs.get("lexical_owner") or "")
+                    == owner
+                ]
+                if len(owned) == 1:
+                    method_ents[key] = owned[0].id
+                    return owned[0].id
+            if len(hits) == 1:
+                method_ents[key] = hits[0].id
+                return hits[0].id
+            return ""
+        ent = bind_or_create(
+            codemap,
             EntityKind.METHOD,
             short,
-            eid=mid,
+            file=file,
+            line=line,
+            owner=owner,
+            architecture=str(getattr(codemap, "architecture", "") or ""),
             attrs={
                 "role": "source_method",
                 "root_status": "UNRESOLVED",
@@ -3112,18 +3198,12 @@ def finalize_kernel_root_trace(
                 "usr": usr,
                 "qualified_name": q,
                 "spelling": short,
-                # A USR is a clang identity; without one this node is keyed by
-                # a name the lexical enclosing-function scan produced, and the
-                # two must not claim the same trust.
-                "provenance": (
-                    "kernel_root_trace" if usr else "lexical_kernel_call_method"
-                ),
+                "provenance": "kernel_root_trace",
             },
-            file=file,
-            line=line,
             status="partial",
-            confidence=0.5,
         )
+        if ent is None:
+            return ""
         method_ents[key] = ent.id
         return ent.id
 
@@ -3135,7 +3215,7 @@ def finalize_kernel_root_trace(
             break
         d = site if isinstance(site, dict) else kscan.site_as_dict(site)
         callee = str(d.get("callee") or "").split("::")[-1]
-        if not callee or not callee.isidentifier():
+        if not callee or is_forbidden_callable_name(callee):
             continue
         file = str(d.get("file") or "")
         line = int(d.get("line") or 0)
@@ -3143,6 +3223,8 @@ def finalize_kernel_root_trace(
         category, _engine, conf = semreg.classify(callee)
         receiver = str(d.get("receiver") or "")
         function = str(d.get("caller") or "")
+        if function and is_forbidden_callable_name(function.split("::")[-1]):
+            function = ""
         nfile = _norm_file(file, root)
         caller_qualified = str(d.get("caller_qualified") or "")
         caller_usr = str(d.get("caller_usr") or "")
@@ -3268,6 +3350,23 @@ def finalize_kernel_root_trace(
                         obj_id,
                         space=str(obj.attrs.get("memory_space") or ""),
                         via="InitBuffer",
+                        file=nfile,
+                        line=line,
+                    )
+        if callee in _VIEW_GETTERS and bid_recv:
+            recv_ent = codemap.entities.get(bid_recv)
+            if recv_ent is not None and _is_storage_object(recv_ent):
+                lhs = _assign_lhs_on_line(kernel_file_text.get(nfile, ""), line)
+                view_id = (
+                    _lookup_storage(lhs, identity_scopes, nfile) if lhs else ""
+                )
+                if view_id and view_id != bid_recv:
+                    _link_backed_by(
+                        codemap,
+                        view_id,
+                        bid_recv,
+                        space=str(recv_ent.attrs.get("memory_space") or ""),
+                        via=callee,
                         file=nfile,
                         line=line,
                     )
@@ -3557,6 +3656,41 @@ def finalize_kernel_root_trace(
                             "arg": aname,
                         },
                     )
+            if callee in _MEMORY_TRANSFER_CALLEES or category == "memory_transfer":
+                src_ids = [
+                    _lookup_storage(
+                        _expr_storage_name(raw) or str(raw or "").strip(),
+                        identity_scopes,
+                        nfile,
+                    )
+                    for raw in reads
+                ]
+                dst_ids = [
+                    _lookup_storage(
+                        _expr_storage_name(raw) or str(raw or "").strip(),
+                        identity_scopes,
+                        nfile,
+                    )
+                    for raw in writes
+                ]
+                engine = str(_engine or "")
+                for sid in src_ids:
+                    for did in dst_ids:
+                        if not sid or not did or sid == did:
+                            continue
+                        _link(
+                            codemap,
+                            RelationKind.FLOWS_TO,
+                            sid,
+                            did,
+                            attrs={
+                                "via": "MemoryTransfer",
+                                "callee": callee,
+                                "file": nfile,
+                                "line": line,
+                                "engine": engine,
+                            },
+                        )
 
         # Flag identity only. TQue EnQue/DeQue have no user event; CANN owns that
         # handshake, so they never get SIGNALS/AWAITS.

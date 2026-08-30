@@ -57,6 +57,7 @@ _STMT_EXPAND_KINDS = {
     EntityKind.COMPILE_VAR.value,
     EntityKind.MACRO.value,
     EntityKind.TILING_KEY.value,
+    EntityKind.TYPE.value,
 }
 PRIMARY_CANDIDATES = 3
 MAX_PAYLOAD_CHARS = 24_000
@@ -97,6 +98,10 @@ _PROTECTED_PAYLOAD_KEYS = frozenset(
         "text_hits",
         "text_hits_total",
         "text_hits_complete",
+        "compiled_support",
+        "exhaustive",
+        "returned",
+        "used_at",
         "completeness",
         "impact_sinks",
         "entry",
@@ -395,6 +400,36 @@ def _keep_branch(kind: str, name: str, data: dict[str, Any]) -> bool:
 def _last_ident(name: str) -> str:
     text = str(name or "").replace(".", "::")
     return text.split("::")[-1].strip()
+
+
+def _dim_aliases(ident: str) -> list[str]:
+    """Host spellings that join a persisted legal_key dim (hasRope ↔ IsRope)."""
+    leaf = _last_ident(ident)
+    if not leaf:
+        return []
+    out = [leaf]
+    low = leaf.lower()
+    if low.startswith("has") and len(leaf) > 3:
+        rest = leaf[3:]
+        cap = rest[:1].upper() + rest[1:]
+        out.extend([f"Is{cap}", f"is{rest}"])
+    elif low.startswith("is") and len(leaf) > 2:
+        rest = leaf[2:]
+        cap = rest[:1].upper() + rest[1:]
+        out.extend([f"has{cap}", f"Has{cap}"])
+    if leaf.endswith("Num"):
+        out.append(leaf[:-3])
+    else:
+        out.append(leaf + "Num")
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for name in out:
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(name)
+    return uniq
 
 
 _DEF_CARD_KINDS = {
@@ -2852,6 +2887,31 @@ class UoSqlQuery:
             tuple(sql_params),
         ).fetchall()
 
+    def _count_entities(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        kinds: Iterable[str] = (),
+        extra_where: str = "",
+        params: Iterable[Any] = (),
+    ) -> int:
+        allowed = [k for k in kinds if k]
+        where: list[str] = []
+        sql_params: list[Any] = []
+        if allowed:
+            placeholders = ",".join("?" for _ in allowed)
+            where.append(f"e.kind IN ({placeholders})")
+            sql_params.extend(allowed)
+        if extra_where:
+            where.append(f"({extra_where})")
+            sql_params.extend(list(params))
+        clause = " AND ".join(where) if where else "1=1"
+        row = conn.execute(
+            f"SELECT COUNT(*) FROM entity e WHERE {clause}",
+            tuple(sql_params),
+        ).fetchone()
+        return int(row[0] or 0) if row else 0
+
     def _hits_from_rows(
         self,
         conn: sqlite3.Connection,
@@ -5062,6 +5122,98 @@ class UoSqlQuery:
                 return False
         return row is not None
 
+    def _resolve_legal_dim(self, ident: str) -> str:
+        """Map a host spelling onto a persisted legal_key dimension name."""
+        for alias in _dim_aliases(ident):
+            if self._legal_dim_exists(alias):
+                return alias
+        declared = {n.lower(): n for n in self._declared_dim_names()}
+        for alias in _dim_aliases(ident):
+            hit = declared.get(alias.lower())
+            if hit:
+                return hit
+        return ""
+
+    def compiled_support_for(
+        self, ident: str, extras: dict[str, Any] | None = None
+    ) -> dict[str, Any] | None:
+        """Host encoding ↔ persisted legal_key. Query never re-parses templates."""
+        dim = self._resolve_legal_dim(ident)
+        if not dim:
+            return None
+        counts = self._legal_dim_value_counts(dim)
+        variants = sum(int(n or 0) for n in counts.values())
+        extra = extras if isinstance(extras, dict) else {}
+        host: list[dict[str, Any]] = []
+        expr = str(extra.get("value_expr") or extra.get("value") or extra.get("definition") or "")
+        writers = list(extra.get("writers") or [])
+        if not writers:
+            try:
+                field = self.field_impact(dim)
+            except Exception:  # noqa: BLE001
+                field = {}
+            writers = list(field.get("writers") or []) if field.get("ok") else []
+        for row in writers[:4]:
+            if not isinstance(row, dict):
+                continue
+            file = str(row.get("file") or "")
+            line = int(row.get("line") or row.get("line_start") or 0)
+            if not file or line <= 0:
+                continue
+            item: dict[str, Any] = {
+                "name": str(row.get("name") or ""),
+                "file": file,
+                "line": line,
+            }
+            if expr:
+                item["expr"] = expr
+            host.append(item)
+        if expr and not host:
+            host.append({"expr": expr})
+        on_vals = [v for v in counts if str(v) not in {"0", "false", "False"}]
+        on_val = "1" if "1" in counts else (on_vals[0] if on_vals else "")
+        kernel: dict[str, Any] = {dim: dict(counts)}
+        if on_val:
+            cross = self._legal_cross_counts(dim, str(on_val), limit_dims=8)
+            for sdim in (
+                "DTemplate",
+                "DTemplateNum",
+                "IsDNoEqual",
+                "dNoEqual",
+                "IsRope",
+                "hasRope",
+            ):
+                if sdim == dim:
+                    continue
+                cmap = cross.get(sdim)
+                if isinstance(cmap, dict) and cmap:
+                    kernel[sdim] = cmap
+        support: dict[str, Any] = {
+            "legal": variants > 0,
+            "variants": variants,
+            "dim": dim,
+            "values": counts,
+            "host_encoding": host,
+            "kernel": kernel,
+        }
+        blob = f"{dim} {ident}".lower()
+        if "rope" in blob:
+            d_dim = ""
+            for cand in ("DTemplate", "DTemplateNum"):
+                if cand != dim and self._legal_dim_exists(cand):
+                    d_dim = cand
+                    break
+            if d_dim:
+                combo = self.legal_key_query(filters={d_dim: "128", dim: "1"}, limit=1)
+                n = int(combo.get("total_matched") or combo.get("count") or 0)
+                support["counterfactual"] = {
+                    d_dim: "128",
+                    dim: "1",
+                    "legal": n > 0,
+                    "variants": n,
+                }
+        return support
+
     def aggregate_buffer(self, pattern: str = "", *, limit: int = 50) -> dict[str, Any]:
         needle = str(pattern or "").strip()
         low = needle.lower()
@@ -5761,7 +5913,7 @@ class UoSqlQuery:
                         "line": int(return_hit.get("line") or 0),
                     },
                 )
-            for key in ("catalog", "role", "spelling", "wrapper", "tposition", "pipe_ordinal"):
+            for key in ("catalog", "role", "spelling", "wrapper", "tposition", "pipe_ordinal", "cpp_kind"):
                 if extras.get(key) not in (None, "", []):
                     card[key] = extras[key]
             if hit.get("truncated") or extras.get("truncated"):
@@ -5817,6 +5969,13 @@ class UoSqlQuery:
             covered = self._fill_semantic_card(card, extras, needle)
             self_names.update(covered)
             card["canonical"] = extras.get("canonical") or name
+            support = self.compiled_support_for(name, extras) or self.compiled_support_for(
+                needle, extras
+            )
+            if support:
+                facets = card.get("facets") if isinstance(card.get("facets"), dict) else {}
+                facets["compiled_support"] = support
+                card["facets"] = facets
             cards.append(card)
             if kind in {EntityKind.COMPILE_VAR.value, EntityKind.MACRO.value}:
                 facts = hit.get("facts") if isinstance(hit.get("facts"), dict) else {}
@@ -5870,6 +6029,14 @@ class UoSqlQuery:
             "count": len(cards),
             "coverage": _name_card_coverage(coverage),
         }
+        primary = cards[0] if cards else {}
+        primary_facets = primary.get("facets") if isinstance(primary.get("facets"), dict) else {}
+        support = primary_facets.get("compiled_support")
+        if not support:
+            extras = primary.get("extras") if isinstance(primary.get("extras"), dict) else {}
+            support = self.compiled_support_for(needle, extras)
+        if support:
+            payload["compiled_support"] = support
         if not cards:
             payload["dim_names"] = self._declared_dim_names()
         if recall_total:
@@ -7200,13 +7367,31 @@ class UoSqlQuery:
             )
             params.extend([referenced_symbol, leaf])
         extra = " AND ".join(where) if where else ""
+        ast_filters = bool(
+            getattr(plan, "referenced_symbol", "")
+            or getattr(plan, "referenced_value", "")
+            or getattr(plan, "literal", "")
+            or getattr(plan, "operator", "")
+            or getattr(plan, "entry_role", "")
+            or getattr(plan, "consumer_role", "")
+        )
         with self._connect() as conn:
+            sql_total = (
+                self._count_entities(
+                    conn, kinds=[kind], extra_where=extra, params=params
+                )
+                if kind
+                else 0
+            )
+            fetch_n = fetch
+            if kind and not ast_filters:
+                fetch_n = min(max(int(sql_total), fetch), 2048)
             rows = self._select_entities(
                 conn,
                 kinds=[kind],
                 extra_where=extra,
                 params=params,
-                limit=fetch,
+                limit=fetch_n,
                 order="e.file, e.line_start, e.id",
             )
             kept: list[sqlite3.Row] = []
@@ -7269,31 +7454,37 @@ class UoSqlQuery:
                     freq=freq,
                 )
             )
-            page = _round_robin_by_file(hits, limit=max(1, int(limit)))
+            page = _round_robin_by_file(hits, limit=max(len(hits), 1))
             total = len(hits)
             kind_counts = Counter(str(hit.get("kind") or "") or "OTHER" for hit in hits)
         else:
-            total = len(hits)
+            total = sql_total if (kind and not ast_filters) else len(hits)
             if kind == EntityKind.OPERATION.value:
-                page = _round_robin_by_file(hits, limit=max(1, int(limit)))
+                page = _round_robin_by_file(hits, limit=max(len(hits), 1))
             else:
-                page = hits[: max(1, int(limit))]
+                page = hits
+        returned = len(page)
+        exhaustive = returned >= total and total >= 0
         payload: dict[str, Any] = {
             "ok": bool(page),
             "shape": "find",
             "cards": page,
-            "count": len(page),
+            "count": returned,
+            "returned": returned,
             "total": total,
-            "truncated": total > len(page),
+            "truncated": not exhaustive,
+            "exhaustive": exhaustive,
             "completeness": COMPLETE if page else UNKNOWN,
             "unresolved_reason": "" if page else "NO_SEED",
         }
+        if kind == EntityKind.OPERATION.value:
+            payload["projection"] = "locations"
         if discovery:
             payload["projection"] = "locations"
             payload["kind_groups"] = [
-                {"kind": kind, "count": n}
-                for kind, n in kind_counts.most_common()
-                if kind
+                {"kind": gkind, "count": n}
+                for gkind, n in kind_counts.most_common()
+                if gkind
             ]
             if page:
                 hint = (
@@ -7307,28 +7498,31 @@ class UoSqlQuery:
                     for hit in hits
                 )
                 if exact_op and leaf:
+                    site_total = self.count_call_sites(leaf)
                     sites, site_total = self.list_call_sites(
-                        _last_ident(name_pattern) or name_pattern, limit=limit
+                        leaf, limit=max(int(site_total), 1)
                     )
                     if sites:
+                        payload["cards"] = [
+                            {
+                                "kind": EntityKind.OPERATION.value,
+                                "name": str(row.get("name") or leaf),
+                                "file": str(row.get("file") or ""),
+                                "line": int(row.get("line") or 0),
+                            }
+                            for row in sites
+                        ]
+                        payload["count"] = len(payload["cards"])
+                        payload["returned"] = len(payload["cards"])
+                        payload["total"] = site_total
+                        payload["exhaustive"] = len(payload["cards"]) >= site_total
+                        payload["truncated"] = not payload["exhaustive"]
                         payload["operation_sites"] = sites
                         payload["operation_sites_total"] = site_total
-                        payload["operation_sites_truncated"] = site_total > len(
-                            sites
-                        )
-                        hint = (
-                            f"call sites: {site_total} — already listed below"
-                            + (
-                                f" (showing {len(sites)} of {site_total})"
-                                if site_total > len(sites)
-                                else ""
-                            )
-                        )
-                if total > len(page):
-                    hint = (
-                        f"showing {len(page)} of {total} names; "
-                        "tighten name= or raise limit. "
-                    ) + hint
+                        payload["operation_sites_truncated"] = site_total > len(sites)
+                        hint = f"call sites: {site_total}"
+                if total > len(page) and not exact_op:
+                    hint = "tighten name= or raise limit. " + hint
                 payload["hint"] = hint
             else:
                 payload["hint"] = (
@@ -7430,7 +7624,7 @@ class UoSqlQuery:
             seen: set[str] = set(src_ids)
             while queue and len(seen) < 80:
                 cur = queue.popleft()
-                if cur in dst_ids:
+                if cur in dst_ids and cur not in src_ids:
                     found = cur
                     break
                 for row in conn.execute(
@@ -7468,12 +7662,19 @@ class UoSqlQuery:
             steps.append({"from": prev, "to": cur, "kind": kind})
             cur = prev
         steps.reverse()
+        hops = [
+            step
+            for step in steps
+            if step.get("from") and step.get("to") and step.get("kind")
+        ]
+        complete = bool(hops) and len(hops) == len(steps)
         return {
             "ok": True,
             "shape": "trace",
             "cards": [src_hits[0], next((h for h in dst_hits if h.get("id") == found), dst_hits[0])],
             "count": len(steps),
-            "completeness": COMPLETE if steps else COMPLETE,
+            "completeness": COMPLETE if complete else UNKNOWN,
+            "unresolved_reason": "" if complete else "NO_PATH",
             "path": steps[: max(1, int(limit)) * 4],
             "truncated": False,
         }

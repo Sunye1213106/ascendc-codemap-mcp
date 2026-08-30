@@ -18,6 +18,11 @@ from typing import Any
 
 from ascendc_codemap_mcp.engine.ir.codemap import CodeMap
 from ascendc_codemap_mcp.engine.ir.entity import Entity, EntityKind
+from ascendc_codemap_mcp.engine.ir.identity import (
+    declaration_key,
+    is_declaration_kind,
+    is_forbidden_callable_name,
+)
 from ascendc_codemap_mcp.engine.ir.relation import RelationKind
 from ascendc_codemap_mcp.engine.passes.host_kernel import evidence_backed_host_kernel_path_exists
 
@@ -39,37 +44,120 @@ _LEAF_TYPE_ID_RE = re.compile(r"^SRCPOL::[^:]+::[A-Za-z_]\w*$")
 
 
 def _integrity_false_confirmed(codemap: CodeMap) -> list[dict[str, Any]]:
-    """Hard commit blockers: confirmed edges with no endpoints, leaf-only TYPE ids."""
+    """Hard commit blockers: confirmed wrong facts. Coverage holes do not belong here."""
     out: list[dict[str, Any]] = []
+
+    def _push(row: dict[str, Any]) -> bool:
+        out.append(row)
+        return len(out) >= 24
+
     for rel in codemap.relations.values():
         if str(rel.status or "").lower() != "confirmed":
             continue
         if rel.src not in codemap.entities or rel.dst not in codemap.entities:
-            out.append(
+            if _push(
                 {
                     "code": "CONFIRMED_DANGLING_EDGE",
                     "detail": f"{rel.kind_name()} {rel.src!s} → {rel.dst!s}",
                     "relation_id": rel.id,
                 }
-            )
-            if len(out) >= 24:
+            ):
                 return out
+            continue
+        for end in (rel.src, rel.dst):
+            ent = codemap.entities.get(end)
+            if ent is None:
+                continue
+            state = str(ent.attrs.get("semantic_state") or "").lower()
+            if state == "unresolved":
+                if _push(
+                    {
+                        "code": "CONFIRMED_ON_UNRESOLVED_IDENTITY",
+                        "detail": f"{rel.kind_name()} {rel.src!s} → {rel.dst!s} via {ent.name}",
+                        "relation_id": rel.id,
+                        "entity_id": ent.id,
+                    }
+                ):
+                    return out
+            if ent.kind_name() in {EntityKind.METHOD.value, EntityKind.FUNCTION.value}:
+                if is_forbidden_callable_name(ent.name):
+                    if _push(
+                        {
+                            "code": "KEYWORD_CALLABLE_NAME",
+                            "detail": f"{ent.kind_name()} {ent.name!s}",
+                            "entity_id": ent.id,
+                        }
+                    ):
+                        return out
+    for kind in (EntityKind.METHOD, EntityKind.FUNCTION):
+        for ent in codemap.by_kind(kind):
+            if not is_forbidden_callable_name(ent.name):
+                continue
+            if _push(
+                {
+                    "code": "KEYWORD_CALLABLE_NAME",
+                    "detail": f"{ent.kind_name()} {ent.name!s}",
+                    "entity_id": ent.id,
+                }
+            ):
+                return out
+    triples: dict[tuple[str, str, str], str] = {}
+    for rel in codemap.relations.values():
+        if str(rel.status or "").lower() != "confirmed":
+            continue
+        key = (rel.kind_name(), str(rel.src), str(rel.dst))
+        prev = triples.get(key)
+        if prev and prev != rel.id:
+            if _push(
+                {
+                    "code": "DUPLICATE_CONFIRMED_TRIPLE",
+                    "detail": f"{key[0]} {key[1]} → {key[2]}",
+                    "relation_id": rel.id,
+                }
+            ):
+                return out
+        else:
+            triples[key] = rel.id
+    seen_decl: dict[tuple[str, str, str, str], str] = {}
+    for ent in codemap.entities.values():
+        if not is_declaration_kind(ent.kind_name()):
+            continue
+        if str(ent.status or "").lower() != "confirmed":
+            continue
+        if not str(ent.file or "").strip() or not _leaf_name(ent.name):
+            continue
+        key = declaration_key(ent)
+        prev = seen_decl.get(key)
+        if prev and prev != ent.id:
+            if _push(
+                {
+                    "code": "DUPLICATE_DECLARATION",
+                    "detail": f"{key[0]} {ent.name} @ {key[1]} owner={key[2]!s}",
+                    "entity_id": ent.id,
+                }
+            ):
+                return out
+        else:
+            seen_decl[key] = ent.id
     for ent in codemap.by_kind(EntityKind.TYPE):
         if str(ent.status or "").lower() != "confirmed":
             continue
         eid = str(ent.id or "")
         name = str(ent.name or "")
         if _LEAF_TYPE_ID_RE.match(eid) and "::" not in name:
-            out.append(
+            if _push(
                 {
                     "code": "LEAF_ONLY_TYPE_IDENTITY",
                     "detail": f"{name} minted as {eid}",
                     "entity_id": eid,
                 }
-            )
-            if len(out) >= 24:
+            ):
                 return out
     return out
+
+
+def _leaf_name(name: str) -> str:
+    return str(name or "").replace(".", "::").split("::")[-1].strip()
 
 
 def _flow_adjacency(codemap: CodeMap, kinds: set[str]) -> dict[str, list[str]]:

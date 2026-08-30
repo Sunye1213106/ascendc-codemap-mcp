@@ -53,6 +53,7 @@ One **canonical owner** per FactKind. Multiple **evidence** producers are allowe
 | TPL declaration | TPL frontend | TPL parser | — | Guess via Clang as C++ |
 | registration macro | Macro/DSL frontend | Macro facts | Deterministic macro text | Operator-name special cases |
 | compiled legal keys | Build product | Compiled product | — | Recompute at query time |
+| type instantiation | CompilerFacts | `INSTANCE_OF` (template specialization / C++ type of a view) | Bind existing TYPE | Reusing `BACKED_BY` for catalog `LocalTensor` TYPE |
 | source snapshot | source index | `source_line` | — | Query `read_text` of the working tree |
 | Host SSA / def-use | HostIR | Consume Clang facts | — | Walk AST again for the same write |
 | Kernel TilingKey branch | KernelIR | Clang + TPL | — | compile_policy rediscovering the TYPE |
@@ -94,7 +95,7 @@ Query snippets come from `.uo` `source_line` / `source_span`. Missing → `sourc
 
 Control/Config · Storage/Memory · Lifetime/Sync · Compute · ABI/Product.
 
-Storage model: `Tensor/View --BACKED_BY--> StorageOwner --physical_space--> GM|UB|L1|L0*|REG`. Space comes from `BufferType` / `TPosition` / `QuePosition` / confirmed InitBuffer operands, not from the word `LocalTensor`.
+Storage model: `Tensor/View --BACKED_BY--> StorageOwner --physical_space--> GM|UB|L1|L0*|REG`. Space comes from `BufferType` / `TPosition` / `QuePosition` / confirmed InitBuffer operands, not from the word `LocalTensor`. `INSTANCE_OF` is the C++ / template type of a view; it is not storage backing.
 
 ## Hard gates
 

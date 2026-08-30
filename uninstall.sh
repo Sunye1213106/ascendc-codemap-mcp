@@ -2,7 +2,7 @@
 # AscendC CodeMap MCP uninstaller
 #
 # Usage:
-#   ./uninstall.sh                 # OpenCode (default)
+#   ./uninstall.sh                 # all hosts (default)
 #   ./uninstall.sh opencode|cursor|claude|codex|all
 #
 # Removes only this product's MCP entry and skills. Does not glob other
@@ -10,7 +10,7 @@
 set -euo pipefail
 
 BUNDLE_ROOT="$(cd "$(dirname "$0")" && pwd)"
-PLATFORM="${1:-opencode}"
+PLATFORM="${1:-all}"
 PLATFORM="${PLATFORM#uninstall-}"
 
 case "$PLATFORM" in

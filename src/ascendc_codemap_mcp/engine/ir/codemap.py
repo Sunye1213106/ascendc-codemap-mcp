@@ -368,6 +368,21 @@ def _rid(kind: str, src: str, dst: str, *extra: str) -> str:
     return f"R_{kind}_{digest}"
 
 
+#: Semantic edges that are topology-unique. Extra evidence is attrs.sites[].
+_SITE_UNIQUE_KINDS = frozenset(
+    {
+        RelationKind.CALLS.value,
+        RelationKind.READS.value,
+        RelationKind.WRITES.value,
+        RelationKind.BINDS.value,
+        RelationKind.CONTROLS.value,
+        RelationKind.SIGNALS.value,
+        RelationKind.AWAITS.value,
+        RelationKind.FLOWS_TO.value,
+    }
+)
+
+
 def relation_id(
     kind: str,
     src: str,
@@ -375,9 +390,56 @@ def relation_id(
     *,
     attrs: dict[str, Any] | None = None,
 ) -> str:
-    """Stable relation id. CALLS include the call site so intra-function repeats stay distinct."""
-    extra = calls_site_key(attrs) if str(kind) == RelationKind.CALLS.value else ""
-    return _rid(kind, src, dst, extra) if extra else _rid(kind, src, dst)
+    """Stable relation id. Semantic edges are (kind, src, dst); sites accumulate on attrs."""
+    del attrs
+    return _rid(kind, src, dst)
+
+
+def site_record(attrs: dict[str, Any] | None) -> dict[str, Any] | None:
+    """One call/write site from relation attrs. Empty when file+line are missing."""
+    if not attrs:
+        return None
+    file = str(attrs.get("file") or "").replace("\\", "/")
+    line = int(attrs.get("line") or 0)
+    if not file or line <= 0:
+        return None
+    site: dict[str, Any] = {"file": file, "line": line}
+    col = int(attrs.get("column") or 0)
+    if col > 0:
+        site["column"] = col
+    for key in ("guard", "variant", "receiver", "via"):
+        val = attrs.get(key)
+        if val not in (None, ""):
+            site[key] = val
+    return site
+
+
+def _site_key(site: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        str(site.get("file") or ""),
+        int(site.get("line") or 0),
+        int(site.get("column") or 0),
+        str(site.get("receiver") or ""),
+        str(site.get("via") or ""),
+        str(site.get("guard") or ""),
+        str(site.get("variant") or ""),
+    )
+
+
+def accumulate_sites(rel: Relation, incoming: dict[str, Any] | None) -> None:
+    """Append a unique site onto ``rel.attrs['sites']`` without rewriting the primary loc."""
+    site = site_record(incoming)
+    if site is None:
+        return
+    sites = rel.attrs.get("sites")
+    if not isinstance(sites, list):
+        sites = []
+        rel.attrs["sites"] = sites
+    key = _site_key(site)
+    for existing in sites:
+        if isinstance(existing, dict) and _site_key(existing) == key:
+            return
+    sites.append(site)
 
 
 class _NotifyMap(dict):
@@ -766,6 +828,7 @@ class CodeMap:
     ) -> Relation:
         kind_name = kind.value if isinstance(kind, RelationKind) else str(kind)
         stamped = self._stamp_attrs(dict(attrs or {}))
+        incoming_sites = stamped.pop("sites", None) if isinstance(stamped.get("sites"), list) else None
         rid = relation_id(kind_name, src, dst, attrs=stamped)
         existing = self.relations.get(rid)
         if existing is None:
@@ -779,8 +842,22 @@ class CodeMap:
                 confidence=confidence,
             )
             self.relations[rid] = rel
+            if incoming_sites:
+                rel.attrs["sites"] = []
+                for item in incoming_sites:
+                    if isinstance(item, dict):
+                        accumulate_sites(rel, item)
+            accumulate_sites(rel, stamped)
             return rel
+        prior_sites = existing.attrs.get("sites")
         existing.attrs = merge_attrs(existing.attrs, stamped)
+        if isinstance(prior_sites, list):
+            existing.attrs["sites"] = list(prior_sites)
+        if incoming_sites:
+            for item in incoming_sites:
+                if isinstance(item, dict):
+                    accumulate_sites(existing, item)
+        accumulate_sites(existing, stamped)
         return existing
 
     def mint_semantic_relation(

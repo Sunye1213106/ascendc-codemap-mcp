@@ -13,6 +13,7 @@ from pathlib import Path
 
 from ascendc_codemap_mcp.engine.ir.codemap import CodeMap
 from ascendc_codemap_mcp.engine.ir.entity import EntityKind
+from ascendc_codemap_mcp.engine.ir.identity import bind_or_create, is_forbidden_callable_name
 from ascendc_codemap_mcp.engine.ir.relation import RelationKind
 from ascendc_codemap_mcp.engine.passes.source_text_cache import read_text
 
@@ -54,19 +55,24 @@ def resolve_class_frontiers(
             text = read_text(path)
             for method, body_start, body_end, start_line in _method_bodies(text, symbol):
                 body = text[body_start:body_end]
-                owner = codemap.upsert(
-                    EntityKind.METHOD,
-                    f"{symbol}::{method}",
-                    eid=f"SRCFRONTIER_METHOD::{_rel(root, path)}::{symbol}::{method}",
-                    attrs={
-                        "owner": symbol,
-                        "provenance": "source_class_frontier",
-                        "architecture_scope": "current",
-                    },
-                    file=_rel(root, path),
-                    line=start_line,
-                    status="confirmed",
-                )
+            if is_forbidden_callable_name(method):
+                continue
+            owner = bind_or_create(
+                codemap,
+                EntityKind.METHOD,
+                method,
+                file=_rel(root, path),
+                line=start_line,
+                owner=symbol,
+                attrs={
+                    "owner": symbol,
+                    "provenance": "source_class_frontier",
+                    "architecture_scope": "current",
+                },
+                status="confirmed",
+            )
+            if owner is None:
+                continue
                 local = 0
                 for match in _BRANCH_RE.finditer(body):
                     absolute = body_start + match.start()

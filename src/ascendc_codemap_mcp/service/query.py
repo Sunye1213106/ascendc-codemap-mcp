@@ -141,6 +141,8 @@ def _infer_layer(payload: dict[str, Any]) -> str:
 
 
 def _edges_truncated(payload: dict[str, Any]) -> bool:
+    if payload.get("operation_sites_truncated"):
+        return True
     edges = payload.get("edges")
     if not isinstance(edges, dict):
         cards = payload.get("cards")
@@ -279,20 +281,28 @@ def paginate(
     # `count` is the page, `total` is the population. Reading count first made
     # every paged set answer look complete.
     total_hint = int(payload.get("total") or payload.get("count") or 0)
+    if payload.get("operation_sites_truncated"):
+        total_hint = max(total_hint, int(payload.get("operation_sites_total") or 0))
     nested_trunc = _edges_truncated(payload)
     if key is None:
         total = total_hint
         returned = total if not payload.get("truncated") else min(page, total)
-        primary_more = bool(payload.get("truncated"))
+        primary_more = bool(payload.get("truncated") or payload.get("operation_sites_truncated"))
         truncated = bool(primary_more or nested_trunc)
         coverage = {
             "returned": returned,
             "total": total,
             "truncated": truncated,
             "nested_truncated": nested_trunc and not primary_more,
+            "exhaustive": not truncated,
             "token_budget": 24_000,
         }
-        # Nested edge samples are not a continuable collection.
+        payload = dict(payload)
+        payload["returned"] = coverage["returned"]
+        payload["total"] = coverage["total"]
+        payload["exhaustive"] = coverage["exhaustive"]
+        # Nested edge samples are not a continuable collection unless the
+        # truncated collection is the answer (call-site lists).
         nxt = (
             encode_cursor(offset + page, snapshot=snapshot, query=query)
             if primary_more
@@ -305,7 +315,9 @@ def paginate(
         payload = dict(payload)
         payload[key] = window
     primary_more = bool(
-        (offset + len(window) < len(rows)) or (total_hint > offset + len(window))
+        (offset + len(window) < len(rows))
+        or (total_hint > offset + len(window))
+        or payload.get("operation_sites_truncated")
     )
     truncated = bool(payload.get("truncated") or nested_trunc or primary_more)
     coverage = {
@@ -313,8 +325,13 @@ def paginate(
         "total": total,
         "truncated": truncated,
         "nested_truncated": nested_trunc and not primary_more,
+        "exhaustive": not primary_more and not nested_trunc,
         "token_budget": 24_000,
     }
+    payload = dict(payload)
+    payload["returned"] = coverage["returned"]
+    payload["total"] = coverage["total"]
+    payload["exhaustive"] = coverage["exhaustive"]
     nxt = (
         encode_cursor(offset + len(window), snapshot=snapshot, query=query)
         if primary_more and window
@@ -476,28 +493,15 @@ def _run_query(
         truncated = bool(coverage.get("truncated"))
         verdict = _infer_verdict(payload, truncated=truncated)
         layer = _infer_layer(payload)
-        text = str(payload.get("text") or "")
-        if text or engine in {"codemap_query", "codemap_evidence"}:
+        if engine in {"codemap_query", "codemap_evidence"} or payload.get("text"):
             from ascendc_codemap_mcp.engine.query.explore import render_explore_markdown
 
-            if not text:
-                payload["text"] = render_explore_markdown(
-                    payload, verdict=verdict, layer=layer
-                )
-            else:
-                header = "  ".join(
-                    part
-                    for part in (
-                        f"verdict: {verdict}" if verdict else "",
-                        f"layer: {layer}" if layer else "",
-                    )
-                    if part
-                )
-                if header and not text.startswith("verdict:"):
-                    payload["text"] = header + "\n\n" + text
-                elif header and text.startswith("verdict:"):
-                    rest = text.split("\n", 1)[-1].lstrip("\n")
-                    payload["text"] = header + "\n\n" + rest
+            payload["text"] = render_explore_markdown(
+                payload,
+                verdict=verdict,
+                layer=layer,
+                projection=str(payload.get("projection") or "summary"),
+            )
         extra = {
             "engine": engine or "codemap_query",
             "shape": payload.get("shape"),

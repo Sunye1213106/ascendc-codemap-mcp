@@ -166,7 +166,7 @@ def _upsert_type(
     owner: str = "",
 ) -> Entity:
     leaf = _base_ident(name) or str(name or "").split("::")[-1]
-    return bind_or_create(
+    ent = bind_or_create(
         codemap,
         EntityKind.TYPE,
         leaf,
@@ -177,6 +177,9 @@ def _upsert_type(
         attrs={"provenance": provenance, "architecture": arch, "policy_alias": True},
         status="confirmed",
     )
+    if ent is None:
+        raise RuntimeError(f"TYPE bind_or_create refused {leaf!r}")
+    return ent
 
 
 def _link_buffers(codemap: CodeMap, alias: Entity, names: set[str], *, file: str, line: int) -> None:

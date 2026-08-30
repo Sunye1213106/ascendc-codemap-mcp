@@ -12,6 +12,7 @@ from typing import Any
 
 from ascendc_codemap_mcp.engine.ir.codemap import CodeMap
 from ascendc_codemap_mcp.engine.ir.entity import Entity, EntityKind
+from ascendc_codemap_mcp.engine.ir.identity import bind_or_create, is_forbidden_callable_name
 from ascendc_codemap_mcp.engine.ir.relation import RelationKind
 from ascendc_codemap_mcp.engine.ir.evidence import (
     SOURCE_CLANG_AST,
@@ -76,7 +77,9 @@ def _add_role(ent: Entity, role: str, *, provenance: str, source: str, trust: st
         ent.attrs["provenance"] = provenance
 
 
-def _upsert_fn(codemap: CodeMap, name: str, *, file: str = "", line: int = 0, layer: str) -> Entity:
+def _upsert_fn(codemap: CodeMap, name: str, *, file: str = "", line: int = 0, layer: str) -> Entity | None:
+    if is_forbidden_callable_name(str(name).split("::")[-1]):
+        return None
     for kind in (EntityKind.FUNCTION, EntityKind.METHOD):
         hits = codemap.by_name(str(name), kind=kind)
         if hits:
@@ -86,12 +89,14 @@ def _upsert_fn(codemap: CodeMap, name: str, *, file: str = "", line: int = 0, la
                 ent.line_start = int(line or 0)
             return ent
     kind = EntityKind.METHOD if "::" in str(name) else EntityKind.FUNCTION
-    return codemap.upsert(
+    return bind_or_create(
+        codemap,
         kind,
-        str(name),
-        attrs={"layer": layer},
+        str(name).split("::")[-1],
         file=_norm_file(file),
         line=int(line or 0),
+        owner=str(name).rsplit("::", 1)[0] if "::" in str(name) else "",
+        attrs={"layer": layer},
     )
 
 
@@ -117,6 +122,8 @@ def _project_host(codemap: CodeMap, host_ir: Any) -> None:
             line=int(getattr(site, "line", 0) or 0),
             layer="host",
         )
+        if ent is None:
+            continue
         _add_role(
             ent,
             ROLE_HOST_TILING_ENTRY,
@@ -141,6 +148,8 @@ def _project_host(codemap: CodeMap, host_ir: Any) -> None:
             ent = _upsert_fn(
                 codemap, callee_s, file=helper_file, line=helper_line, layer="host"
             )
+            if ent is None:
+                continue
             _add_role(
                 ent,
                 ROLE_HOST_TILING_HELPER,
@@ -187,6 +196,8 @@ def _project_kernel(codemap: CodeMap, kernel_ir: Any) -> None:
             line=int(kernel.line_start or 0),
             layer="kernel",
         )
+        if fn is None:
+            continue
         _add_role(
             fn,
             ROLE_KERNEL_ENTRY,
@@ -211,6 +222,8 @@ def _project_kernel(codemap: CodeMap, kernel_ir: Any) -> None:
             line=int((rec or {}).get("line") or 0),
             layer="kernel",
         )
+        if ent is None:
+            continue
         _add_role(
             ent,
             ROLE_KERNEL_ENTRY,
@@ -236,6 +249,8 @@ def _project_kernel(codemap: CodeMap, kernel_ir: Any) -> None:
                 line=int(callee_rec.get("line") or 0),
                 layer="kernel",
             )
+            if root is None:
+                continue
             _add_role(
                 root,
                 ROLE_KERNEL_SEMANTIC_ROOT,

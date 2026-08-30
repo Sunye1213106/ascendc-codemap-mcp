@@ -149,6 +149,60 @@ def test_run_uninstall_opencode_skills_without_mcp(
     assert not skill.exists()
 
 
+def test_run_uninstall_opencode_prints_leftover_cursor_skills(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    from ascendc_codemap_mcp.install import run_uninstall, skills as skill_install
+
+    def boom(*_a, **_k):
+        raise AssertionError("unexpected host")
+
+    monkeypatch.setattr(Path, "home", lambda *args, **kwargs: tmp_path)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setattr(opencode, "config_path", lambda: tmp_path / "missing.json")
+    monkeypatch.setattr(cursor, "uninstall", boom)
+    monkeypatch.setattr(claude, "uninstall", boom)
+    monkeypatch.setattr(codex, "uninstall", boom)
+    monkeypatch.setattr(skill_install, "uninstall_shared", lambda *_a, **_k: None)
+    skill_install.install_for("OpenCode")
+    skill_install.install_for("Cursor")
+    assert run_uninstall(hosts=["opencode"]) == 0
+    out = capsys.readouterr().out
+    assert "leftover" in out
+    assert "ascendc-codemap-query-codemap" in out
+    cursor_skill = (
+        tmp_path / ".cursor" / "skills" / "ascendc-codemap-query-codemap" / "SKILL.md"
+    )
+    assert cursor_skill.is_file()
+
+
+def test_run_uninstall_all_removes_cursor_and_shared_skills(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from ascendc_codemap_mcp.install import run_uninstall, skills as skill_install
+
+    monkeypatch.setattr(Path, "home", lambda *args, **kwargs: tmp_path)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setattr(opencode, "config_path", lambda: tmp_path / "missing.json")
+    monkeypatch.setattr(cursor, "config_path", lambda: tmp_path / "cursor-mcp.json")
+    monkeypatch.setattr(claude, "config_path", lambda: tmp_path / "claude.json")
+    monkeypatch.setattr(codex, "config_path", lambda: tmp_path / "codex.toml")
+    skill_install.install_for("Cursor")
+    skill_install.install_shared()
+    cursor_skill = (
+        tmp_path / ".cursor" / "skills" / "ascendc-codemap-query-codemap" / "SKILL.md"
+    )
+    shared_skill = (
+        tmp_path / ".agents" / "skills" / "ascendc-codemap-query-codemap" / "SKILL.md"
+    )
+    assert cursor_skill.is_file()
+    assert shared_skill.is_file()
+    assert run_uninstall(hosts=None) == 0
+    assert not cursor_skill.exists()
+    assert not shared_skill.exists()
+    assert skill_install.leftover_skill_folders() == []
+
+
 def test_opencode_home_uses_xdg(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     assert opencode.home() == tmp_path / "xdg" / "opencode"

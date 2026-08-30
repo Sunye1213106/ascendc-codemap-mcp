@@ -41,6 +41,8 @@ file=foo.h                 →  Definition 切到该文件
 
 空 `resolve` 也返回 **Dims**。`legal_key_count` 是编进包的 key 总数。Kernel API（`InitBuffer` / `DataCopyPad` / `SetFlag`）有 Definition 就是底层站点。
 
+`resolve` 的 Definition 已是完整 logical unit。日常不要再跟 `evidence_id` 拉源码窗。
+
 Do not call overview. 不要为每个候选再 `resolve` 三次。`INVALID_QUERY` 的 `did you mean:` 照抄一条重发。
 
 CLI：
