@@ -15,8 +15,12 @@ class InvalidRegex(ValueError):
 
 def compile_search(pattern: str) -> re.Pattern[str]:
     text = str(pattern or "")
+    flags = 0
+    # Keep IGNORECASE on pure literals so agent case (DT_HIFLOAT8) still hits.
+    if text and not _UNESCAPED_META.search(text) and "\\" not in text:
+        flags = re.IGNORECASE
     try:
-        return re.compile(text)
+        return re.compile(text, flags)
     except re.error as exc:
         raise InvalidRegex(str(exc)) from exc
 
@@ -37,8 +41,22 @@ def path_matches(path: str, glob: str) -> bool:
     if not pat:
         return True
     if "**" in pat:
-        rx = re.escape(pat).replace(r"\*\*", ".*").replace(r"\*", "[^/]*").replace(r"\?", ".")
-        return re.search(rx, norm) is not None
+        # `**` matches zero or more directories: `op_host/**/*.cpp` includes
+        # `op_host/foo.cpp`. fullmatch avoids accidental substring hits.
+        rx = re.escape(pat)
+        rx = rx.replace(r"\*\*/", r"(?:.*/)?")
+        rx = rx.replace(r"/\*\*", r"(?:/.*)?")
+        rx = rx.replace(r"\*\*", r".*")
+        rx = rx.replace(r"\*", "[^/]*").replace(r"\?", ".")
+        if re.fullmatch(rx, norm):
+            return True
+        # Basename fallback only for globs with no concrete directory prefix
+        # (`**/*.cpp`), so `op_host/**/*.cpp` cannot match `op_kernel/foo.cpp`.
+        if pat.startswith("**/"):
+            base_pat = pat.rsplit("/", 1)[-1]
+            if any(ch in base_pat for ch in "*?"):
+                return fnmatch.fnmatch(norm.rsplit("/", 1)[-1], base_pat)
+        return False
     if any(ch in pat for ch in "*?["):
         return fnmatch.fnmatch(norm, pat) or fnmatch.fnmatch(norm.rsplit("/", 1)[-1], pat)
     return pat in norm or norm.endswith("/" + pat) or norm.endswith(pat)
@@ -102,8 +120,9 @@ def line_role(text: str) -> int:
         return ROLE_NOISE
     if _CTRL_RE.match(stripped):
         return ROLE_CTRL
+    # Keep set_X(...) / member-assign as ROLE_DEF so writes rank with defs.
     if _MEMBER_ASSIGN_RE.search(raw) or _SET_CALL_RE.search(raw):
-        return ROLE_ASSIGN
+        return ROLE_DEF
     if _FN_DEF_RE.match(stripped) and not _CTRL_RE.match(stripped):
         return ROLE_DEF
     if stripped.startswith(("class ", "struct ", "enum ", "using ", "typedef ")):
@@ -135,9 +154,9 @@ def rank_hit(
     architecture: str = "",
 ) -> tuple[int, int, int, str, int]:
     return (
-        path_layer(path, architecture),
         line_role(text),
         match_tightness(pattern, text),
+        path_layer(path, architecture),
         str(path or "").replace("\\", "/"),
         int(line or 0),
     )
