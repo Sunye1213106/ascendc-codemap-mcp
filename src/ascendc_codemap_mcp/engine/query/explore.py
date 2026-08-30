@@ -366,6 +366,7 @@ def _prefer_tiling_key_seed(
         for card in cards
         if str(card.get("kind") or "") == EntityKind.TILING_KEY.value
         and _last_ident(str(card.get("name") or "")).lower() == needle
+        and "_def.cpp" not in str(card.get("file") or "").replace("\\", "/")
     ]
     if not tks:
         return cards, []
@@ -926,7 +927,47 @@ def _useful_rows(rows: Any, seed_name: str) -> list[dict[str, Any]]:
 
 
 def _render_search_markdown(payload: dict[str, Any]) -> list[str]:
+    recovered = str(payload.get("recovered_token") or "").strip()
+    original = str(payload.get("original_pattern") or payload.get("pattern") or "").strip()
+    prefix: list[str] = []
+    if recovered:
+        prefix.append(f"no match for {original}; showing {recovered}")
+    units = [u for u in (payload.get("units") or []) if isinstance(u, dict)]
+    leftover = [r for r in (payload.get("leftover") or []) if isinstance(r, dict)]
     cards = [c for c in (payload.get("cards") or []) if isinstance(c, dict)]
+    tpl_n = int(payload.get("template_lines") or 0)
+    unit_n = int(payload.get("source_units") or len(units))
+    if units or tpl_n:
+        real_total = int(payload.get("total") or 0)
+        if real_total <= 0:
+            real_total = sum(len(u.get("hits") or []) for u in units) + len(leftover)
+        lines = [f"{real_total} matches · {unit_n} source units"]
+        if tpl_n:
+            lines.append(f"+{tpl_n} template lines (collapsed)")
+        for unit in units:
+            name = str(unit.get("name") or "")
+            file = str(unit.get("file") or "")
+            start = int(unit.get("line_start") or 0)
+            end = int(unit.get("line_end") or 0)
+            loc = f"{file}:{start}-{end}" if file and start and end else file
+            lines.append(f"{name}  {loc}".rstrip())
+            for hit in (unit.get("hits") or [])[:3]:
+                if not isinstance(hit, dict):
+                    continue
+                hline = int(hit.get("line") or 0)
+                text = str(hit.get("text") or "").rstrip()
+                if hline and text:
+                    lines.append(f"  {hline}:{text}")
+        for row in leftover:
+            file = str(row.get("file") or "")
+            line = int(row.get("line") or 0)
+            text = str(row.get("text") or "").rstrip()
+            loc = f"{file}:{line}" if file and line else (file or "?")
+            lines.append(f"{loc}:{text}" if text else loc)
+        cursor = str(payload.get("next_cursor") or "")
+        if cursor:
+            lines.append(f"next_cursor={cursor}")
+        return prefix + lines
     total = int(payload.get("total") or len(cards))
     showing = len(cards)
     if total == 0 and not cards:
@@ -943,7 +984,7 @@ def _render_search_markdown(payload: dict[str, Any]) -> list[str]:
                 if alias:
                     lines.append(f"  matched alias: {alias}")
             lines.append("")
-        return lines
+        return prefix + lines
     lines = [f"{total} matches", ""]
     for row in cards:
         file = str(row.get("file") or "")
@@ -965,7 +1006,7 @@ def _render_search_markdown(payload: dict[str, Any]) -> list[str]:
     cursor = str(payload.get("next_cursor") or "")
     if cursor:
         lines.append(f"next_cursor={cursor}")
-    return lines
+    return prefix + lines
 
 
 def _render_find_markdown(payload: dict[str, Any]) -> list[str]:
@@ -1051,6 +1092,158 @@ def _render_proof(confirmed: int, unresolved: int, exhaustive: Any, *, total: in
     if unresolved:
         return f"{confirmed}/{shown} · unresolved {unresolved} · exhaustive={flag}"
     return f"{confirmed}/{shown} · exhaustive={flag}"
+
+
+def _render_site_cite(site: dict[str, Any]) -> str:
+    line = int(site.get("line") or 0)
+    rhs = str(site.get("rhs") or site.get("expression") or "").strip()
+    when = str(site.get("when") or "").strip()
+    bit = f"  {line}" if line else "  ?"
+    if rhs:
+        bit += f" = {rhs}"
+    if when:
+        bit += f"   when {when}"
+    return bit
+
+
+def _render_bundle(bundle: dict[str, Any]) -> list[str]:
+    if not isinstance(bundle, dict):
+        return []
+    lines: list[str] = []
+    host = [s for s in (bundle.get("host_value_definitions") or []) if isinstance(s, dict)]
+    if host:
+        lines.append("Host value definitions")
+        for site in host:
+            fn = str(site.get("function") or "")
+            cite = _render_site_cite(site)
+            if fn and fn not in cite:
+                lines.append(f"  {fn}")
+            lines.append(cite if cite.startswith("  ") else f"  {cite}")
+    transport = [s for s in (bundle.get("transport") or []) if isinstance(s, dict)]
+    if transport:
+        lines.append("Transport")
+        for site in transport:
+            line = int(site.get("line") or 0)
+            recv = str(site.get("receiver") or "")
+            bit = f"  {line}" if line else "  ?"
+            if recv:
+                bit += f"  {recv}"
+            lines.append(bit)
+    consumers = [s for s in (bundle.get("kernel_consumers") or []) if isinstance(s, dict)]
+    if consumers:
+        lines.append("Kernel consumers")
+        for row in consumers:
+            name = str(row.get("name") or "")
+            line = int(row.get("line") or 0)
+            lines.append(f"  {name}  {line}".rstrip())
+    assignments = [s for s in (bundle.get("assignments") or []) if isinstance(s, dict)]
+    if assignments:
+        lines.append("Assignments")
+        for site in assignments:
+            fn = str(site.get("function") or "")
+            cite = _render_site_cite(site)
+            if fn and fn not in cite:
+                lines.append(f"  {fn}")
+            lines.append(cite if cite.startswith("  ") else f"  {cite}")
+    consumed = [str(n) for n in (bundle.get("consumed_by") or []) if n]
+    if consumed:
+        lines.append("Consumed by")
+        lines.append("  " + "  ".join(consumed[:8]))
+    layout = [s for s in (bundle.get("workspace_layout") or []) if isinstance(s, dict)]
+    if layout:
+        lines.append("Workspace layout")
+        for row in layout:
+            label = str(row.get("label") or row.get("name") or "")
+            line = int(row.get("line") or 0)
+            if label and line:
+                lines.append(f"  {label}:{line}")
+    resource = bundle.get("resource") if isinstance(bundle.get("resource"), dict) else {}
+    lines.extend(_render_resource(resource))
+    controls = bundle.get("controls") if isinstance(bundle.get("controls"), dict) else {}
+    lines.extend(_render_control_proj(controls))
+    if lines:
+        lines.append("")
+    return lines
+
+
+def _render_resource(resource: dict[str, Any]) -> list[str]:
+    if not resource:
+        return []
+    lines: list[str] = []
+    backing = [s for s in (resource.get("backing") or []) if isinstance(s, dict)]
+    if backing:
+        lines.append("Backing")
+        for row in backing[:6]:
+            name = str(row.get("name") or "")
+            space = str(row.get("physical_space") or "")
+            via = str(row.get("via") or "")
+            line = int(row.get("line") or 0)
+            bit = f"  {name}"
+            if space:
+                bit += f"  {space}"
+            if via:
+                bit += f"  {via}"
+            if line:
+                bit += f"  {line}"
+            lines.append(bit)
+    sync = resource.get("sync") if isinstance(resource.get("sync"), dict) else {}
+    if sync and any(sync.get(k) not in (None, "", []) for k in ("paired", "signal_count", "await_count", "mechanism", "edges")):
+        lines.append("Sync pairing")
+        if sync.get("paired") is not None:
+            lines.append(f"  paired={sync.get('paired')}")
+        if sync.get("signal_count") is not None:
+            lines.append(f"  signal_count={sync.get('signal_count')}")
+        if sync.get("await_count") is not None:
+            lines.append(f"  await_count={sync.get('await_count')}")
+        if sync.get("mechanism"):
+            lines.append(f"  mechanism={sync.get('mechanism')}")
+    order = [s for s in (resource.get("order") or []) if isinstance(s, dict)]
+    if order:
+        lines.append("Order")
+        for row in order[:6]:
+            lines.append(f"  {row.get('name') or ''}  {row.get('via') or ''}".rstrip())
+    layout = [s for s in (resource.get("workspace_layout") or []) if isinstance(s, dict)]
+    if layout and "Workspace layout" not in lines:
+        lines.append("Workspace layout")
+        for row in layout:
+            label = str(row.get("label") or row.get("name") or "")
+            line = int(row.get("line") or 0)
+            if label and line:
+                lines.append(f"  {label}:{line}")
+    return lines
+
+
+def _render_control_proj(controls: dict[str, Any]) -> list[str]:
+    if not controls:
+        return []
+    lines: list[str] = []
+    guarded = [s for s in (controls.get("guarded_by") or []) if isinstance(s, dict)]
+    if guarded:
+        lines.append("Guarded by")
+        for row in guarded[:12]:
+            name = str(row.get("name") or "")
+            count = int(row.get("count") or 1)
+            line_nos = [int(n) for n in (row.get("lines") or []) if int(n or 0) > 0]
+            bit = f"  {name}"
+            if count > 1:
+                bit += f"  x{count}"
+            if line_nos:
+                bit += f"  lines {min(line_nos)}-{max(line_nos)}" if len(line_nos) > 1 else f"  {line_nos[0]}"
+            lines.append(bit)
+    names = [str(n) for n in (controls.get("controls") or []) if n]
+    folded = [s for s in (controls.get("controls_folded") or []) if isinstance(s, dict)]
+    if names or folded:
+        lines.append("Controls")
+        for row in folded[:8]:
+            name = str(row.get("name") or "")
+            count = int(row.get("count") or 1)
+            bit = f"  {name}"
+            if count > 1:
+                bit += f"  x{count}"
+            lines.append(bit)
+        for name in names[:8]:
+            lines.append(f"  {name}")
+    return lines
 
 
 def _render_assignments(facet: dict[str, Any]) -> list[str]:
@@ -1172,6 +1365,10 @@ def _render_facets(facets: dict[str, Any], *, projection: str = "summary") -> li
             for name, n in items[:8]:
                 lines.append(f"  {name} ×{n}")
         lines.append("")
+    resource = facets.get("resource") if isinstance(facets.get("resource"), dict) else {}
+    lines.extend(_render_resource(resource))
+    controls_proj = facets.get("controls_proj") if isinstance(facets.get("controls_proj"), dict) else {}
+    lines.extend(_render_control_proj(controls_proj))
     return lines
 
 
@@ -1194,6 +1391,98 @@ def _render_state_changes(changes: Any) -> list[str]:
             if when:
                 bit += f" [{when}]"
             lines.append(bit)
+    lines.append("")
+    return lines
+
+
+def _call_loc(row: dict[str, Any]) -> str:
+    name = str(row.get("name") or "").strip()
+    parts = name.replace(".", "::").split("::")
+    display = parts[-1] if parts else name
+    if display in {"Init", "Set", "Get"} and len(parts) >= 2:
+        display = "::".join(parts[-2:])
+    sites = [s for s in (row.get("sites") or []) if isinstance(s, dict)]
+    when = [str(w).strip() for w in (row.get("when") or []) if str(w).strip()]
+    site_lines = sorted({int(s.get("line") or 0) for s in sites if int(s.get("line") or 0) > 0})
+    kind = str(row.get("kind") or "")
+    if kind == "MACRO" or len(site_lines) > 1:
+        grouped: dict[str, list[int]] = {}
+        order: list[str] = []
+        for site in sites:
+            raw = str(site.get("file") or "").replace("\\", "/")
+            base = raw.rsplit("/", 1)[-1] if raw else ""
+            line = int(site.get("line") or 0)
+            if not base or line <= 0:
+                continue
+            if base not in grouped:
+                grouped[base] = []
+                order.append(base)
+            if line not in grouped[base]:
+                grouped[base].append(line)
+        if order:
+            parts = []
+            for base in order:
+                lines_s = ", ".join(str(n) for n in grouped[base])
+                parts.append(f"{base}:{lines_s}")
+            loc = f"- {display} — {'; '.join(parts)}"
+        else:
+            loc = f"- {display}"
+    else:
+        line = site_lines[0] if site_lines else int(row.get("line") or 0)
+        loc = f"- {display} @{line}" if line else f"- {display}"
+    if when:
+        loc += "  " + "  ".join(f"when {w}" for w in when[:3])
+    return loc
+
+
+def _render_call_graph(calls: dict[str, Any] | None) -> list[str]:
+    if not isinstance(calls, dict):
+        return []
+    lines: list[str] = []
+    called_by = [r for r in (calls.get("called_by") or []) if isinstance(r, dict)]
+    outgoing = [r for r in (calls.get("calls") or []) if isinstance(r, dict)]
+    possible = [r for r in (calls.get("possible_callers") or []) if isinstance(r, dict)]
+    if called_by:
+        lines.append("**Called by**")
+        for row in called_by:
+            lines.append(_call_loc(row))
+        lines.append("")
+    if outgoing:
+        lines.append("**Calls**")
+        for row in outgoing:
+            lines.append(_call_loc(row))
+        lines.append("")
+    if possible:
+        lines.append(f"**Possible callers ({len(possible)} candidates)**")
+        for row in possible:
+            lines.append(_call_loc(row))
+        lines.append("")
+    return lines
+
+
+def _render_unit_fields(rows: Any) -> list[str]:
+    items = [r for r in (rows or []) if isinstance(r, dict)]
+    if not items:
+        return []
+    lines = ["Fields in this unit"]
+    for item in items:
+        name = str(item.get("name") or "")
+        if name:
+            lines.append(f"  {name}")
+        bundle = item.get("bundle") if isinstance(item.get("bundle"), dict) else {}
+        host = [s for s in (bundle.get("host_value_definitions") or []) if isinstance(s, dict)]
+        for site in host[:2]:
+            cite = _render_site_cite(site).strip()
+            fn = str(site.get("function") or "")
+            bit = f"    host {cite}"
+            if fn and fn not in bit:
+                bit += f"  {fn}"
+            lines.append(bit)
+        consumers = [s for s in (bundle.get("kernel_consumers") or []) if isinstance(s, dict)]
+        for row in consumers[:2]:
+            cname = str(row.get("name") or "")
+            line = int(row.get("line") or 0)
+            lines.append(f"    kernel {cname}  {line}".rstrip())
     lines.append("")
     return lines
 
@@ -1246,6 +1535,13 @@ def _render_site_markdown(payload: dict[str, Any], *, projection: str) -> list[s
         for row in extras:
             lines.append(f"  {row.get('kind') or ''} {row.get('name') or ''}".rstrip())
         lines.append("")
+    calls = payload.get("calls") if isinstance(payload.get("calls"), dict) else None
+    if not calls:
+        enc = payload.get("enclosing") if isinstance(payload.get("enclosing"), dict) else {}
+        facets = enc.get("facets") if isinstance(enc.get("facets"), dict) else {}
+        calls = facets.get("calls") if isinstance(facets.get("calls"), dict) else None
+    lines.extend(_render_call_graph(calls))
+    lines.extend(_render_unit_fields(payload.get("field_bundles")))
     hint = str(payload.get("hint") or "").strip()
     if hint:
         lines.append(hint)
@@ -1292,6 +1588,11 @@ def _render_resolve_markdown(payload: dict[str, Any], *, projection: str) -> lis
                 tight=True if str(projection or "") == "summary" else False,
             )
             lines.extend(["**Definition**" if ln == "**Source**" else ln for ln in src])
+    calls = payload.get("calls") if isinstance(payload.get("calls"), dict) else None
+    if not calls:
+        facets = primary.get("facets") if isinstance(primary.get("facets"), dict) else {}
+        calls = facets.get("calls") if isinstance(facets.get("calls"), dict) else None
+    lines.extend(_render_call_graph(calls))
     extras = primary.get("extras") if isinstance(primary.get("extras"), dict) else {}
     writers = extras.get("writers") or primary.get("writers") or []
     readers = extras.get("readers") or primary.get("readers") or []
@@ -1304,10 +1605,16 @@ def _render_resolve_markdown(payload: dict[str, Any], *, projection: str) -> lis
     host_kernel = payload.get("host_kernel") if isinstance(payload.get("host_kernel"), dict) else None
     if not host_kernel:
         host_kernel = (primary.get("facets") or {}).get("host_kernel") if isinstance(primary.get("facets"), dict) else None
-    if isinstance(assignments, dict):
-        lines.extend(_render_assignments(assignments))
-    if isinstance(host_kernel, dict):
-        lines.extend(_render_host_kernel(host_kernel))
+    bundle = payload.get("bundle") if isinstance(payload.get("bundle"), dict) else None
+    if not bundle:
+        bundle = (primary.get("facets") or {}).get("bundle") if isinstance(primary.get("facets"), dict) else None
+    if isinstance(bundle, dict) and bundle:
+        lines.extend(_render_bundle(bundle))
+    else:
+        if isinstance(assignments, dict):
+            lines.extend(_render_assignments(assignments))
+        if isinstance(host_kernel, dict):
+            lines.extend(_render_host_kernel(host_kernel))
     host_from_compiled = bool(
         isinstance(support, dict) and support.get("host_encoding")
     )
@@ -1398,6 +1705,11 @@ def _render_resolve_markdown(payload: dict[str, Any], *, projection: str) -> lis
     facets = dict(primary.get("facets") or {}) if isinstance(primary.get("facets"), dict) else {}
     facets.pop("assignments", None)
     facets.pop("host_kernel", None)
+    facets.pop("bundle", None)
+    facets.pop("calls", None)
+    if bundle:
+        facets.pop("resource", None)
+        facets.pop("controls_proj", None)
     lines.extend(_render_facets(facets, projection=projection))
     hint = str(payload.get("hint") or "")
     if hint:
@@ -1781,6 +2093,8 @@ def attach_explore_fields(
     # query_find pins `locations` for name discovery; the plan default must not
     # overwrite a projection the shape already chose.
     payload["projection"] = str(payload.get("projection") or projection or "summary")
+    payload["pattern"] = str(pattern or payload.get("pattern") or "")
+    payload["explore_pattern"] = payload["pattern"]
     if operation:
         payload["operation"] = operation
     cards = list(payload.get("cards") or [])

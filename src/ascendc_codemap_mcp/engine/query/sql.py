@@ -33,9 +33,6 @@ from ascendc_codemap_mcp.engine.query.evidence import (
     bucket_hits,
     catalog_kind_alias,
     field_edge_kinds,
-    is_flag_sync_api_name,
-    is_kernel_api_name,
-    is_tque_api_name,
     project_entity,
     project_relation,
     surface_facts,
@@ -120,6 +117,16 @@ _PROTECTED_PAYLOAD_KEYS = frozenset(
         "resolve_mode",
         "assignments",
         "host_kernel",
+        "calls",
+        "bundle",
+        "units",
+        "leftover",
+        "template_lines",
+        "source_units",
+        "field_bundles",
+        "recovered_token",
+        "original_pattern",
+        "highlight",
     }
 )
 PACKING_RHS_TRIM = 400
@@ -334,6 +341,22 @@ def _row_get(row: sqlite3.Row, key: str, default: Any = None) -> Any:
 def _strip_dot_slash(text: str) -> str:
     """Drop leading ``./`` segments. Never touches ``../``."""
     return strip_dot_slash(text)
+
+
+def _rel_key(file: str) -> str:
+    """Collapse ``.`` / ``..`` so source_line.path and entity.file can match."""
+    text = str(file or "").replace("\\", "/")
+    while text.startswith("./"):
+        text = text[2:]
+    parts: list[str] = []
+    for part in text.split("/"):
+        if part in {"", "."}:
+            continue
+        if part == ".." and parts and parts[-1] != "..":
+            parts.pop()
+            continue
+        parts.append(part)
+    return "/".join(parts)
 
 
 def _norm_file(file: str) -> str:
@@ -579,6 +602,8 @@ def _file_same(left: str, right: str) -> bool:
     if not a or not b:
         return False
     if a == b:
+        return True
+    if _rel_key(a) == _rel_key(b):
         return True
     return a.endswith("/" + b) or b.endswith("/" + a) or a.rsplit("/", 1)[-1] == b.rsplit("/", 1)[-1]
 
@@ -1134,7 +1159,6 @@ def _kind_priority(hit: dict[str, Any], needle: str) -> int:
         EntityKind.INPUT.value: 0,
         EntityKind.OUTPUT.value: 0,
         EntityKind.MACRO.value: 0,
-        EntityKind.PIPE.value: 0,
         EntityKind.KERNEL.value: 0,
         EntityKind.VARIABLE.value: 1,
         EntityKind.METHOD.value: 1,
@@ -1143,6 +1167,8 @@ def _kind_priority(hit: dict[str, Any], needle: str) -> int:
         EntityKind.BUFFER.value: 1,
         EntityKind.REGISTER.value: 1,
         EntityKind.QUEUE.value: 1,
+        EntityKind.PIPE.value: 1,
+        EntityKind.EVENT.value: 1,
         EntityKind.COMPILE_VAR.value: 2,
         EntityKind.BRANCH.value: 3,
         EntityKind.PREDICATE.value: 3,
@@ -5321,94 +5347,6 @@ class UoSqlQuery:
         self._compiled_support_cache[ident_key] = dict(support)
         return support
 
-    def aggregate_buffer(self, pattern: str = "", *, limit: int = 50) -> dict[str, Any]:
-        needle = str(pattern or "").strip()
-        low = needle.lower()
-        like = f"%{low}%"
-        with self._connect() as conn:
-            buf_rows = conn.execute(
-                """
-                SELECT e.id, e.kind, e.name, e.status, e.file, e.line_start, e.line_end, e.data,
-                       IFNULL(s.snippet, '') AS snippet
-                FROM entity e
-                LEFT JOIN source_span s ON s.entity_id = e.id
-                -- REGISTER joins BUFFER here: both are storage the kernel holds
-                -- a value in, and on regbase architectures register pressure is
-                -- the question being asked.
-                WHERE e.kind IN ('BUFFER', 'REGISTER')
-                  AND (
-                    ? = ''
-                    OR e.name COLLATE NOCASE LIKE ?
-                    OR lower(e.id) LIKE ?
-                    OR lower(IFNULL(json_extract(e.data, '$.allocated'), '')) LIKE ?
-                    OR lower(IFNULL(e.data, '')) LIKE ?
-                  )
-                LIMIT ?
-                """,
-                (needle, like, like, like, like, max(int(limit) * 8, 32)),
-            ).fetchall()
-            wrap_rows = conn.execute(
-                """
-                SELECT e.id, e.kind, e.name, e.status, e.file, e.line_start, e.line_end, e.data,
-                       IFNULL(s.snippet, '') AS snippet
-                FROM entity e
-                LEFT JOIN source_span s ON s.entity_id = e.id
-                WHERE e.kind = 'TYPE'
-                  AND (
-                    json_extract(e.data, '$.wraps_storage') = 1
-                    OR json_extract(e.data, '$.wraps_lock') = 1
-                    OR e.data LIKE '%"wraps_storage"%'
-                    OR e.data LIKE '%"wraps_lock"%'
-                    OR json_extract(e.data, '$.role') IN (
-                        'storage_wrapper', 'storage_wrapper_type', 'project_wrapper_type'
-                    )
-                  )
-                  AND (
-                    ? = ''
-                    OR e.name COLLATE NOCASE = ?
-                    OR e.name COLLATE NOCASE LIKE ?
-                    OR e.name COLLATE NOCASE LIKE '%::' || ?
-                    OR lower(IFNULL(json_extract(e.data, '$.wraps_lock'), '')) LIKE ?
-                    OR lower(IFNULL(e.data, '')) LIKE ?
-                  )
-                LIMIT ?
-                """,
-                (needle, low, like, low, like, like, max(int(limit) * 8, 32)),
-            ).fetchall()
-            rows = self._hits_from_rows(
-                conn,
-                list(buf_rows) + list(wrap_rows),
-                why="buffer",
-                with_snippet=True,
-                with_rels=True,
-            )
-        def _buf_key(hit: dict[str, Any]) -> tuple[Any, ...]:
-            name = str(hit.get("name") or "").lower()
-            facts = hit.get("facts") if isinstance(hit.get("facts"), dict) else {}
-            # A REGISTER declaration is its own allocation, so it ranks with the
-            # buffers that carry an explicit allocation site rather than below them.
-            is_register = str(hit.get("kind") or "") == "REGISTER"
-            allocated = 0 if (facts.get("allocated") or is_register) else 1
-            strong = 0 if low and low in name else 1
-            return (allocated, strong, *_agent_sort_key(hit, low, architecture=self._architecture))
-
-        rows.sort(key=_buf_key)
-        total = len(rows)
-        rows = rows[: max(0, int(limit))]
-        coverage = _hits_coverage(rows, total=total)
-        return _fit_payload(
-            {
-                "ok": True,
-                "mode": "buffer",
-                "pattern": needle,
-                "coverage": coverage,
-                "buffers": rows,
-                "count": len(rows),
-                "total": total,
-                "files": _group_by_file(rows),
-            }
-        )
-
     def aggregate_locate(self, pattern: str = "", *, limit: int = 20) -> dict[str, Any]:
         needle = str(pattern or "").strip()
         tokens = search_needles(needle) or ([needle] if needle else [])
@@ -5460,113 +5398,6 @@ class UoSqlQuery:
             payload["pattern_tokens"] = tokens
         attach_query_hints(payload, needle, count=len(rows))
         return _fit_payload(payload)
-
-    def aggregate_kernel_api(self, pattern: str = "", *, limit: int = 50) -> dict[str, Any]:
-        needle = str(pattern or "").strip().lower()
-        with self._connect() as conn:
-            if needle:
-                rows = conn.execute(
-                    """
-                    SELECT e.id, e.kind, e.name, e.status, e.file, e.line_start, e.line_end, e.data,
-                           IFNULL(s.snippet, '') AS snippet
-                    FROM entity e
-                    LEFT JOIN source_span s ON s.entity_id = e.id
-                    WHERE e.kind = 'OPERATION'
-                      AND (
-                        e.name COLLATE NOCASE LIKE ?
-                        OR lower(IFNULL(json_extract(e.data, '$.callee'), '')) LIKE ?
-                        OR lower(e.id) LIKE ?
-                      )
-                    LIMIT 400
-                    """,
-                    (f"%{needle}%", f"%{needle}%", f"%{needle}%"),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    """
-                    SELECT e.id, e.kind, e.name, e.status, e.file, e.line_start, e.line_end, e.data,
-                           IFNULL(s.snippet, '') AS snippet
-                    FROM entity e
-                    LEFT JOIN source_span s ON s.entity_id = e.id
-                    WHERE e.kind = 'OPERATION'
-                    LIMIT 400
-                    """
-                ).fetchall()
-            hits: list[dict[str, Any]] = []
-            for row in rows:
-                data = _parse_data(row["data"])
-                name = str(data.get("callee") or row["name"] or "")
-                if needle:
-                    if needle not in name.lower() and needle not in str(row["id"] or "").lower():
-                        continue
-                elif not is_kernel_api_name(name):
-                    continue
-                hit = self._hit(row, why="api_call", with_snippet=True, with_rels=False, conn=conn)
-                if hit is None:
-                    continue
-                facts = dict(hit.get("facts") or {})
-                sync: list[dict[str, Any]] = []
-                queues: list[dict[str, Any]] = []
-                for rel in conn.execute(
-                    """
-                    SELECT r.kind AS rel_kind, e.id, e.kind, e.name, e.file, e.line_start, e.data
-                    FROM relation r
-                    JOIN entity e ON e.id = r.dst
-                    WHERE r.src = ?
-                    """,
-                    (str(hit["id"]),),
-                ):
-                    other_data = _parse_data(rel["data"])
-                    if str(rel["rel_kind"] or "") in {
-                        RelationKind.SIGNALS.value,
-                        RelationKind.AWAITS.value,
-                    }:
-                        sync.append(
-                            {
-                                "kind": str(rel["rel_kind"] or ""),
-                                "id": str(rel["id"] or ""),
-                                "name": str(rel["name"] or ""),
-                                "file": str(rel["file"] or ""),
-                                "line_start": int(rel["line_start"] or 0),
-                                "paired": bool(other_data.get("paired")),
-                            }
-                        )
-                    if str(rel["kind"] or "") == EntityKind.QUEUE.value:
-                        queues.append(
-                            {
-                                "id": str(rel["id"] or ""),
-                                "name": str(rel["name"] or ""),
-                                "tposition": other_data.get("tposition") or "",
-                                "memory_space": other_data.get("memory_space") or "",
-                            }
-                        )
-                if is_flag_sync_api_name(name) and sync:
-                    facts["sync"] = sync
-                if is_tque_api_name(name) and queues:
-                    facts["queue"] = queues
-                if facts:
-                    hit["facts"] = facts
-                hits.append(hit)
-        hits.sort(
-            key=lambda hit: _agent_sort_key(
-                hit, needle, architecture=self._architecture
-            )
-        )
-        total = len(hits)
-        shown = hits[: max(0, int(limit))]
-        coverage = _hits_coverage(hits, total=total)
-        return _fit_payload(
-            {
-                "ok": True,
-                "mode": "kernel_api",
-                "pattern": needle,
-                "coverage": coverage,
-                "calls": shown,
-                "count": min(total, int(limit)),
-                "total": total,
-                "files": _group_by_file(hits),
-            }
-        )
 
     def _kernel_launch_entry(
         self, pattern: str, *, scope: str = "", winner_file: str = ""
@@ -6201,6 +6032,10 @@ class UoSqlQuery:
                 extra_where=where,
                 params=params,
                 limit=max(int(limit), 8),
+                order=(
+                    "(CASE WHEN IFNULL(e.file,'') = '' OR IFNULL(e.line_start,0) = 0 "
+                    "THEN 1 ELSE 0 END), e.kind, e.name, e.id"
+                ),
             )
             return self._hits_from_rows(conn, rows, why="name_card", with_snippet=True)
 
@@ -7276,7 +7111,9 @@ class UoSqlQuery:
             "hits": compact,
             "count": len(compact),
             "truncated": False,
+            "highlight": str(highlight or ""),
         }
+        payload["field_bundles"] = self._unit_field_bundles(payload)
         if missing_snapshot:
             payload["hint"] = (
                 "this file is not in snapshot; resolve a search locator "
@@ -7639,6 +7476,99 @@ class UoSqlQuery:
         ]
         return cards, total
 
+    def _is_template_hit(self, path: str, text: str) -> bool:
+        from ascendc_codemap_mcp.engine.query.explore import _is_tpl_boilerplate
+        from ascendc_codemap_mcp.engine.query.rg import ROLE_TPL, line_role
+
+        blob = str(path or "").replace("\\", "/")
+        if "template_tiling_key" in blob.rsplit("/", 1)[-1] or "/template_tiling_key" in blob:
+            return True
+        if _is_tpl_boilerplate(text):
+            return True
+        return line_role(text) == ROLE_TPL
+
+    def _group_search_hits(
+        self,
+        conn: sqlite3.Connection,
+        matched: list[tuple[str, int, str]],
+        phrase: str,
+    ) -> dict[str, Any]:
+        from ascendc_codemap_mcp.engine.query.rg import rank_hit
+
+        tpl: list[tuple[str, int, str]] = []
+        real: list[tuple[str, int, str]] = []
+        for row in matched:
+            if self._is_template_hit(row[0], row[2]):
+                tpl.append(row)
+            else:
+                real.append(row)
+        kinds = tuple(_ENCLOSE_KINDS)
+        ph = ",".join("?" for _ in kinds)
+        spans = conn.execute(
+            f"""
+            SELECT e.name, e.file, e.line_start, e.line_end, e.kind
+            FROM entity e
+            WHERE e.kind IN ({ph})
+              AND IFNULL(e.line_start, 0) > 0
+              AND IFNULL(e.line_end, 0) >= e.line_start
+            -- def_span_preload
+            """,
+            kinds,
+        ).fetchall()
+        indexed: dict[str, list[tuple[str, str, int, int]]] = {}
+        for name, file, start, end, _kind in spans:
+            path = str(file or "").replace("\\", "/")
+            if not path:
+                continue
+            rec = (str(name or ""), path, int(start or 0), int(end or 0))
+            indexed.setdefault(_rel_key(path), []).append(rec)
+            indexed.setdefault(path.rsplit("/", 1)[-1], []).append(rec)
+        units: dict[tuple[str, str, int, int], list[dict[str, Any]]] = {}
+        leftover: list[dict[str, Any]] = []
+        arch = str(self._architecture or "")
+        for path, line, text in real:
+            hit = {"file": path, "line": line, "text": text}
+            leaf = path.replace("\\", "/").rsplit("/", 1)[-1]
+            candidates = indexed.get(_rel_key(path), []) + indexed.get(leaf, [])
+            best: tuple[int, str, str, int, int] | None = None
+            for name, fpath, start, end in candidates:
+                if not _file_same(fpath, path):
+                    continue
+                if start <= line <= end:
+                    span = end - start
+                    if best is None or span < best[0]:
+                        best = (span, name, fpath, start, end)
+            if best is None:
+                leftover.append(hit)
+                continue
+            key = (best[1], best[2], best[3], best[4])
+            units.setdefault(key, []).append(hit)
+        unit_rows: list[dict[str, Any]] = []
+        for key, hits in units.items():
+            name, file, start, end = key
+            hits.sort(key=lambda h: rank_hit(h["file"], h["line"], h["text"], phrase, arch))
+            best_rank = rank_hit(hits[0]["file"], hits[0]["line"], hits[0]["text"], phrase, arch)
+            unit_rows.append(
+                {
+                    "name": name,
+                    "file": file,
+                    "line_start": start,
+                    "line_end": end,
+                    "hits": hits,
+                    "rank": best_rank,
+                }
+            )
+        unit_rows.sort(key=lambda u: u["rank"])
+        leftover.sort(key=lambda h: rank_hit(h["file"], h["line"], h["text"], phrase, arch))
+        return {
+            "template_lines": len(tpl),
+            "real_total": len(real),
+            "source_units": len(unit_rows),
+            "units": [{k: v for k, v in u.items() if k != "rank"} for u in unit_rows],
+            "leftover": leftover,
+            "real": real,
+        }
+
     def _search_regex_lines(
         self,
         conn: sqlite3.Connection,
@@ -7647,7 +7577,7 @@ class UoSqlQuery:
         file_filter: str = "",
         limit: int = 20,
         offset: int = 0,
-    ) -> tuple[list[dict[str, Any]], int]:
+    ) -> tuple[list[dict[str, Any]], int, dict[str, Any]]:
         from ascendc_codemap_mcp.engine.query.rg import (
             compile_search,
             is_pure_literal,
@@ -7663,7 +7593,9 @@ class UoSqlQuery:
         arch = str(self._architecture or "")
         rows: list[tuple[Any, ...]] = []
         fts_q = _fts_match_query(phrase) if is_pure_literal(phrase) and len(phrase) >= 3 else ""
-        if has_source_fts(conn) and fts_q:
+        if has_source_line(conn):
+            rows = conn.execute("SELECT path, line, text FROM source_line").fetchall()
+        elif has_source_fts(conn) and fts_q:
             try:
                 rows = conn.execute(
                     "SELECT sl.path, sl.line, sl.text "
@@ -7673,8 +7605,6 @@ class UoSqlQuery:
                 ).fetchall()
             except sqlite3.OperationalError:
                 rows = []
-        if not rows and has_source_line(conn):
-            rows = conn.execute("SELECT path, line, text FROM source_line").fetchall()
         matched: list[tuple[str, int, str]] = []
         for path, line, text in rows:
             if not path_matches(str(path or ""), file_filter):
@@ -7683,15 +7613,17 @@ class UoSqlQuery:
                 continue
             matched.append((str(path or ""), int(line or 0), str(text or "").rstrip()))
         matched.sort(key=lambda r: rank_hit(r[0], r[1], r[2], phrase, arch))
-        total = len(matched)
-        page = matched[start : start + cap]
+        extra = self._group_search_hits(conn, matched, phrase)
+        real = extra.get("real") or matched
+        total = int(extra.get("real_total") or len(real))
+        page = real[start : start + cap]
         cards = [{"file": p, "line": ln, "text": tx} for p, ln, tx in page]
-        return cards, total
+        return cards, total, extra
 
-    def _field_ids_named(self, ident: str) -> list[str]:
+    def _field_ids_named(self, ident: str) -> dict[str, list[str]]:
         leaf = _last_ident(str(ident or "").replace(".", "::"))
         if not leaf:
-            return []
+            return {}
         kinds = (
             EntityKind.TILING_FIELD.value,
             EntityKind.FIELD.value,
@@ -7699,23 +7631,65 @@ class UoSqlQuery:
             EntityKind.COMPILE_VAR.value,
         )
         ph = ",".join("?" for _ in kinds)
+        name_clause, name_params = _leaf_name_where(leaf)
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT e.id, e.name FROM entity e
+                SELECT e.id, e.kind, e.file, e.line_start, e.data
+                FROM entity e
                 WHERE e.kind IN ({ph})
-                  AND (
-                        e.name = ? COLLATE NOCASE
-                     OR e.name LIKE '%::' || ? COLLATE NOCASE
-                  )
-                LIMIT 16
+                  AND {name_clause}
+                ORDER BY CASE
+                    WHEN IFNULL(e.file, '') = '' OR IFNULL(e.line_start, 0) = 0 THEN 1
+                    ELSE 0
+                END,
+                CASE
+                    WHEN instr(IFNULL(e.data, ''), '"value_defining_sites"') > 0
+                      OR instr(IFNULL(e.data, ''), '"host_writer_sites"') > 0
+                      OR instr(IFNULL(e.data, ''), '"producer_sites"') > 0
+                      OR instr(IFNULL(e.data, ''), '"packing_value_sites"') > 0
+                    THEN 0
+                    ELSE 1
+                END,
+                e.kind, e.id
                 """,
-                (*kinds, leaf, leaf),
+                (*kinds, *name_params),
             ).fetchall()
-        return [str(r[0]) for r in rows if r[0]]
+        from ascendc_codemap_mcp.engine.query.bundle import data_has_partition_sites
+
+        grouped: dict[str, list[tuple[str, bool]]] = {}
+        seen: set[str] = set()
+        for row in rows:
+            eid = str(row[0] or "")
+            kind = str(row[1] or "")
+            if not eid or eid in seen:
+                continue
+            seen.add(eid)
+            grouped.setdefault(kind, []).append((eid, data_has_partition_sites(row[4])))
+        buckets: dict[str, list[str]] = {}
+        for kind, items in grouped.items():
+            attributed = [eid for eid, ok in items if ok]
+            buckets[kind] = attributed or [eid for eid, _ in items]
+        return buckets
+
+    def _flatten_field_ids(self, ident: str) -> list[str]:
+        buckets = self._field_ids_named(ident)
+        order = (
+            EntityKind.TILING_FIELD.value,
+            EntityKind.FIELD.value,
+            EntityKind.TILING_KEY.value,
+            EntityKind.COMPILE_VAR.value,
+        )
+        out: list[str] = []
+        for kind in order:
+            out.extend(buckets.get(kind) or [])
+        for kind, ids in buckets.items():
+            if kind not in order:
+                out.extend(ids)
+        return out
 
     def assignments_for(self, ident: str) -> dict[str, Any] | None:
-        fids = self._field_ids_named(ident)
+        fids = self._flatten_field_ids(ident)
         if not fids:
             return None
         ph = ",".join("?" for _ in fids)
@@ -7825,7 +7799,7 @@ class UoSqlQuery:
         return names
 
     def host_kernel_for(self, ident: str) -> dict[str, Any] | None:
-        fids = self._field_ids_named(ident)
+        fids = self._flatten_field_ids(ident)
         if not fids:
             return None
         ph = ",".join("?" for _ in fids)
@@ -7916,13 +7890,250 @@ class UoSqlQuery:
             },
         }
 
+    def calls_for(self, entity_id: str) -> dict[str, Any] | None:
+        """Confirmed Calls / Called by, plus partial incoming as Possible callers.
+
+        External (fileless) neighbors are dropped; they are API shadows, not
+        operator source. Unresolved-call stubs stay off the card.
+        """
+        eid = str(entity_id or "")
+        if not eid:
+            return None
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT r.status, r.src, r.dst, r.data, r.kind AS r_kind,
+                       s.kind AS s_kind, s.name AS s_name, s.file AS s_file,
+                       s.line_start AS s_line, s.data AS s_data,
+                       d.kind AS d_kind, d.name AS d_name, d.file AS d_file,
+                       d.line_start AS d_line, d.data AS d_data
+                FROM relation r
+                JOIN entity s ON s.id = r.src
+                JOIN entity d ON d.id = r.dst
+                WHERE r.kind IN ('CALLS', 'CALLS_UNDER_GUARD') AND (r.src = ? OR r.dst = ?)
+                """,
+                (eid, eid),
+            ).fetchall()
+
+        def _located(file: Any, line: Any) -> bool:
+            return bool(str(file or "").strip()) and int(line or 0) > 0
+
+        def _unresolved_stub(data: Any) -> bool:
+            parsed = _parse_data(data) if not isinstance(data, dict) else data
+            return bool(parsed.get("internal_unresolved"))
+
+        def _site_rows(rel_data: dict[str, Any], file: str, line: int) -> list[dict[str, Any]]:
+            out: list[dict[str, Any]] = []
+            raw_sites = rel_data.get("sites") if isinstance(rel_data.get("sites"), list) else []
+            for site in raw_sites:
+                if not isinstance(site, dict):
+                    continue
+                sfile = _norm_file(str(site.get("file") or file or ""))
+                sline = int(site.get("line") or 0)
+                if sline <= 0:
+                    continue
+                item = {"file": sfile, "line": sline}
+                guard = str(site.get("guard") or "").strip()
+                if guard:
+                    item["guard"] = guard
+                out.append(item)
+            if not out and _located(file, line):
+                out.append({"file": _norm_file(file), "line": int(line or 0)})
+            return out
+
+        outgoing: dict[str, dict[str, Any]] = {}
+        incoming: dict[str, dict[str, Any]] = {}
+        possible: dict[str, dict[str, Any]] = {}
+        branch_whens: list[str] = []
+
+        def _accumulate(
+            store: dict[str, dict[str, Any]],
+            *,
+            nid: str,
+            kind: str,
+            name: str,
+            file: str,
+            line: int,
+            rel_data: dict[str, Any],
+        ) -> None:
+            if not name or _is_noise_name_sql(name):
+                return
+            leaf = _last_ident(name)
+            item = store.get(leaf)
+            if item is None:
+                item = {
+                    "id": nid,
+                    "kind": kind,
+                    "name": name,
+                    "file": _norm_file(file),
+                    "line": int(line or 0),
+                    "sites": [],
+                    "when": [],
+                }
+                store[leaf] = item
+            sites = item["sites"]
+            for site in _site_rows(rel_data, file, line):
+                key = (str(site.get("file") or ""), int(site.get("line") or 0))
+                if any((str(x.get("file") or ""), int(x.get("line") or 0)) == key for x in sites):
+                    continue
+                sites.append(site)
+                guard = str(site.get("guard") or "").strip()
+                if guard and guard not in item["when"]:
+                    item["when"].append(guard)
+            if not item["line"] and sites:
+                item["line"] = int(sites[0].get("line") or 0)
+                item["file"] = str(sites[0].get("file") or item["file"])
+
+        for row in rows:
+            status = str(_row_get(row, "r.status") or _row_get(row, "status") or "").lower()
+            src = str(_row_get(row, "r.src") or _row_get(row, "src") or "")
+            dst = str(_row_get(row, "r.dst") or _row_get(row, "dst") or "")
+            rel_data = _parse_data(_row_get(row, "r.data") or _row_get(row, "data"))
+            s_kind = str(_row_get(row, "s_kind") or "")
+            s_name = str(_row_get(row, "s_name") or "")
+            s_file = str(_row_get(row, "s_file") or "")
+            s_line = int(_row_get(row, "s_line") or 0)
+            d_kind = str(_row_get(row, "d_kind") or "")
+            d_name = str(_row_get(row, "d_name") or "")
+            d_file = str(_row_get(row, "d_file") or "")
+            d_line = int(_row_get(row, "d_line") or 0)
+            s_data = _row_get(row, "s_data")
+            d_data = _row_get(row, "d_data")
+            confirmed = status in {"confirmed", "extracted", "verified"}
+            dst_sites = _site_rows(rel_data, d_file, d_line)
+            src_sites = _site_rows(rel_data, s_file, s_line)
+            if src == eid:
+                if _unresolved_stub(d_data):
+                    continue
+                if not _located(d_file, d_line) and not dst_sites:
+                    continue
+                if confirmed:
+                    _accumulate(
+                        outgoing,
+                        nid=dst,
+                        kind=d_kind,
+                        name=d_name,
+                        file=d_file,
+                        line=d_line,
+                        rel_data=rel_data,
+                    )
+            elif dst == eid:
+                if _unresolved_stub(s_data):
+                    continue
+                if not _located(s_file, s_line) and not src_sites:
+                    continue
+                if s_kind == EntityKind.BRANCH.value:
+                    if confirmed:
+                        gname = str(s_name or "").strip()
+                        for site in src_sites:
+                            guard = str(site.get("guard") or "").strip()
+                            if guard and guard not in branch_whens:
+                                branch_whens.append(guard)
+                        if gname and gname not in branch_whens and not src_sites:
+                            branch_whens.append(gname)
+                    continue
+                target = incoming if confirmed else possible
+                _accumulate(
+                    target,
+                    nid=src,
+                    kind=s_kind,
+                    name=s_name,
+                    file=s_file,
+                    line=s_line,
+                    rel_data=rel_data,
+                )
+
+        if branch_whens:
+            for item in incoming.values():
+                for guard in branch_whens:
+                    if guard not in item["when"]:
+                        item["when"].append(guard)
+
+        if not outgoing and not incoming and not possible:
+            return None
+        return {
+            "calls": list(outgoing.values())[:12],
+            "called_by": list(incoming.values())[:12],
+            "possible_callers": list(possible.values())[:12],
+        }
+
+    _UNIT_FIELD_CAP = 3
+
+    def _field_leaves_among(self, names: list[str]) -> list[str]:
+        wanted = {str(n) for n in names if n}
+        if not wanted:
+            return []
+        kinds = (EntityKind.TILING_FIELD.value, EntityKind.FIELD.value)
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT name FROM entity WHERE kind IN (?, ?)",
+                kinds,
+            ).fetchall()
+        found: list[str] = []
+        seen: set[str] = set()
+        for (name,) in rows:
+            leaf = _last_ident(str(name or ""))
+            if leaf in wanted and leaf not in seen:
+                seen.add(leaf)
+                found.append(leaf)
+        return found
+
+    def _unit_field_bundles(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        snippet = str(payload.get("snippet") or "")
+        highlight = _last_ident(
+            str(payload.get("highlight") or payload.get("explore_pattern") or "")
+        )
+        counts: Counter[str] = Counter()
+        for tok in _TOKEN_RE.findall(snippet):
+            if tok in _FOCUS_SKIP_IDENTS or len(tok) < 3:
+                continue
+            counts[tok] += 1
+        if not counts:
+            return []
+        leaves = self._field_leaves_among(list(counts))
+        ranked = sorted(
+            leaves,
+            key=lambda n: (0 if n == highlight else 1, -counts.get(n, 0), n.lower()),
+        )
+        from ascendc_codemap_mcp.engine.query.bundle import build_symbol_bundle
+
+        out: list[dict[str, Any]] = []
+        for name in ranked:
+            bundle = build_symbol_bundle(self, name)
+            if not isinstance(bundle, dict):
+                continue
+            if not (
+                bundle.get("host_value_definitions")
+                or bundle.get("kernel_consumers")
+                or bundle.get("assignments")
+                or bundle.get("transport")
+            ):
+                continue
+            out.append({"name": name, "bundle": bundle})
+            if len(out) >= self._UNIT_FIELD_CAP:
+                break
+        return out
+
     def attach_card_facets(self, payload: dict[str, Any]) -> dict[str, Any]:
-        if str(payload.get("resolve_mode") or "") == "site":
-            return payload
         cards = [c for c in (payload.get("cards") or []) if isinstance(c, dict)]
         enclosing = payload.get("enclosing")
         if isinstance(enclosing, dict):
             cards = [*cards, enclosing]
+        for card in cards:
+            eid = str(card.get("id") or card.get("_entity_id") or "")
+            if not eid:
+                continue
+            calls = self.calls_for(eid)
+            if calls:
+                facets = card.get("facets") if isinstance(card.get("facets"), dict) else {}
+                facets["calls"] = calls
+                card["facets"] = facets
+                if payload.get("calls") is None:
+                    payload["calls"] = calls
+        if str(payload.get("resolve_mode") or "") == "site":
+            if not payload.get("field_bundles"):
+                payload["field_bundles"] = self._unit_field_bundles(payload)
+            return payload
         for card in cards:
             eid = str(card.get("id") or card.get("_entity_id") or "")
             if not eid:
@@ -7942,8 +8153,22 @@ class UoSqlQuery:
                 facets["used_by"] = used
             if facets:
                 card["facets"] = facets
+            extra = None
+            try:
+                from ascendc_codemap_mcp.engine.query.bundle import attach_entity_projections
+
+                extra = attach_entity_projections(self, card)
+            except Exception:  # noqa: BLE001
+                extra = None
+            if extra:
+                facets = card.get("facets") if isinstance(card.get("facets"), dict) else {}
+                if extra.get("resource"):
+                    facets["resource"] = extra["resource"]
+                if extra.get("controls_proj"):
+                    facets["controls_proj"] = extra["controls_proj"]
+                card["facets"] = facets
         seed = ""
-        for key in ("pattern",):
+        for key in ("pattern", "explore_pattern"):
             seed = str(payload.get(key) or "").strip()
             if seed:
                 break
@@ -7953,10 +8178,38 @@ class UoSqlQuery:
         if ":" in seed and any(ch.isdigit() for ch in seed):
             seed = str((cards[0] if cards else {}).get("name") or "")
         if seed:
+            from ascendc_codemap_mcp.engine.query.bundle import (
+                attach_entity_projections,
+                build_symbol_bundle,
+            )
+
+            bundle = build_symbol_bundle(self, seed)
+            primary = cards[0] if cards else None
+            if bundle is None and isinstance(primary, dict):
+                extra = attach_entity_projections(self, primary)
+                resource = extra.get("resource") if extra else None
+                controls = extra.get("controls_proj") if extra else None
+                layout = (resource or {}).get("workspace_layout") or []
+                if resource or controls or layout:
+                    bundle = {
+                        "host_value_definitions": [],
+                        "transport": [],
+                        "kernel_consumers": [],
+                        "assignments": [],
+                        "consumed_by": [],
+                        "workspace_layout": layout,
+                        "resource": resource or {},
+                        "controls": controls or {},
+                    }
+            if bundle:
+                payload["bundle"] = bundle
+                if isinstance(primary, dict):
+                    facets = primary.get("facets") if isinstance(primary.get("facets"), dict) else {}
+                    facets["bundle"] = bundle
+                    primary["facets"] = facets
             assignments = self.assignments_for(seed)
             if assignments:
                 payload["assignments"] = assignments
-                primary = cards[0] if cards else None
                 if isinstance(primary, dict):
                     facets = primary.get("facets") if isinstance(primary.get("facets"), dict) else {}
                     facets["assignments"] = assignments
@@ -7964,7 +8217,6 @@ class UoSqlQuery:
             hk = self.host_kernel_for(seed)
             if hk:
                 payload["host_kernel"] = hk
-                primary = cards[0] if cards else None
                 if isinstance(primary, dict):
                     facets = primary.get("facets") if isinstance(primary.get("facets"), dict) else {}
                     facets["host_kernel"] = hk
@@ -8207,7 +8459,7 @@ class UoSqlQuery:
     ) -> dict[str, Any]:
         from ascendc_codemap_mcp.engine.query.rg import InvalidRegex, compile_search
 
-        phrase = str(getattr(plan, "name", "") or "").strip()
+        phrase = str(getattr(plan, "pattern", "") or getattr(plan, "name", "") or "").strip()
         file_filter = str(getattr(plan, "file", "") or "").strip()
         cap = max(1, int(limit))
         start = max(0, int(offset or 0))
@@ -8240,6 +8492,8 @@ class UoSqlQuery:
                 "hint": f"invalid regex: {exc}",
             }
         kind = str(getattr(plan, "kind", "") or "").strip().upper()
+        extra: dict[str, Any] = {}
+        recovered_token = ""
         with self._connect() as conn:
             symbols: list[dict[str, Any]] = []
             if kind:
@@ -8252,16 +8506,27 @@ class UoSqlQuery:
                     offset=start,
                 )
             else:
-                cards, total = self._search_regex_lines(
+                cards, total, extra = self._search_regex_lines(
                     conn, phrase, file_filter=file_filter, limit=cap, offset=start
                 )
+                if total == 0:
+                    for tok in _recovery_tokens(phrase):
+                        cards, total, extra = self._search_regex_lines(
+                            conn, tok, file_filter=file_filter, limit=cap, offset=start
+                        )
+                        if total > 0:
+                            recovered_token = tok
+                            break
                 if total == 0:
                     symbols = self._suggest_lexicon_symbols(
                         conn, phrase, file_filter=file_filter, limit=cap
                     )
         returned = len(cards)
         nxt = start + returned if start + returned < total else None
-        return {
+        hint = ""
+        if recovered_token:
+            hint = f"no match for {phrase}; showing {recovered_token}"
+        payload = {
             "ok": True,
             "shape": "search",
             "operation": "search",
@@ -8275,9 +8540,18 @@ class UoSqlQuery:
             "next_offset": nxt,
             "completeness": "",
             "unresolved_reason": "",
-            "hint": "",
+            "hint": hint,
             "symbols": symbols,
         }
+        if recovered_token:
+            payload["recovered_token"] = recovered_token
+            payload["original_pattern"] = phrase
+        if extra:
+            payload["template_lines"] = int(extra.get("template_lines") or 0)
+            payload["source_units"] = int(extra.get("source_units") or 0)
+            payload["units"] = extra.get("units") or []
+            payload["leftover"] = extra.get("leftover") or []
+        return payload
 
     def query_find(self, plan: Any, *, limit: int = 8) -> dict[str, Any]:
         from ascendc_codemap_mcp.engine.query.completeness import COMPLETE, UNKNOWN
