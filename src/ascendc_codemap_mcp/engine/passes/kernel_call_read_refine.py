@@ -177,6 +177,31 @@ def _load_selected(
     return dict(map_files(kept, _one))
 
 
+def _definition_start_offset(masked: str, name_offset: int) -> int:
+    """Offset where the declaration owning the name at `name_offset` begins.
+
+    A definition starts where the previous statement or block ended. Backing up
+    a fixed number of bytes from the parameter list instead landed inside the
+    function above whenever the signature wrapped or carried a
+    ``template <...>`` header, so consecutive definitions overlapped and a line
+    in the gap resolved to the wrong owner.
+    """
+    cut = 0
+    angle = 0
+    for index in range(int(name_offset) - 1, -1, -1):
+        char = masked[index]
+        if char == ">":
+            angle += 1
+        elif char == "<":
+            angle = max(0, angle - 1)
+        elif angle == 0 and char in ";}{":
+            cut = index + 1
+            break
+    while cut < name_offset and masked[cut] in " \t\r\n":
+        cut += 1
+    return cut
+
+
 def _purge_previous_refinement(codemap: CodeMap) -> None:
     relation_prov = {
         "source_kernel_call_bound", "source_kernel_macro_call_bound", "source_kernel_call_unresolved",
@@ -269,7 +294,10 @@ def _discover_scopes(
                     min(containing, key=lambda c: c.end - c.start).name if containing else ""
                 )
             owner = _base_type(owner) or owner
-            line = line_at(newlines, max(0, open_paren - len(qualified) - 8))
+            line = line_at(
+                newlines,
+                _definition_start_offset(masked, max(0, open_paren - len(qualified))),
+            )
             end_line = line_at(newlines, close)
             kernel_hits = codemap.by_name(short, kind=EntityKind.KERNEL)
             if kernel_hits and "__global__" in masked[max(0, open_paren - 400):brace]:

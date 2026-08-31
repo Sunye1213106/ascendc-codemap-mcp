@@ -2,8 +2,11 @@
 """Architecture contract: .uo-only query, owner-aware TYPE identity, no internal ids."""
 from __future__ import annotations
 
+import re
 import sqlite3
 from pathlib import Path
+
+import pytest
 
 from tests.conftest import write_uo_fixture
 from tests.test_query_surface import _add_source_lines, _insert_entity
@@ -12,7 +15,13 @@ from ascendc_codemap_mcp.engine.ir.codemap import CodeMap
 from ascendc_codemap_mcp.engine.ir.entity import EntityKind
 from ascendc_codemap_mcp.engine.ir.identity import bind_or_create, declaration_id
 from ascendc_codemap_mcp.engine.query.explore import _clip_source, render_explore_markdown
-from ascendc_codemap_mcp.engine.semantics.ascendc_storage import memory_space_from_type_text
+from ascendc_codemap_mcp.engine.semantics.ascendc_storage import (
+    BUFFER_MEMORY_SPACES,
+    HARDWARE_SPACES,
+    TPOSITION_TO_SPACE,
+    memory_space_from_type_text,
+    tposition_memory_space,
+)
 from ascendc_codemap_mcp.service.control import status
 from ascendc_codemap_mcp.service.query import query
 
@@ -160,6 +169,110 @@ def test_local_tensor_is_not_implicit_ub() -> None:
     assert memory_space_from_type_text("LocalTensor<half>") is None
     assert memory_space_from_type_text("LocalTensor<half, TPosition::VECIN>") is not None
     assert memory_space_from_type_text("GlobalTensor<half>") == "GM"
+
+
+# The five tiers a hand-written table got wrong. CO2 is the fixpipe output and
+# lands in GM, not L0C; SPM/SHM are one enumerator that CANN sends to L1, not
+# UB; C2PIPE2GM is the fixpipe buffer, not GM; and C2 was reported as a "C2"
+# tier, which no hardware has — it is the bias table.
+_CORRECTED_TIERS = {
+    "CO2": "GM",
+    "C2": "BIAS",
+    "SPM": "L1",
+    "SHM": "L1",
+    "C2PIPE2GM": "FIXBUF",
+}
+
+
+@pytest.mark.parametrize("arch", ["arch35", "arch22"])
+@pytest.mark.parametrize(("pos", "tier"), sorted(_CORRECTED_TIERS.items()))
+def test_cube_tposition_tiers_match_cann(arch: str, pos: str, tier: str) -> None:
+    assert tposition_memory_space(pos, arch) == tier
+    assert tposition_memory_space(pos, arch) in HARDWARE_SPACES
+
+
+def test_bias_and_fixpipe_are_tiers_and_c2_is_not() -> None:
+    """``Hardware`` is the tier vocabulary; ``C2`` is a TPosition name."""
+    assert {"BIAS", "FIXBUF"} <= HARDWARE_SPACES
+    assert "C2" not in HARDWARE_SPACES
+    assert HARDWARE_SPACES <= BUFFER_MEMORY_SPACES
+
+
+def test_arch_dependent_tiers_differ_on_legacy_parts() -> None:
+    """C1/C2/CO2 sit in an ``#if __NPU_ARCH__`` chain — the arch is the question."""
+    assert tposition_memory_space("C2", "arch35") == "BIAS"
+    assert tposition_memory_space("C2", "2002") == "L0C"
+    assert tposition_memory_space("C1", "2002") == "UB"
+    assert tposition_memory_space("C1", "arch35") == "L1"
+    # Positions decided outside the chain never move.
+    assert tposition_memory_space("A2", "2002") == tposition_memory_space("A2", "arch35") == "L0A"
+
+
+def test_project_buffer_type_resolves_through_tposition() -> None:
+    """``BufferType`` is a project enum; both ops-transformer spellings map."""
+    assert memory_space_from_type_text("MutexBuffer<BufferType::C2, S>", "arch35") == "BIAS"
+    assert memory_space_from_type_text("MutexBuffer<BufferType::L1, S>", "arch35") == "L1"
+    assert memory_space_from_type_text("AsdopsBuffer<BufferType::ASCEND_CB>", "arch35") == "L1"
+    assert memory_space_from_type_text("AsdopsBuffer<BufferType::ASCEND_UB>", "arch35") == "UB"
+
+
+def _cann_get_phy_type(npu: int) -> dict[str, str] | None:
+    """Replay CANN's ``GetPhyType`` preprocessor chain for one ``__NPU_ARCH__``."""
+    from ascendc_codemap_mcp.engine.paths import cann_root, resolve_cann_relative
+
+    root = cann_root()
+    if root is None:
+        return None
+    header = resolve_cann_relative(
+        root, "cann-asc-devkit/x86_64-linux/ascendc/include/basic_api/impl/kernel_event.h"
+    )
+    if not header.is_file():
+        return None
+    text = header.read_text(encoding="utf-8", errors="replace")
+    start = text.find("constexpr Hardware GetPhyType(TPosition pos)")
+    if start < 0:
+        return None
+    body = text[start : text.index("\n}\n", start)]
+
+    active, taken, pending = True, False, None
+    out: dict[str, str] = {}
+    for raw in body.splitlines():
+        line = raw.strip()
+        if line.startswith(("#if", "#elif")):
+            cond = line.split(None, 1)[1] if " " in line else ""
+            nums = {int(n) for n in re.findall(r"__NPU_ARCH__\s*==\s*(\d+)", cond)}
+            if line.startswith("#if"):
+                taken = False
+            active = (npu in nums) and not taken
+            taken = taken or active
+            continue
+        if line.startswith("#endif"):
+            active, taken = True, False
+            continue
+        if not active:
+            continue
+        hit = re.search(r"pos\s*==\s*TPosition::(\w+)", line)
+        if hit:
+            pending = hit.group(1)
+        hard = re.search(r"hard\s*=\s*Hardware::(\w+)", line)
+        if hard and pending:
+            out[pending] = hard.group(1)
+            pending = None
+    return out
+
+
+@pytest.mark.parametrize("npu", [1001, 2002, 2201, 3003, 3002, 3102, 5102, 3510, 3113])
+def test_tier_table_agrees_with_installed_cann_header(npu: int) -> None:
+    """Check the catalog against the header, not against a transcription of it."""
+    table = _cann_get_phy_type(npu)
+    if not table:
+        pytest.skip("CANN kernel_event.h not available")
+    # Aliases CANN never spells in the chain: ``LCM = VECCALC``, ``SHM = SPM``.
+    alias = {"LCM": "VECCALC", "SPM": "SHM"}
+    for pos in TPOSITION_TO_SPACE:
+        # Positions CANN leaves unhandled keep the ``Hardware::UB`` initialiser.
+        want = table.get(alias.get(pos, pos), "UB")
+        assert tposition_memory_space(pos, str(npu)) == want, pos
 
 
 def test_render_omits_empty_facets() -> None:

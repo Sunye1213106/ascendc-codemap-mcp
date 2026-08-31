@@ -39,8 +39,12 @@ _CONST_STATIC_INT_RE = re.compile(
     r"\b(?:const\s+static|static\s+const|static\s+constexpr|constexpr\s+static)\s+"
     r"(?:const\s+)?(?:u?int(?:32|64)_t|int)\s+(?P<name>[A-Za-z_]\w*)\s*="
 )
+# `x *= k` is a definition of x too, and the previous pattern could not match it:
+# the character before `=` was the operator, so the lhs never reached the `=`.
+# The operator is captured so the recorded value stays the whole expression.
 _ASSIGN_RE = re.compile(
-    r"(?P<lhs>[A-Za-z_]\w*(?:\s*(?:\.|->)\s*[A-Za-z_]\w*)*)\s*(?<![=!<>])=(?!=)\s*(?P<rhs>[^;]+);",
+    r"(?P<lhs>[A-Za-z_]\w*(?:\s*(?:\.|->)\s*[A-Za-z_]\w*)*)\s*"
+    r"(?P<op><<|>>|[-+*/|&^%])?=(?!=)\s*(?P<rhs>[^;]+);",
     re.S,
 )
 _IF_RE = re.compile(r"\b(?:if|else\s+if)\s*\((?P<cond>[^{};]*)\)\s*\{", re.S)
@@ -222,20 +226,30 @@ def _assignments(root: Path, path: Path, text: str) -> list[_Record]:
     masked = mask_non_code(text)
     scopes = _function_scopes(masked)
     guard_scopes: list[tuple[int, int, str]] = []
+    def _cond_text(match: re.Match) -> str:
+        # Offsets come from the masked copy, the text from the raw one: masking
+        # blanks string literals so quotes cannot break brace matching, and a
+        # guard reading `strcmp(layout, "TND") == 0` loses its whole point once
+        # the literal is blank.
+        return " ".join(text[match.start("cond"):match.end("cond")].split())
+
     for match in _IF_RE.finditer(masked):
         open_pos = masked.find("{", match.start(), match.end())
         close_pos = matching_brace(masked, open_pos)
         if close_pos >= 0:
-            guard_scopes.append((open_pos + 1, close_pos, match.group("cond").strip()))
+            guard_scopes.append((open_pos + 1, close_pos, _cond_text(match)))
     for match in _SWITCH_RE.finditer(masked):
         open_pos = masked.find("{", match.start(), match.end())
         close_pos = matching_brace(masked, open_pos)
         if close_pos >= 0:
-            guard_scopes.append((open_pos + 1, close_pos, match.group("cond").strip()))
+            guard_scopes.append((open_pos + 1, close_pos, _cond_text(match)))
     out: list[_Record] = []
     for match in _ASSIGN_RE.finditer(masked):
         lhs = normalize_symbol(match.group("lhs"))
         rhs = text[match.start("rhs"):match.end("rhs")].strip()
+        op = match.group("op") or ""
+        if op and rhs:
+            rhs = f"{lhs} {op} ({rhs})"
         guards = tuple(cond for start, end, cond in guard_scopes if start <= match.start() <= end)
         out.append(
             _Record(

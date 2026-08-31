@@ -86,7 +86,20 @@ def resolve_kernel_call_frontiers(
         line_text = _line_text(source_lines.get(file) or [], line)
 
         owners: set[str] = set()
-        member_name = receiver
+        # The receiver arrives as a dotted path, so `this->vecBlock.X()` is
+        # spelled `this.vecBlock`. Every lookup below keys on a bare field
+        # name, so the whole path missed and the call stayed unresolved — which
+        # left the callee with no callers at all and made an ordinary member
+        # call look like a hook the framework invokes from outside the tree.
+        path = [p for p in receiver.split(".") if p]
+        rooted_at_this = bool(path) and path[0] == "this"
+        if rooted_at_this:
+            path = path[1:]
+        member_name = path[-1] if path else receiver
+        # True when the member name came from re-reading the line rather than
+        # from clang. Splitting the dotted receiver made the old proxy for this
+        # — member_name differing from receiver — fire on every member call.
+        recovered_from_text = False
         if receiver in {"", "this"} and caller_owner:
             owners.update(_owner_closure(caller_owner, inheritance))
         if not receiver:
@@ -99,10 +112,26 @@ def resolve_kernel_call_frontiers(
             member_match = pat.search(line_text)
             if member_match:
                 member_name = member_match.group(1)
-        if member_name and caller_owner:
+                path = [member_name]
+                recovered_from_text = True
+        if path and caller_owner:
+            # Walk the path a field at a time: `this.a.b` is the type of `b`
+            # within the type of `a`, and taking the last name against the
+            # caller's own class would answer a question nobody asked.
+            frontier = set(_owner_closure(caller_owner, inheritance))
+            for step in path:
+                nxt: set[str] = set()
+                for owner in frontier:
+                    for hit in members.get((owner, step)) or ():
+                        nxt.update(_owner_closure(hit, inheritance))
+                frontier = nxt
+                if not frontier:
+                    break
+            owners.update(frontier)
+        if member_name and caller_owner and not rooted_at_this:
             for owner in _owner_closure(caller_owner, inheritance):
                 owners.update(members.get((owner, member_name)) or ())
-        if receiver and receiver != "this":
+        if receiver and receiver != "this" and not rooted_at_this:
             owners.update(_receiver_types_from_context(source_lines.get(file) or [], line, receiver, known_classes, aliases))
 
         candidates: list[Entity] = []
@@ -153,7 +182,7 @@ def resolve_kernel_call_frontiers(
         # internal CodeMap hole.  Keep true receiver-typed internal uncertainty.
         locally_named = bool(free.get(call)) or any(name == call for (_owner, name) in by_method)
         typed_internal = bool(owners)
-        if not typed_internal and (not locally_named or member_name != receiver):
+        if not typed_internal and (not locally_named or recovered_from_text):
             remove_rel.add(rel.id)
             remove_ent.add(ref.id)
             externalized += 1

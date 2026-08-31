@@ -199,6 +199,16 @@ def ingest_guarded_calls(
             used[okey] = ordinal + 1
             guard_file = str(_pc_field(pc, "file", "") or site_file)
             guard_line = int(_pc_field(pc, "line", 0) or site_line)
+            # Without the branch extent the guard can only ever be matched by a
+            # site sitting on the condition line itself, which no read or call
+            # under the guard ever does. The range is the guarded body, not the
+            # statement: a negated guard's body is the `else`, and stretching it
+            # back to the condition would cover the `then` block it excludes.
+            # 0 means clang gave no usable body.
+            guard_body = int(_pc_field(pc, "body_start", 0) or 0)
+            guard_end = int(_pc_field(pc, "line_end", 0) or 0)
+            if guard_body <= 0 or guard_end < guard_body:
+                guard_body = guard_end = 0
             eid = branch_id(
                 side=side,
                 file=guard_file,
@@ -216,10 +226,12 @@ def ingest_guarded_calls(
                     "branch_kind": str(_pc_field(pc, "kind", "if") or "if"),
                     "function": fn_name,
                     "provenance": "clang_call_guard",
+                    **({"guard_body_start": guard_body} if guard_body else {}),
                     **annotate_attrs(gtext),
                 },
                 file=guard_file,
                 line=guard_line,
+                line_end=guard_end or None,
                 status="confirmed",
             )
             extra = {

@@ -380,7 +380,13 @@ def _load_entities(query: Any, ids: list[str]) -> list[dict[str, Any]]:
     return out
 
 
-def _collect_attr_sites(entities: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
+def _collect_attr_sites(
+    entities: list[dict[str, Any]],
+    key: str,
+    *,
+    query: Any = None,
+    name: str = "",
+) -> list[dict[str, Any]]:
     sites: list[dict[str, Any]] = []
     seen: set[tuple[str, int, str]] = set()
     for ent in entities:
@@ -390,6 +396,14 @@ def _collect_attr_sites(entities: list[dict[str, Any]], key: str) -> list[dict[s
                 continue
             seen.add(mark)
             sites.append(site)
+    if query is not None and hasattr(query, "site_write_facts"):
+        for site in sites:
+            facts = query.site_write_facts(
+                str(site.get("file") or ""), int(site.get("line") or 0), name
+            )
+            for field in ("rhs", "when", "function"):
+                if facts.get(field) and not str(site.get(field) or "").strip():
+                    site[field] = facts[field]
     return sites
 
 
@@ -440,7 +454,12 @@ def _kernel_consumers(query: Any, field_ids: list[str]) -> list[dict[str, Any]]:
         if leaf in seen:
             continue
         seen.add(leaf)
-        out.append({"name": leaf, "file": file_n, "line": line, "qualified": nm})
+        # A consumer list without conditions reads as "every path reads this".
+        # A field read only under `IS_N_EQUAL` is a different ABI claim.
+        guard = query.site_guard(file_n, line) if hasattr(query, "site_guard") else ""
+        out.append(
+            {"name": leaf, "file": file_n, "line": line, "qualified": nm, "when": guard}
+        )
     return out
 
 
@@ -533,8 +552,79 @@ def _workspace_layout(query: Any, seed_ids: list[str], seed_name: str) -> list[d
     return [best[k] for k in order]
 
 
-def _resource_projection(query: Any, entity_id: str, kind: str, data: dict[str, Any]) -> dict[str, Any]:
+#: What each resource kind is, in its own terms. Extraction records these on the
+#: entity, but the projection only ever read its edges, so the card could show
+#: where a queue was backed without ever saying which pipe position it occupies
+#: or whether a buffer is the locked half of a double buffer.
+_RESOURCE_IDENTITY_KEYS: dict[str, tuple[str, ...]] = {
+    EntityKind.BUFFER.value: (
+        "memory_space",
+        "tposition",
+        "role",
+        "wrapper",
+        "wraps_lock",
+        "allocated",
+        "type_name",
+        "scope",
+    ),
+    EntityKind.QUEUE.value: (
+        "tposition",
+        "memory_space",
+        "allocated",
+        "type_name",
+        "scope",
+    ),
+    EntityKind.PIPE.value: ("scope", "type_name", "pipe_ordinal", "allocated"),
+    EntityKind.REGISTER.value: ("register_class", "memory_space", "type_name", "scope"),
+    EntityKind.EVENT.value: ("event_type", "mechanism", "cross_core", "scope"),
+}
+
+
+def _resource_identity(
+    kind: str, data: dict[str, Any], *, parametric_tier: tuple[str, str] | None = None
+) -> list[tuple[str, Any]]:
+    out: list[tuple[str, Any]] = []
+    for key in _RESOURCE_IDENTITY_KEYS.get(str(kind or ""), ()):
+        value = data.get(key)
+        if value in (None, "", [], {}) or str(value).upper() == "UNKNOWN":
+            # An UNKNOWN tier on a class-template member is not a gap in the
+            # index: the declaration genuinely does not fix one. Dropping the
+            # row made the two cases look alike, and a reader filled the
+            # silence by reading the tier off the wrapped LocalTensor.
+            if key == "memory_space" and parametric_tier:
+                param, declared = parametric_tier
+                out.append((key, f"set by template parameter {param} ({declared})"))
+            continue
+        out.append((key, value))
+    return out
+
+
+def _resource_projection(
+    query: Any,
+    entity_id: str,
+    kind: str,
+    data: dict[str, Any],
+    *,
+    name: str = "",
+    file: str = "",
+    line: int = 0,
+) -> dict[str, Any]:
     out: dict[str, Any] = {}
+    parametric = None
+    if (
+        str(data.get("memory_space") or "").upper() == "UNKNOWN"
+        and file
+        and line
+        and hasattr(query, "tier_template_parameter")
+    ):
+        parametric = query.tier_template_parameter(file, int(line))
+    identity = _resource_identity(kind, data, parametric_tier=parametric)
+    if identity:
+        out["identity"] = identity
+    if name and hasattr(query, "allocation_sites"):
+        sites = query.allocation_sites(name)
+        if sites:
+            out["allocated_at"] = sites
     if not entity_id:
         return out
     with query._connect() as conn:
@@ -565,12 +655,21 @@ def _resource_projection(query: Any, entity_id: str, kind: str, data: dict[str, 
                 }
             )
         elif str(rkind) in {"SIGNALS", "AWAITS"}:
+            # The relation carries the actual set/wait site; the peer entity is
+            # the API being called, whose own line says nothing about where the
+            # pairing happens.
+            site_file = _norm_path(str(rel.get("file") or file or ""))
+            site_line = int(rel.get("line") or line or 0)
+            guard = ""
+            if hasattr(query, "site_guard"):
+                guard = query.site_guard(site_file, site_line)
             sync_edges.append(
                 {
                     "rel": str(rkind),
                     "name": str(name or ""),
-                    "file": _norm_path(str(file or "")),
-                    "line": int(line or 0),
+                    "file": site_file,
+                    "line": site_line,
+                    "when": guard,
                 }
             )
         elif str(rkind) == "PRECEDES" and str(rel.get("via") or "") in {"pipe_destroy", ""}:
@@ -584,18 +683,196 @@ def _resource_projection(query: Any, entity_id: str, kind: str, data: dict[str, 
             )
     if backing:
         backing.sort(key=lambda r: (int(r.get("line") or 0), str(r.get("name") or "")))
-        ping = [b for b in backing if "ping" in str(b.get("name") or "").lower()]
-        out["backing"] = (ping or backing)[:1]
+        # One tensor can back the same queue at several call sites, and a queue
+        # reused by two methods is backed once per method. Keeping only the
+        # first site answered "is it backed" but not "where", so collapse the
+        # weaker duplicate of one site and keep the rest.
+        best: dict[tuple[str, str, int], dict[str, Any]] = {}
+        for row in backing:
+            key = (
+                str(row.get("name") or ""),
+                str(row.get("file") or ""),
+                int(row.get("line") or 0),
+            )
+            prev = best.get(key)
+            if prev is None or (
+                not str(prev.get("physical_space") or "").strip()
+                and str(row.get("physical_space") or "").strip()
+            ):
+                best[key] = row
+        out["backing"] = list(best.values())
     if kind == EntityKind.EVENT.value or sync_edges:
-        out["sync"] = {
+        scopes = _event_scopes(query, entity_id, kind)
+        sync: dict[str, Any] = {
             "paired": data.get("paired"),
-            "signal_count": data.get("signal_count"),
-            "await_count": data.get("await_count"),
             "mechanism": data.get("mechanism"),
-            "edges": sync_edges,
+            "scopes": scopes,
         }
+        # One id reused by a setter and a waiter is two halves of one pairing,
+        # each with its own counts. Adding them up produces a set/wait ratio no
+        # scope has, and an "UNBALANCED" that names no place to go look.
+        if scopes:
+            sync["signal_count"] = sum(int(s["signal_count"]) for s in scopes)
+            sync["await_count"] = sum(int(s["await_count"]) for s in scopes)
+            sync["edges"] = []
+        else:
+            sync["signal_count"] = data.get("signal_count")
+            sync["await_count"] = data.get("await_count")
+            sync["edges"] = sync_edges
+        out["sync"] = sync
     if order:
         out["order"] = order
+    return out
+
+
+def _event_scopes(query: Any, entity_id: str, kind: str) -> list[dict[str, Any]]:
+    """Every scope one event id is used from, with that scope's own set/wait sites.
+
+    The same id is typically recorded once per scope -- once where it is set and
+    once where it is waited on -- and a card that keeps one entity per kind
+    shows only one of them. The set/wait ratio is a property of the pair, so
+    reporting half of it, or a sum across scopes, is worse than reporting none.
+    """
+    if not entity_id or str(kind or "") != EntityKind.EVENT.value:
+        return []
+    with query._connect() as conn:
+        row = conn.execute(
+            "SELECT name FROM entity WHERE id = ? LIMIT 1", (entity_id,)
+        ).fetchone()
+        if row is None:
+            return []
+        rows = conn.execute(
+            "SELECT id, file, line_start, data FROM entity WHERE kind = ? AND name = ?",
+            (EntityKind.EVENT.value, str(row[0] or "")),
+        ).fetchall()
+        if len(rows) < 2:
+            return []
+        ids = [str(r[0]) for r in rows]
+        ph = ",".join("?" for _ in ids)
+        edge_rows = conn.execute(
+            f"""
+            SELECT r.src, r.dst, r.kind, r.data, e.name, e.file, e.line_start
+            FROM relation r
+            JOIN entity e ON e.id = CASE WHEN r.src IN ({ph}) THEN r.dst ELSE r.src END
+            WHERE r.kind IN ('SIGNALS', 'AWAITS')
+              AND (r.src IN ({ph}) OR r.dst IN ({ph}))
+            """,
+            ids + ids + ids,
+        ).fetchall()
+    owned: dict[str, list[dict[str, Any]]] = {}
+    id_set = set(ids)
+    for src, dst, rkind, rdata, peer, file, line in edge_rows:
+        owner = str(src) if str(src) in id_set else str(dst)
+        rel = _parse_json(rdata)
+        site_file = _norm_path(str(rel.get("file") or file or ""))
+        site_line = int(rel.get("line") or line or 0)
+        guard = query.site_guard(site_file, site_line) if hasattr(query, "site_guard") else ""
+        owned.setdefault(owner, []).append(
+            {
+                "rel": str(rkind),
+                "name": str(peer or ""),
+                "file": site_file,
+                "line": site_line,
+                "when": guard,
+            }
+        )
+    out: list[dict[str, Any]] = []
+    for eid, file, line, raw in rows:
+        data = _parse_json(raw)
+        edges = owned.get(str(eid)) or []
+        edges.sort(key=lambda e: (str(e.get("rel") or ""), int(e.get("line") or 0)))
+        # The counts on the entity are the id's totals, identical on every
+        # scope that shares the name. Counting this scope's own edges is what
+        # says which half of the pairing lives here.
+        out.append(
+            {
+                "scope": str(data.get("scope") or ""),
+                "file": _norm_path(str(file or "")),
+                "line": int(line or 0),
+                "signal_count": sum(1 for e in edges if e["rel"] == "SIGNALS"),
+                "await_count": sum(1 for e in edges if e["rel"] == "AWAITS"),
+                "calls": _scope_sync_calls(query, edges),
+                "edges": edges,
+            }
+        )
+    out.sort(key=lambda item: (str(item.get("scope") or ""), int(item.get("line") or 0)))
+    return out
+
+
+def _scope_sync_calls(query: Any, edges: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """How many flag calls the enclosing function issues, all ids together.
+
+    A recorded site is one guarded place the id is touched, and a place can
+    issue two flags. Told the sites were not call counts, a reader went and
+    counted the calls by hand out of the body -- a number the operation census
+    over the same function already holds.
+    """
+    site = next((e for e in edges if e.get("file") and int(e.get("line") or 0)), None)
+    if not site or not hasattr(query, "_enclosing_def"):
+        return []
+    unit = query._enclosing_def(str(site["file"]), int(site["line"]))
+    if not unit:
+        return []
+    ops = query._operations_in_span(
+        str(unit.get("file") or site["file"]),
+        int(unit.get("line_start") or 0),
+        int(unit.get("line_end") or 0),
+    )
+    out: list[dict[str, Any]] = []
+    for op in ops:
+        if str(op.get("category") or "") not in ("sync_signal", "sync_wait"):
+            continue
+        for call in op.get("by_callee") or []:
+            if isinstance(call, dict) and call.get("name"):
+                out.append({"name": str(call["name"]), "count": int(call.get("count") or 0)})
+    return out[:3]
+
+
+def _accessor_sites(query: Any, field_ids: list[str], leaf: str) -> list[dict[str, Any]]:
+    """The generated ``get_X`` / ``set_X`` a kernel actually calls.
+
+    A tiling field's transport hop ends at the struct; the accessor pair is how
+    the kernel reads it back, and extraction already links them, so a card that
+    stopped at the write left the ABI surface out of the answer.
+    """
+    if not field_ids:
+        return []
+    ph = ",".join("?" for _ in field_ids)
+    with query._connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT e.kind, e.name, e.file, e.line_start, e.data
+            FROM relation r
+            JOIN entity e ON e.id = CASE WHEN r.src IN ({ph}) THEN r.dst ELSE r.src END
+            WHERE (r.src IN ({ph}) OR r.dst IN ({ph}))
+              AND r.kind IN ('REFERENCES', 'READS', 'WRITES')
+              AND e.kind IN ('FUNCTION', 'METHOD')
+            """,
+            (*field_ids, *field_ids, *field_ids),
+        ).fetchall()
+    want = str(leaf or "").lower()
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for kind, name, file, line, raw in rows:
+        text = str(name or "")
+        short = _leaf(text).lower()
+        data = _parse_json(raw)
+        accessor_of = str(data.get("accessor_of") or "").lower()
+        if accessor_of != want and short not in {f"get_{want}", f"set_{want}"}:
+            continue
+        if text in seen:
+            continue
+        seen.add(text)
+        out.append(
+            {
+                "name": text,
+                "kind": str(kind or ""),
+                "role": "set" if short.startswith("set_") else "get",
+                "file": _norm_path(str(file or "")),
+                "line": int(line or 0),
+            }
+        )
+    out.sort(key=lambda row: (row["role"], row["name"]))
     return out
 
 
@@ -672,13 +949,18 @@ def build_symbol_bundle(query: Any, ident: str) -> dict[str, Any] | None:
     fields = _load_entities(query, field_ids)
     keys = _load_entities(query, key_ids)
 
-    host_defs = _collect_attr_sites(tiling, "value_defining_sites")
-    transport = _collect_attr_sites(tiling, "host_writer_sites")
-    assignments = _collect_attr_sites(fields, "producer_sites")
+    host_defs = _collect_attr_sites(
+        tiling, "value_defining_sites", query=query, name=leaf
+    )
+    transport = _collect_attr_sites(
+        tiling, "host_writer_sites", query=query, name=leaf
+    )
+    assignments = _collect_attr_sites(fields, "producer_sites", query=query, name=leaf)
     if not assignments:
-        assignments = _collect_attr_sites(fields, "write_sites")
+        assignments = _collect_attr_sites(fields, "write_sites", query=query, name=leaf)
 
     all_fieldish = tiling_ids + field_ids
+    accessors = _accessor_sites(query, all_fieldish, leaf)
 
     consumers = _kernel_consumers(query, tiling_ids or all_fieldish)
     consumed = _consumed_names(query, all_fieldish or tiling_ids or field_ids)
@@ -700,7 +982,15 @@ def build_symbol_bundle(query: Any, ident: str) -> dict[str, Any] | None:
             EntityKind.EVENT.value,
             EntityKind.REGISTER.value,
         }:
-            resource = _resource_projection(query, str(primary.get("id") or ""), kind, primary.get("data") or {})
+            resource = _resource_projection(
+                query,
+                str(primary.get("id") or ""),
+                kind,
+                primary.get("data") or {},
+                name=str(primary.get("name") or leaf),
+                file=str(primary.get("file") or ""),
+                line=int(primary.get("line_start") or primary.get("line") or 0),
+            )
         if kind in {EntityKind.FIELD.value, EntityKind.TILING_FIELD.value, EntityKind.BRANCH.value}:
             controls = _control_projection(query, str(primary.get("id") or ""))
         if kind == EntityKind.VARIABLE.value:
@@ -716,12 +1006,14 @@ def build_symbol_bundle(query: Any, ident: str) -> dict[str, Any] | None:
             resource,
             controls,
             consumed,
+            accessors,
         )
     ):
         return None
     return {
         "host_value_definitions": host_defs,
         "transport": transport,
+        "accessors": accessors,
         "kernel_consumers": consumers,
         "assignments": assignments,
         "consumed_by": consumed,
@@ -737,11 +1029,15 @@ def attach_entity_projections(query: Any, entity: dict[str, Any]) -> dict[str, A
     eid = str(entity.get("id") or entity.get("_entity_id") or "")
     kind = str(entity.get("kind") or "")
     data = entity.get("data") if isinstance(entity.get("data"), dict) else {}
+    file = str(entity.get("file") or "")
+    line = int(entity.get("line_start") or entity.get("line") or 0)
     if not data and eid:
         loaded = _load_entities(query, [eid])
         if loaded:
             data = loaded[0].get("data") or {}
             kind = kind or str(loaded[0].get("kind") or "")
+            file = file or str(loaded[0].get("file") or "")
+            line = line or int(loaded[0].get("line_start") or 0)
     out: dict[str, Any] = {}
     if kind in {
         EntityKind.BUFFER.value,
@@ -751,7 +1047,15 @@ def attach_entity_projections(query: Any, entity: dict[str, Any]) -> dict[str, A
         EntityKind.REGISTER.value,
         EntityKind.VARIABLE.value,
     }:
-        res = _resource_projection(query, eid, kind, data)
+        res = _resource_projection(
+            query,
+            eid,
+            kind,
+            data,
+            name=str(entity.get("name") or ""),
+            file=file,
+            line=line,
+        )
         if kind in {EntityKind.VARIABLE.value, EntityKind.FUNCTION.value, EntityKind.METHOD.value}:
             layout = _workspace_layout(query, [eid] if eid else [], str(entity.get("name") or ""))
             if layout:

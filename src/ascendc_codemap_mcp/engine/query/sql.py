@@ -9,11 +9,13 @@ audit helpers that truly need the in-memory graph stay on
 
 from __future__ import annotations
 
+import copy
 import json
 import math
 import re
 import sqlite3
 import threading
+from bisect import bisect_left, bisect_right
 from collections import Counter, OrderedDict, deque
 from contextlib import contextmanager
 from pathlib import Path
@@ -127,6 +129,9 @@ _PROTECTED_PAYLOAD_KEYS = frozenset(
         "recovered_token",
         "original_pattern",
         "highlight",
+        "trimmed_lists",
+        "other_definitions",
+        "matched_entities",
     }
 )
 PACKING_RHS_TRIM = 400
@@ -474,6 +479,9 @@ _DEF_CARD_KINDS = {
     EntityKind.KERNEL.value,
 }
 _ENCLOSE_KINDS = _DEF_CARD_KINDS
+#: Kinds whose card is the read. Wider than `_DEF_CARD_KINDS`, which is the set
+#: that can *enclose* a line and must stay free of types.
+_UNIT_SNIPPET_KINDS = _DEF_CARD_KINDS | {EntityKind.TYPE.value}
 _ASCENDC_CATALOG_SQL = "IFNULL(json_extract(e.data, '$.catalog'), '') != 'ascendc'"
 
 
@@ -589,11 +597,113 @@ def _encloses_line(hit: dict[str, Any], line: int) -> bool:
 _SITE_UNIT_HARD = 240
 _NO_ENCLOSE_RADIUS = 120
 
+#: Kinds that can hold a call site. A candidate list is a guess by definition,
+#: so the guesses at least have to be things capable of calling; a queue or a
+#: field named as a possible caller is not a weak answer but a wrong one.
+_CALLER_KINDS = frozenset(
+    {
+        EntityKind.FUNCTION.value,
+        EntityKind.METHOD.value,
+        EntityKind.KERNEL.value,
+        EntityKind.MACRO.value,
+        EntityKind.TEMPLATE.value,
+        EntityKind.TEMPLATE_INSTANCE.value,
+    }
+)
+
 
 def _is_noise_name_sql(name: str) -> bool:
     from ascendc_codemap_mcp.engine.query.explore import _is_noise_name
 
     return _is_noise_name(name)
+
+
+# A member chain, optionally called once. `->` and `::` are spelled as units on
+# purpose: a character class holding `-` and `>` separately also admits `a > b`
+# and `a - b`, and dropping the parens off `!(a > b)` yields `!a > b`, which is
+# the opposite claim.
+_ATOMIC_GUARD_RE = re.compile(
+    r"^[A-Za-z_]\w*(?:(?:->|::|\.)[A-Za-z_]\w*)*(?:\s*\([^()]*\))?$"
+)
+
+
+def _matching_paren(text: str, open_at: int) -> int:
+    """Index of the ``)`` closing the ``(`` at `open_at`, or -1."""
+    depth = 0
+    for index in range(open_at, len(text)):
+        if text[index] == "(":
+            depth += 1
+        elif text[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+    return -1
+
+
+def _is_atomic_guard(text: str) -> bool:
+    """A term that binds tighter than ``!``, so dropping its parens is safe."""
+    return bool(_ATOMIC_GUARD_RE.match(text.strip()))
+
+
+def _simplify_negation(text: str) -> str:
+    """Drop parentheses that ``!`` does not need. Never applies De Morgan.
+
+    ``!(!x)`` collapses only when the inner ``!`` covers the whole term;
+    ``!(!a && b)`` is left alone because rewriting it would change its meaning.
+    """
+    current = str(text or "").strip()
+    for _ in range(4):
+        if not current.startswith("!(") or _matching_paren(current, 1) != len(current) - 1:
+            return current
+        inner = current[2:-1].strip()
+        if inner.startswith("!"):
+            term = inner[1:].strip()
+            if _is_atomic_guard(term):
+                current = term
+                continue
+            if term.startswith("(") and _matching_paren(term, 0) == len(term) - 1:
+                current = term
+                continue
+            return current
+        if _is_atomic_guard(inner):
+            return "!" + inner
+        return current
+    return current
+
+
+_LOOP_HEADER_RE = re.compile(r"^(?:for|while|do|switch|cxx_for_range)\s*\(")
+
+
+def _needs_guard_parens(text: str) -> bool:
+    """True when joining this guard with && would change how it reads."""
+    depth = 0
+    for index, ch in enumerate(text):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        elif ch == "|" and depth == 0 and text[index + 1 : index + 2] == "|":
+            return True
+    return False
+
+
+def _join_guards(guards: Iterable[str]) -> str:
+    """Conjoin enclosing guards without silently re-associating them.
+
+    Guards nest, so the conjunction is the truth; but a guard that is itself a
+    disjunction binds looser than ``&&`` and would be misread once joined.
+
+    Loop and switch headers are dropped: ``for (i < n)`` says the site runs on
+    some iteration, not that ``i < n`` holds where it sits, so conjoining it
+    with real conditions would state something the code does not promise.
+    """
+    parts: list[str] = []
+    for raw in guards:
+        text = _simplify_negation(str(raw or "").strip())
+        if not text or _LOOP_HEADER_RE.match(text):
+            continue
+        parts.append(f"({text})" if _needs_guard_parens(text) else text)
+    return " && ".join(parts)
 
 
 def _file_same(left: str, right: str) -> bool:
@@ -864,6 +974,32 @@ def _site_loc(row: dict[str, Any]) -> tuple[str, int]:
     return file, line
 
 
+def _is_use_site_hit(kind: str, *bags: dict[str, Any]) -> bool:
+    """Whether a hit is a place the name is *used* rather than declared.
+
+    An API the tree only calls — ``CrossCoreSetFlag`` and its neighbours — has
+    no declaration in the snapshot, so every entity carrying the name was
+    minted at a call. Counting those as definition sites told a reader there
+    were twelve implementations to compare and sent them to twelve callers.
+    The same holds for a type named inside an alias: ``using T =
+    std::conditional_t<…, A, B>`` mentions ``A``, it does not declare it.
+    """
+    if kind == EntityKind.OPERATION.value:
+        return True
+    for bag in bags:
+        if not isinstance(bag, dict):
+            continue
+        if (
+            bag.get("call_target")
+            or bag.get("internal_unresolved")
+            or bag.get("reference_only")
+        ):
+            return True
+        if str(bag.get("cpp_kind") or "") in {"call", "call_expr"}:
+            return True
+    return False
+
+
 def _definition_sites_from_hits(
     hits: Sequence[dict[str, Any]], *, needle: str, limit: int = MAX_DEFINITION_SITES
 ) -> tuple[list[dict[str, Any]], bool]:
@@ -890,6 +1026,8 @@ def _definition_sites_from_hits(
         cpp_kind = str(
             facts.get("cpp_kind") or attrs.get("cpp_kind") or data.get("cpp_kind") or ""
         )
+        if _is_use_site_hit(kind, facts, attrs, data):
+            continue
         sites.append(
             {
                 "file": file,
@@ -1185,6 +1323,32 @@ def _kind_priority(hit: dict[str, Any], needle: str) -> int:
     return score
 
 
+def _units_cover_all(extra: Any, total: int) -> bool:
+    """Whether the unit grouping already accounts for every match."""
+    if not isinstance(extra, dict) or total <= 0:
+        return False
+    units = extra.get("units")
+    if not isinstance(units, list) or not units:
+        return False
+    seen = sum(
+        len(u.get("hits") or []) for u in units if isinstance(u, dict)
+    ) + len(extra.get("leftover") or [])
+    return seen >= total
+
+
+def _constructor_rank(name: str, needle: str) -> int:
+    """Demote `X::X` when the caller asked for a bare `X`.
+
+    Candidates are ordered by kind, and `METHOD` sorts before `TYPE`, so a class
+    loses to its own constructor for a name that named the class. Only that pair
+    is reordered; any other same-named member keeps whatever rank it earned.
+    """
+    want = str(needle or "").strip().replace(".", "::")
+    if not want or "::" in want:
+        return 0
+    return 1 if str(name or "").replace(".", "::") == f"{want}::{want}" else 0
+
+
 def _agent_sort_key(
     hit: dict[str, Any], needle: str, *, architecture: str = ""
 ) -> tuple[Any, ...]:
@@ -1197,6 +1361,11 @@ def _agent_sort_key(
         match = 9
     src, use = _definition_rank(kind, name, eid, facts)
     return (
+        # An explicit `Owner::` outranks every other signal. The caller already
+        # told us which of the same-named members they meant.
+        int(hit.get("owner_rank") or 0),
+        # Without this, kind order alone hands `Buffer` to `Buffer::Buffer`.
+        _constructor_rank(name, needle),
         match,
         _occupancy_rank(hit),
         _kind_priority(hit, needle),
@@ -1542,6 +1711,168 @@ def _seed_rows_for_file(
     ).fetchall()
 
 
+# `source_line` is indexed by (path, line), but an agent spells a file the way
+# a card cited it. Matching that spelling inside the WHERE clause
+# (`REPLACE(path, ...) LIKE '%' || ?`) makes SQLite drop `idx_source_line_path`
+# and scan every indexed line. One resolve issues well over a hundred of these.
+# A committed `.uo` is immutable, so the spelling is resolved to the stored path
+# once per snapshot and the file body is held whole.
+_SRC_STATE_LOCK = threading.Lock()
+_SRC_STATE: "OrderedDict[int, tuple[sqlite3.Connection, dict[str, Any]]]" = OrderedDict()
+_SRC_STATE_MAX = 8
+_SRC_FILE_MAX = 24
+
+
+def reset_source_line_cache() -> None:
+    with _SRC_STATE_LOCK:
+        _SRC_STATE.clear()
+
+
+def drop_source_line_cache(conn: sqlite3.Connection) -> None:
+    """Forget one connection's snapshot state.
+
+    The cache is keyed by ``id(conn)`` and pins the object so the id cannot be
+    reused. That also keeps a closed handle from being collected, which on
+    Windows blocks deleting the ``.uo``; the reader drops the entry as part of
+    closing.
+    """
+    with _SRC_STATE_LOCK:
+        _SRC_STATE.pop(id(conn), None)
+
+
+def _src_state(conn: sqlite3.Connection) -> dict[str, Any]:
+    key = id(conn)
+    with _SRC_STATE_LOCK:
+        hit = _SRC_STATE.get(key)
+        if hit is not None and hit[0] is conn:
+            _SRC_STATE.move_to_end(key)
+            return hit[1]
+        state: dict[str, Any] = {
+            "has_source_line": None,
+            "paths": None,
+            "resolved": {},
+            "files": OrderedDict(),
+        }
+        _SRC_STATE[key] = (conn, state)
+        _SRC_STATE.move_to_end(key)
+        while len(_SRC_STATE) > _SRC_STATE_MAX:
+            _SRC_STATE.popitem(last=False)
+        return state
+
+
+def _has_source_line(conn: sqlite3.Connection) -> bool:
+    state = _src_state(conn)
+    if state["has_source_line"] is None:
+        from ascendc_codemap_mcp.engine.store.accel import has_source_line
+
+        state["has_source_line"] = bool(has_source_line(conn))
+    return bool(state["has_source_line"])
+
+
+def _source_paths(conn: sqlite3.Connection) -> list[str]:
+    state = _src_state(conn)
+    if state["paths"] is None:
+        try:
+            rows = conn.execute("SELECT DISTINCT path FROM source_line").fetchall()
+        except sqlite3.OperationalError:
+            rows = []
+        state["paths"] = sorted({str(r[0] or "") for r in rows if r and r[0]})
+    return list(state["paths"])
+
+
+def _snapshot_path_for(conn: sqlite3.Connection, file: str) -> str:
+    """Stored ``source_line.path`` for the spelling an agent passed."""
+    needle = str(file or "").replace("\\", "/")
+    if not needle:
+        return ""
+    state = _src_state(conn)
+    cache: dict[str, str] = state["resolved"]
+    hit = cache.get(needle)
+    if hit is not None:
+        return hit
+    leaf = needle.rsplit("/", 1)[-1]
+    rel = _rel_key(needle)
+    exact: list[str] = []
+    suffix: list[str] = []
+    by_leaf: list[str] = []
+    for path in _source_paths(conn):
+        norm = path.replace("\\", "/")
+        if norm == needle or _rel_key(norm) == rel:
+            exact.append(path)
+        elif norm.endswith("/" + needle) or needle.endswith("/" + norm):
+            suffix.append(path)
+        elif leaf and (norm == leaf or norm.endswith("/" + leaf)):
+            by_leaf.append(path)
+    chosen = (exact or suffix or by_leaf or [""])[0]
+    cache[needle] = chosen
+    return chosen
+
+
+_CLASS_DECL_RE = re.compile(r"^\s*(?:class|struct)\s+\w")
+#: A member is at most this far below its class header. Bounds the upward walk
+#: so a file with no enclosing template does not scan to line 1.
+_TEMPLATE_SCAN_LIMIT = 600
+
+
+def _enclosing_template_header(text: dict[int, str], line: int) -> str:
+    """The ``template <...>`` header of the class enclosing *line*, if any.
+
+    Walks up to the nearest ``class`` / ``struct`` header, then takes the
+    preceding non-blank line when it opens a template. Multi-line headers are
+    joined until the angle brackets balance.
+    """
+    start = 0
+    for probe in range(int(line) - 1, max(0, int(line) - _TEMPLATE_SCAN_LIMIT), -1):
+        if _CLASS_DECL_RE.match(text.get(probe, "")):
+            start = probe
+            break
+    if not start:
+        return ""
+    above = 0
+    for probe in range(start - 1, max(0, start - 12), -1):
+        src = text.get(probe, "").strip()
+        if not src or src.startswith(("//", "/*", "*")):
+            continue
+        above = probe
+        break
+    if not above or not text.get(above, "").strip().startswith("template"):
+        return ""
+    parts: list[str] = []
+    for probe in range(above, start):
+        src = text.get(probe, "")
+        if not src:
+            continue
+        parts.append(src.strip())
+        joined = " ".join(parts)
+        if joined.count("<") and joined.count("<") == joined.count(">"):
+            return joined
+    return " ".join(parts)
+
+
+def _snapshot_file_lines(conn: sqlite3.Connection, path: str) -> list[tuple[int, str]]:
+    if not path:
+        return []
+    state = _src_state(conn)
+    files: "OrderedDict[str, list[tuple[int, str]]]" = state["files"]
+    hit = files.get(path)
+    if hit is not None:
+        files.move_to_end(path)
+        return hit
+    try:
+        rows = conn.execute(
+            "SELECT line, text FROM source_line WHERE path = ? ORDER BY line",
+            (path,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        rows = []
+    body = [(int(r[0] or 0), str(r[1] or "")) for r in rows]
+    files[path] = body
+    files.move_to_end(path)
+    while len(files) > _SRC_FILE_MAX:
+        files.popitem(last=False)
+    return body
+
+
 def _source_line_window(
     conn: sqlite3.Connection,
     file: str,
@@ -1551,99 +1882,146 @@ def _source_line_window(
     after: int = STATEMENT_AFTER,
 ) -> str:
     """~16-line window from indexed `source_line`. Empty if the table is absent."""
-    from ascendc_codemap_mcp.engine.store.accel import has_source_line
-
     if not file or int(line or 0) <= 0:
         return ""
-    if not has_source_line(conn):
-        return ""
     centre = int(line)
-    start = max(1, centre - int(before))
-    end = centre + int(after)
-    needle = str(file or "").replace("\\", "/")
-    leaf = needle.rsplit("/", 1)[-1]
-    try:
-        rows = conn.execute(
-            """
-            SELECT path, line, text FROM source_line
-            WHERE line BETWEEN ? AND ?
-              AND (
-                    path = ?
-                 OR REPLACE(REPLACE(path, '\\', '/'), '\\', '/') LIKE '%' || ?
-              )
-            ORDER BY line, path
-            """,
-            (start, end, file, leaf),
-        ).fetchall()
-    except sqlite3.OperationalError:
-        return ""
+    rows = _source_line_rows(conn, file, max(1, centre - int(before)), centre + int(after))
     if not rows:
         return ""
-    best_path = ""
-    for row in rows:
-        path = str(row[0] or "").replace("\\", "/")
-        if path == needle or path.endswith("/" + needle) or needle.endswith("/" + path):
-            best_path = str(row[0] or "")
-            break
-        if leaf and path.endswith("/" + leaf) or path.endswith(leaf):
-            best_path = str(row[0] or "")
-            break
-    if not best_path:
-        best_path = str(rows[0][0] or "")
-    chosen = [
-        (int(r[1] or 0), str(r[2] or ""))
-        for r in rows
-        if str(r[0] or "") == best_path
-    ]
-    if not chosen:
-        return ""
-    return "\n".join(f"{ln}:{txt}" for ln, txt in chosen)
+    return "\n".join(f"{ln}:{txt}" for ln, txt in rows)
 
 
 def _source_line_rows(
     conn: sqlite3.Connection, file: str, start: int, end: int
 ) -> list[tuple[int, str]]:
-    from ascendc_codemap_mcp.engine.store.accel import has_source_line
-
     if not file or int(start or 0) <= 0:
         return []
-    if not has_source_line(conn):
+    if not _has_source_line(conn):
         return []
-    needle = str(file or "").replace("\\", "/")
-    leaf = needle.rsplit("/", 1)[-1]
+    path = _snapshot_path_for(conn, file)
+    if not path:
+        return []
+    body = _snapshot_file_lines(conn, path)
+    if not body:
+        return []
     lo = max(1, int(start))
     hi = max(lo, int(end))
-    try:
-        rows = conn.execute(
-            """
-            SELECT path, line, text FROM source_line
-            WHERE line BETWEEN ? AND ?
-              AND (
-                    path = ?
-                 OR REPLACE(path, '\\', '/') LIKE '%' || ?
-              )
-            ORDER BY line, path
-            """,
-            (lo, hi, file, leaf),
-        ).fetchall()
-    except sqlite3.OperationalError:
-        return []
-    best_path = ""
-    for row in rows:
-        path = str(row[0] or "").replace("\\", "/")
-        if path == needle or path.endswith("/" + needle) or needle.endswith("/" + path):
-            best_path = str(row[0] or "")
-            break
-        if leaf and (path.endswith("/" + leaf) or path.endswith(leaf)):
-            best_path = str(row[0] or "")
-            break
-    if not best_path and rows:
-        best_path = str(rows[0][0] or "")
-    return [
-        (int(r[1] or 0), str(r[2] or ""))
-        for r in rows
-        if str(r[0] or "") == best_path
-    ]
+    left = bisect_left(body, lo, key=lambda row: row[0])
+    right = bisect_right(body, hi, key=lambda row: row[0])
+    return body[left:right]
+
+
+def _snapshot_line_range(
+    conn: sqlite3.Connection, file: str
+) -> tuple[int, int] | None:
+    """First and last line the snapshot holds for a file, if it holds any."""
+    if not file or not _has_source_line(conn):
+        return None
+    path = _snapshot_path_for(conn, file)
+    if not path:
+        return None
+    body = _snapshot_file_lines(conn, path)
+    if not body:
+        return None
+    return int(body[0][0]), int(body[-1][0])
+
+
+def _squash_path(text: str) -> str:
+    """Letters and digits only, so `PostRegbase` can meet `post_regbase`."""
+    return re.sub(r"[^a-z0-9]", "", str(text or "").lower())
+
+
+def _glob_nearest(conn: sqlite3.Connection, glob: str) -> list[str] | None:
+    """Paths a `file=` glob was reaching for, when it selects no file at all.
+
+    A glob that names no file and a glob that names files holding no match are
+    different failures, and only the second says anything about the pattern.
+    Returning None for the second lets a caller tell them apart instead of
+    reporting both as a plain zero.
+    """
+    from ascendc_codemap_mcp.engine.query.rg import path_matches
+
+    pat = str(glob or "").strip()
+    if not pat:
+        return None
+    paths = _source_paths(conn)
+    if any(path_matches(p, pat) for p in paths):
+        return None
+    # Globs get built out of CamelCase class names while files are spelled in
+    # snake_case, so the comparison drops separators and case on both sides.
+    literals = sorted(
+        (t for t in re.split(r"[*?/\[\]]+", pat) if len(_squash_path(t)) >= 4),
+        key=len,
+        reverse=True,
+    )
+    for token in literals:
+        key = _squash_path(token)
+        hits = [p for p in paths if key in _squash_path(p)]
+        if hits:
+            return sorted(hits)[:6]
+    return []
+
+
+def _restore_blank_lines(
+    rows: list[tuple[int, str]], stop: int
+) -> list[tuple[int, str]]:
+    """Put back the blank lines the index does not store.
+
+    `source_line` holds no row for an empty line, so a body read back from it
+    arrives with holes: the numbers jump, and a coverage note comparing rows to
+    span length reports a complete body as truncated. Readers then spend a call
+    fetching lines that were never missing.
+    """
+    if not rows:
+        return rows
+    out: list[tuple[int, str]] = []
+    expect = rows[0][0]
+    for number, text in rows:
+        while expect < number:
+            out.append((expect, ""))
+            expect += 1
+        out.append((number, text))
+        expect = number + 1
+    while expect <= int(stop or 0):
+        out.append((expect, ""))
+        expect += 1
+    return out
+
+
+_TEMPLATE_HEAD_RE = re.compile(r"^\s*template\s*<")
+_TEMPLATE_HEAD_KINDS = frozenset(
+    {
+        EntityKind.TYPE.value,
+        EntityKind.METHOD.value,
+        EntityKind.FUNCTION.value,
+        EntityKind.KERNEL.value,
+    }
+)
+
+
+def _template_head_start(
+    conn: sqlite3.Connection, file: str, start: int, *, look_back: int = 6
+) -> int:
+    """First line of the ``template <…>`` header above a declaration.
+
+    A class body is not readable without it. Every mention of ``bufferType``
+    or ``syncMode`` inside refers to a parameter declared on the line above the
+    snippet, together with the default that decides the behaviour — and a
+    reader who cannot see it spends two searches recovering what one line of
+    context would have carried. Returns ``start`` when there is no header.
+    """
+    if int(start or 0) <= 1:
+        return int(start or 1)
+    rows = _source_line_rows(conn, file, max(1, start - look_back), start - 1)
+    for index, (line_no, text) in enumerate(rows):
+        if not _TEMPLATE_HEAD_RE.match(str(text or "")):
+            continue
+        # A header can wrap over several lines, so it is only this declaration's
+        # once its angle brackets close by the line above.
+        joined = " ".join(str(t or "") for _n, t in rows[index:])
+        if joined.count("<") <= joined.count(">"):
+            return int(line_no)
+    return int(start)
 
 
 def _snapshot_window(
@@ -1669,6 +2047,8 @@ def _snapshot_window(
         EntityKind.FUNCTION.value,
         EntityKind.KERNEL.value,
     } else max(1, centre - SNIPPET_BEFORE)
+    if kind_u in _TEMPLATE_HEAD_KINDS:
+        start = min(start, _template_head_start(conn, file, start))
     if span_end > centre:
         end = min(span_end, start + SNIPPET_LINES - 1)
         truncated = span_end > end
@@ -2117,12 +2497,39 @@ def _compact_kind_card(hit: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _matched_entity_rows(hits: Any, *, limit: int = 12) -> list[dict[str, Any]]:
+    """The entities a name matched, so a count of them can be checked.
+
+    The coverage line quotes how many things the name reached. Without the
+    list, a reader cannot tell three definitions from one definition and two
+    look-alikes, and both readings change what they are allowed to conclude.
+    """
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, int]] = set()
+    for hit in hits or []:
+        if not isinstance(hit, dict):
+            continue
+        name = str(hit.get("name") or "")
+        kind = str(hit.get("kind") or "")
+        file = _norm_file(str(hit.get("file") or ""))
+        line = int(hit.get("line_start") or hit.get("line") or 0)
+        key = (name, kind, file, line)
+        if not name or key in seen:
+            continue
+        seen.add(key)
+        out.append({"name": name, "kind": kind, "file": file, "line": line})
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _name_card_coverage(coverage: dict[str, Any]) -> dict[str, Any]:
     keep = (
         "completeness",
         "answerable",
         "definition_sites_count",
         "definition_sites_complete",
+        "matched_entities_count",
     )
     return {key: coverage[key] for key in keep if key in coverage}
 
@@ -2144,7 +2551,9 @@ def _compact_around_hit(hit: dict[str, Any], *, snippet: bool = False) -> dict[s
     return {key: value for key, value in row.items() if value not in (None, "")}
 
 
-def _clip_snippets(payload: dict[str, Any], *, max_lines: int) -> None:
+def _clip_snippets(
+    payload: dict[str, Any], *, max_lines: int, keep_primary: bool = False
+) -> None:
     for key in (
         "rows",
         "branches",
@@ -2162,7 +2571,14 @@ def _clip_snippets(payload: dict[str, Any], *, max_lines: int) -> None:
         "cards",
     ):
         rows = payload.get(key)
-        if isinstance(rows, list):
+        if not isinstance(rows, list):
+            continue
+        # The body of the thing that was asked for is the answer, not context;
+        # trimming it to three lines while every neighbour list survives spends
+        # the budget backwards.
+        if keep_primary and key == "cards" and rows:
+            _clip_hit_snippets(rows[1:], max_lines=max_lines)
+        else:
             _clip_hit_snippets(rows, max_lines=max_lines)
     field = payload.get("field")
     if isinstance(field, dict):
@@ -2199,6 +2615,15 @@ def _clip_relationships(payload: dict[str, Any], *, max_rels: int = MAX_REL_HOPS
 
 
 def _payload_size(payload: dict[str, Any]) -> int:
+    """Budget the facts, not the rendering of them.
+
+    `text` is a markdown mirror of the same cards, regenerated after fitting, so
+    counting it charges every fact twice and the second charge is paid by the
+    definition body -- the one part of the card that cannot be recovered from
+    anywhere else.
+    """
+    if "text" in payload:
+        payload = {k: v for k, v in payload.items() if k != "text"}
     return len(json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str))
 
 
@@ -2282,9 +2707,25 @@ def _hits_coverage(
         phase = str(facts.get("pipe_ordinal") or facts.get("kernel_phase") or "").strip()
         if phase and phase not in phases:
             phases.append(phase)
+        if _is_use_site_hit(
+            str(hit.get("kind") or ""),
+            facts,
+            hit.get("attrs") if isinstance(hit.get("attrs"), dict) else {},
+            hit.get("data") if isinstance(hit.get("data"), dict) else {},
+        ):
+            continue
         sites = facts.get("definition_sites")
         if isinstance(sites, list):
-            def_count = max(def_count, len(sites))
+            # Two entity kinds can share one declaration: `ping_` is both the
+            # FIELD and the BUFFER minted from it, on the same line. Counting
+            # rows reported that as two sites, so the list rendered under the
+            # count was always shorter than the count claimed.
+            distinct = {
+                (str(s.get("file") or ""), int(s.get("line") or 0))
+                for s in sites
+                if isinstance(s, dict) and s.get("file")
+            }
+            def_count = max(def_count, len(distinct) or len(sites))
         elif isinstance(sites, int):
             def_count = max(def_count, int(sites))
         fused = facts.get("fused_outer_candidates")
@@ -2321,7 +2762,12 @@ def _hits_coverage(
         answerable = False
     return {
         "sibling_files": sibling_files,
-        "definition_sites_count": def_count or total_matched,
+        # Two different quantities used to share this key. Falling back to the
+        # match total reported `SetCrossCore` as "2 definition sites" when the
+        # second match was `SetCrossCoreID`, and `IsEmptyOutput` as three when
+        # two of them were a BRANCH and a call. Count definitions only.
+        "definition_sites_count": def_count,
+        "matched_entities_count": total_matched,
         "total_matched": total_matched,
         "fused_outer_candidates_count": fused_count,
         "mutex_policies": mutex,
@@ -2668,6 +3114,153 @@ def _name_pattern_to_like(pattern: str) -> str:
     return f"%{text}%"
 
 
+_NEIGHBOUR_LIST_KEYS = (
+    "used_at",
+    "references",
+    "neighbors",
+    "readers",
+    "writers",
+    "locations",
+    "hits",
+    # `calls` is a list of places to look next, same as the rest of these. It
+    # was not shed with them, so on a big function it outweighed the body and
+    # the body was cut instead.
+    "calls",
+)
+
+# Cross-references on the primary card: who calls this, what it uses. Context
+# for the body, and recoverable by resolving any of the names they cite, which
+# the body is not.
+_CARD_CONTEXT_KEYS = ("facets", "extras")
+
+
+#: Entities that are declared inside a class or struct, so a bare name can name
+#: several of them. A TYPE or a TILING_KEY is named once and owns itself.
+_SCOPED_MEMBER_KINDS = frozenset(
+    {"FIELD", "BUFFER", "QUEUE", "REGISTER", "EVENT", "PIPE", "METHOD"}
+)
+
+
+def _inexact_name_note(needle: str, ranked: list[dict[str, Any]]) -> str:
+    """Say when nothing carries the asked-for name.
+
+    `MutexBuffersPolicy` names no entity, and the substring fallback answered
+    with `MutexBuffersPolicySingleBuffer::buffer_` under the asked-for heading.
+    A near miss presented as a hit is worse than a miss.
+    """
+    want = str(needle or "").strip().replace(".", "::")
+    if not want or not ranked:
+        return ""
+    leaf = _last_ident(want).lower()
+    for hit in ranked:
+        name = str(hit.get("name") or "").replace(".", "::")
+        if name.lower() == want.lower() or _last_ident(name).lower() == leaf:
+            return ""
+    best = str(ranked[0].get("name") or "")
+    if not best:
+        return ""
+    return (
+        f"Nothing is named `{needle}`. The closest name in the graph is "
+        f"`{best}`, shown below; search pattern={needle} for the text instead."
+    )
+
+
+def _shrink_primary_context(payload: dict[str, Any], *, max_chars: int) -> None:
+    """Drop cross-reference blocks off the primary card before its body."""
+    cards = payload.get("cards")
+    if not isinstance(cards, list) or not cards or not isinstance(cards[0], dict):
+        return
+    for key in _CARD_CONTEXT_KEYS:
+        block = cards[0].get(key)
+        if not isinstance(block, dict) or not block:
+            continue
+        for name in sorted(
+            block,
+            key=lambda k: len(json.dumps(block[k], ensure_ascii=False, default=str)),
+            reverse=True,
+        ):
+            block.pop(name, None)
+            payload["context_trimmed"] = True
+            _note_trim(payload, key)
+            if _payload_size(payload) <= max_chars:
+                return
+
+
+def _shrink_neighbour_lists(payload: dict[str, Any], *, max_chars: int) -> None:
+    """Trim reference-style lists before the body they point away from."""
+    for key in _NEIGHBOUR_LIST_KEYS:
+        block = payload.get(key)
+        # `calls` arrives as {calls, called_by, possible_callers} and is protected
+        # so the key survives; the guard also spared its contents, so on a large
+        # function it held three quarters of the budget and the body paid. This
+        # shortens the lists inside and leaves the key in place.
+        if isinstance(block, dict):
+            if _shrink_nested_lists(payload, block, max_chars=max_chars):
+                return
+            continue
+        if key in _PROTECTED_PAYLOAD_KEYS:
+            continue
+        if not isinstance(block, list) or len(block) <= MIN_LIST_KEEP:
+            continue
+        payload[key] = block[:MIN_LIST_KEEP]
+        _note_trim(payload, key)
+        _downgrade_coverage_after_clip(payload)
+        if _payload_size(payload) <= max_chars:
+            return
+
+
+#: Order in which a grouped neighbour block gives up its lists. The callee list
+#: goes first because the body above it names the same calls; who calls this is
+#: not written anywhere in the card.
+_NESTED_SHED_ORDER = ("calls", "possible_callers", "called_by")
+
+
+def _shrink_nested_lists(
+    payload: dict[str, Any], block: dict[str, Any], *, max_chars: int
+) -> bool:
+    """Trim the lists inside a grouped neighbour block, cheapest loss first."""
+    known = [k for k in _NESTED_SHED_ORDER if isinstance(block.get(k), list)]
+    rest = sorted(
+        (k for k, v in block.items() if isinstance(v, list) and k not in known),
+        key=lambda k: len(json.dumps(block[k], ensure_ascii=False, default=str)),
+        reverse=True,
+    )
+    for name in [*known, *rest]:
+        rows = block[name]
+        if len(rows) <= MIN_LIST_KEEP:
+            continue
+        block[name] = rows[:MIN_LIST_KEEP]
+        _note_trim(payload, name)
+        _downgrade_coverage_after_clip(payload)
+        if _payload_size(payload) <= max_chars:
+            return True
+    return False
+
+
+#: Reader-facing names for the lists a card can shed. "some lists were trimmed"
+#: costs as much as saying nothing: one agent re-derived a caller list that had
+#: come back complete, because the note did not say the callee list was the one.
+_TRIM_LABELS = {
+    "calls": "callee list",
+    "called_by": "caller list",
+    "possible_callers": "possible-caller list",
+    "references": "reference list",
+    "used_at": "use list",
+    "readers": "reader list",
+    "writers": "writer list",
+    "neighbors": "neighbour list",
+    "facets": "cross-reference blocks",
+    "extras": "extra context",
+}
+
+
+def _note_trim(payload: dict[str, Any], key: str) -> None:
+    label = _TRIM_LABELS.get(str(key), str(key))
+    names = payload.setdefault("trimmed_lists", [])
+    if isinstance(names, list) and label not in names:
+        names.append(label)
+
+
 def _fit_payload(payload: dict[str, Any], *, max_chars: int = MAX_PAYLOAD_CHARS) -> dict[str, Any]:
     if _payload_size(payload) <= max_chars:
         return payload
@@ -2688,7 +3281,22 @@ def _fit_payload(payload: dict[str, Any], *, max_chars: int = MAX_PAYLOAD_CHARS)
         if _payload_size(out) <= max_chars:
             _downgrade_coverage_after_clip(out)
             return out
+    # Neighbour lists are context; the definition body is the answer. Shedding
+    # context first is what keeps a large function readable instead of trading
+    # its body for a full reference list.
     for max_lines in (12, 6, 3):
+        _clip_snippets(out, max_lines=max_lines, keep_primary=True)
+        if _payload_size(out) <= max_chars:
+            return out
+    _shrink_neighbour_lists(out, max_chars=max_chars)
+    if _payload_size(out) <= max_chars:
+        return out
+    _shrink_primary_context(out, max_chars=max_chars)
+    if _payload_size(out) <= max_chars:
+        return out
+    # Starting the ladder at 120 threw away half a body that fit. Step down from
+    # the hard cap so the first rung that fits is the largest one that does.
+    for max_lines in (240, 180, 120, 60, 24):
         _clip_snippets(out, max_lines=max_lines)
         if _payload_size(out) <= max_chars:
             return out
@@ -2721,6 +3329,7 @@ def _fit_payload(payload: dict[str, Any], *, max_chars: int = MAX_PAYLOAD_CHARS)
             probe[key] = rows
             if _payload_size(probe) <= max_chars:
                 out[key] = rows
+                _note_trim(out, key)
                 _downgrade_coverage_after_clip(out)
                 return out
     _downgrade_coverage_after_clip(out)
@@ -2746,6 +3355,26 @@ class UoSqlQuery:
         self._named_fields_cache: dict[str, list[dict[str, Any]]] | None = None
         self._idf_cache: tuple[int, dict[str, int]] | None = None
         self._compiled_support_cache: dict[str, dict[str, Any]] = {}
+        self._state_index_cache: dict[str, list[dict[str, Any]]] | None = None
+        self._state_files_cache: dict[str, list[str]] = {}
+        self._guard_rel_cache: dict[str, str] | None = None
+        self._field_ids_cache: dict[str, dict[str, list[str]]] = {}
+        self._entity_row_cache: dict[str, sqlite3.Row | None] = {}
+        self._clip_source_cache: dict[tuple[str, int, int, int], str] = {}
+        self._field_impact_cache: dict[str, dict[str, Any]] = {}
+        self._call_site_count_cache: dict[str, int] = {}
+        self._branch_index_cache: dict[str, list[tuple[int, int, str]]] = {}
+        self._branch_guard_cache: dict[tuple[str, int], list[str]] = {}
+        self._type_span_cache: dict[str, list[tuple[int, int, str]]] = {}
+        self._def_span_cache: dict[str, list[tuple[int, int]]] = {}
+        self._enclosing_cache: dict[tuple[str, int], dict[str, Any] | None] = {}
+        self._grouped_edges_cache: dict[tuple[str, str], dict[str, Any]] = {}
+        self._operation_index_cache: dict[str, list[tuple[int, str, str]]] | None = None
+        self._event_site_index_cache: (
+            dict[str, list[tuple[int, str, str, str]]] | None
+        ) = None
+        self._index_files_cache: dict[tuple[int, str], list[str]] = {}
+        self._alloc_index_cache: dict[str, list[dict[str, Any]]] | None = None
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -2786,6 +3415,7 @@ class UoSqlQuery:
 
         close_uo_connections(self.product)
         clear_legal_key_cache(self.product)
+        reset_source_line_cache()
         key = str(self.product)
         with _TEMPLATE_BLOCKS_LOCK:
             _TEMPLATE_BLOCKS_CACHE.pop(key, None)
@@ -3066,6 +3696,18 @@ class UoSqlQuery:
         key = str(name_or_id or "")
         if not key:
             return None
+        # Graph walks revisit the same node from several edges; a committed row
+        # cannot change under us.
+        if key in self._entity_row_cache:
+            return self._entity_row_cache[key]
+        row = self._entity_row_uncached(conn, key)
+        if len(self._entity_row_cache) < 20000:
+            self._entity_row_cache[key] = row
+        return row
+
+    def _entity_row_uncached(
+        self, conn: sqlite3.Connection, key: str
+    ) -> sqlite3.Row | None:
         row = conn.execute(
             """
             SELECT e.id, e.kind, e.name, e.status, e.file, e.line_start, e.line_end, e.data,
@@ -3801,6 +4443,18 @@ class UoSqlQuery:
             self._edges_cache = None
 
     def field_impact(self, name_or_id: str) -> dict[str, Any]:
+        # A field card asks for this from several facets, and a symbol with both
+        # a FIELD and a TILING_KEY identity asks once per identity.
+        key = str(name_or_id or "")
+        cached = self._field_impact_cache.get(key)
+        if cached is not None:
+            return copy.deepcopy(cached)
+        payload = self._field_impact_uncached(key)
+        if len(self._field_impact_cache) < 512:
+            self._field_impact_cache[key] = copy.deepcopy(payload)
+        return payload
+
+    def _field_impact_uncached(self, name_or_id: str) -> dict[str, Any]:
         raw = str(name_or_id or "").strip().strip('"').strip("'")
         field_kinds = (
             EntityKind.TILING_FIELD.value,
@@ -5676,6 +6330,81 @@ class UoSqlQuery:
         payload = self.query_name_card(text, limit=limit)
         return _fit_payload(attach_explore_fields(self, payload, pattern=text))
 
+    def _definition_spans(self, file: str) -> list[tuple[int, int]]:
+        """Recorded FUNCTION/METHOD/KERNEL spans in one file, by start line."""
+        key = str(file or "")
+        hit = self._def_span_cache.get(key)
+        if hit is not None:
+            return hit
+        kinds = tuple(_DEF_CARD_KINDS)
+        ph = ",".join("?" for _ in kinds)
+        leaf = key.replace("\\", "/").rsplit("/", 1)[-1]
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT line_start, line_end FROM entity
+                WHERE kind IN ({ph})
+                  AND IFNULL(line_start, 0) > 0
+                  AND IFNULL(line_end, 0) > line_start
+                  AND (
+                        REPLACE(IFNULL(file, ''), '\\', '/') = ?
+                     OR REPLACE(IFNULL(file, ''), '\\', '/') LIKE '%/' || ?
+                  )
+                """,
+                (*kinds, key.replace("\\", "/"), leaf),
+            ).fetchall()
+        spans = sorted({(int(a or 0), int(b or 0)) for a, b in rows})
+        self._def_span_cache[key] = spans
+        return spans
+
+    def _clamp_definition_start(self, file: str, start: int, end: int) -> int:
+        """Never let a definition's body begin inside its neighbour's.
+
+        Extraction records `line_end` at the closing brace but starts some
+        template member functions a few lines early, so a card would open with
+        the tail of the function above it. Two recorded definitions cannot
+        overlap, so the later one starts after the earlier one ends. The stored
+        fact is left alone; this only bounds what gets read back.
+        """
+        lo, hi = int(start or 0), int(end or 0)
+        if lo <= 0 or hi < lo:
+            return lo
+        floor = lo
+        for other_start, other_end in self._definition_spans(file):
+            if other_start >= lo or other_end < lo or other_end >= hi:
+                continue
+            floor = max(floor, other_end + 1)
+        return min(floor, hi)
+
+    def _definition_unit_snippet(self, hit: dict[str, Any]) -> tuple[str, bool]:
+        """Whole body for a FUNCTION/METHOD/KERNEL card. ('', False) otherwise.
+
+        `resolve(SomeFunction)` used to answer with the stored span snippet,
+        which is a couple of lines, so the caller had to copy the file:line back
+        in to read the body it had just asked for. Same projector as
+        `resolve(file, line)`, so both spellings return the same source.
+        """
+        # A class body answers "how is this policy built" the same way a
+        # function body answers "what does this compute"; both were clipped to
+        # a few lines and forced a second call.
+        if str(hit.get("kind") or "").upper() not in _UNIT_SNIPPET_KINDS:
+            return "", False
+        file = str(hit.get("file") or "")
+        start = int(hit.get("line_start") or hit.get("line") or 0)
+        end = int(hit.get("line_end") or 0)
+        # A one-line span carries no body to rebuild; using it would replace the
+        # stored snippet with the declaration line alone.
+        if not file or start <= 0 or end <= start:
+            return "", False
+        start = self._clamp_definition_start(file, start, end)
+        stop = min(end, start + _SITE_UNIT_HARD - 1)
+        with self._connect() as conn:
+            rows = _source_line_rows(conn, file, start, stop)
+        if not rows:
+            return "", False
+        rows = _restore_blank_lines(rows, stop)
+        return "\n".join(f"{ln}:{txt}" for ln, txt in rows), stop < end
+
     def query_name_card(self, pattern: str, *, limit: int = 8) -> dict[str, Any]:
         needle = str(pattern or "").strip()
         if not needle:
@@ -5798,12 +6527,19 @@ class UoSqlQuery:
                     if isinstance(bucket, dict)
                 }
             snippet, snip_cut = _card_snippet_for_hit(hit)
+            unit, unit_cut = self._definition_unit_snippet(hit)
+            # Some declarations are recorded with a one-line span; rebuilding
+            # from it would replace a good stored snippet with a worse one.
+            if unit and unit.count("\n") >= snippet.count("\n"):
+                snippet, snip_cut = unit, unit_cut
             card: dict[str, Any] = {
                 "kind": kind,
                 "name": name,
                 "id": eid,
                 "file": hit.get("file") or "",
                 "line": int(hit.get("line_start") or 0),
+                # Carried so the renderer can tell a full body from a window.
+                "line_end": int(hit.get("line_end") or 0),
                 "snippet": snippet,
                 "edges": grouped,
             }
@@ -5947,9 +6683,17 @@ class UoSqlQuery:
         self._edges_cache = None
         coverage = _hits_coverage(cards_src, total=len(hits), needle=needle)
         if definition_sites:
+            # Count declarations, not rows: a FIELD and the BUFFER minted from
+            # it share one line, and the list rendered under this count folds
+            # them together. Counting rows made the count exceed the list.
+            distinct_sites = {
+                (str(s.get("file") or ""), int(s.get("line") or 0))
+                for s in definition_sites
+                if isinstance(s, dict) and s.get("file")
+            }
             coverage["definition_sites_count"] = max(
                 int(coverage.get("definition_sites_count") or 0),
-                len(definition_sites),
+                len(distinct_sites) or len(definition_sites),
             )
             coverage["definition_sites_complete"] = sites_complete
             if not sites_complete:
@@ -5971,6 +6715,9 @@ class UoSqlQuery:
             "count": len(cards),
             "coverage": _name_card_coverage(coverage),
         }
+        matched = _matched_entity_rows(ranked)
+        if len(matched) > 1:
+            payload["matched_entities"] = matched
         primary = cards[0] if cards else {}
         primary_facets = primary.get("facets") if isinstance(primary.get("facets"), dict) else {}
         support = primary_facets.get("compiled_support")
@@ -5991,8 +6738,82 @@ class UoSqlQuery:
                 f"{len(recall_samples)} shown of {recall_total} total. Confirm the "
                 "name at the cited line before citing it."
             )
+        missed_owner = str((ranked[0] if ranked else {}).get("owner_mismatch") or "")
+        if missed_owner:
+            owners = sorted(
+                {
+                    self.owner_of(
+                        str(hit.get("file") or ""),
+                        int(hit.get("line_start") or 0),
+                        hit.get("data"),
+                    )
+                    for hit in ranked
+                }
+                - {""}
+            )
+            payload["match_note"] = (
+                f"No member of `{missed_owner}` is named `{_last_ident(needle)}`. "
+                + (
+                    f"Showing the same name under {', '.join(owners)} instead."
+                    if owners
+                    else "Showing same-named entities under other owners instead."
+                )
+            )
+        if not payload.get("match_note"):
+            payload["match_note"] = self._ambiguity_note(needle, ranked, primary)
+        if not payload.get("match_note"):
+            payload["match_note"] = _inexact_name_note(needle, ranked)
         attach_query_hints(payload, needle, count=len(cards), mode="name")
         return _fit_payload(payload)
+
+    def _scope_of(self, hit: dict[str, Any]) -> str:
+        """The class that declares this, or the function that does.
+
+        `owner_of` answers about classes, and a register declared inside a VF
+        function has none. That left the names with the most duplicates -- 35
+        `vregSrc`, 42 `pregFullExe`, one per function -- looking unambiguous.
+        """
+        file = str(hit.get("file") or "")
+        line = int(hit.get("line") or hit.get("line_start") or 0)
+        owner = self.owner_of(file, line, hit.get("data"))
+        if owner:
+            return owner
+        enclosing = self._enclosing_def(file, line)
+        return _last_ident(str((enclosing or {}).get("name") or "").replace(".", "::"))
+
+    def _ambiguity_note(
+        self, needle: str, ranked: list[dict[str, Any]], primary: dict[str, Any]
+    ) -> str:
+        """Say when a bare name belongs to more than one scope.
+
+        `ping_` is declared by four buffer policies. The card picked one and
+        named its scope, which reads as the answer rather than as one of four,
+        so agents cited the wrong class or spent calls discovering the rest.
+        """
+        want = str(needle or "").strip()
+        if not want or "::" in want or "." in want:
+            return ""
+        # Only things that live inside a scope can be ambiguous by scope. A class
+        # is not declared in itself, and a tiling field's identity spans layers
+        # rather than owners, so both produced notes that named no real choice.
+        if str(primary.get("kind") or "") not in _SCOPED_MEMBER_KINDS:
+            return ""
+        leaf = _last_ident(want).lower()
+        owners: list[str] = []
+        for hit in ranked:
+            if _last_ident(str(hit.get("name") or "")).lower() != leaf:
+                continue
+            own = self._scope_of(hit)
+            if own and own not in owners:
+                owners.append(own)
+        if len(owners) < 2:
+            return ""
+        chosen = self._scope_of(primary)
+        shown = ", ".join(owners[:6]) + (" …" if len(owners) > 6 else "")
+        note = f"`{_last_ident(want)}` is declared in {len(owners)} scopes: {shown}."
+        if chosen:
+            note += f" This card is {chosen}'s."
+        return note + f" Resolve `Owner::{_last_ident(want)}` for a different one."
 
     def _is_ascendc_catalog_ident(self, needle: str) -> bool:
         ident = _last_ident(str(needle or "").replace(".", "::")).lower()
@@ -6037,7 +6858,43 @@ class UoSqlQuery:
                     "THEN 1 ELSE 0 END), e.kind, e.name, e.id"
                 ),
             )
-            return self._hits_from_rows(conn, rows, why="name_card", with_snippet=True)
+            hits = self._hits_from_rows(conn, rows, why="name_card", with_snippet=True)
+        return self._rank_by_owner(hits, needle)
+
+    def _rank_by_owner(
+        self, hits: list[dict[str, Any]], needle: str
+    ) -> list[dict[str, Any]]:
+        """Honour the `Owner::` a caller wrote instead of dropping it.
+
+        Members are stored under their leaf name, so `A::x` and `B::x` are the
+        same row to a leaf lookup and the winner is whichever sorts first. A
+        caller who took the trouble to qualify gets that qualifier applied, and
+        a qualifier that matches nothing is reported rather than ignored.
+        """
+        want = str(needle or "").strip().replace(".", "::")
+        if "::" not in want or not hits:
+            return hits
+        owner = _last_ident(want.rsplit("::", 1)[0]).lower()
+        if not owner:
+            return hits
+        matched: list[dict[str, Any]] = []
+        others: list[dict[str, Any]] = []
+        for hit in hits:
+            name = str(hit.get("name") or "").replace(".", "::")
+            found = _last_ident(name.rsplit("::", 1)[0]).lower() if "::" in name else ""
+            if not found:
+                # A register declared in a VF function has no class, so a
+                # class-only lookup answered `ReduceSinkVF::vregSrc` with some
+                # other function's register and called the qualifier wrong.
+                found = self._scope_of(hit).lower()
+            (matched if found == owner else others).append(hit)
+        if not matched:
+            for hit in others:
+                hit["owner_mismatch"] = want.rsplit("::", 1)[0]
+            return others
+        for hit in others:
+            hit["owner_rank"] = 1
+        return matched + others
 
     def _hits_by_kind(self, kind: str, *, limit: int) -> list[dict[str, Any]]:
         want = str(kind or "").strip()
@@ -6181,6 +7038,18 @@ class UoSqlQuery:
     def _grouped_edges(self, entity_id: str, *, entity_kind: str = "") -> dict[str, Any]:
         if not entity_id:
             return {}
+        key = (str(entity_id), str(entity_kind or ""))
+        cached = self._grouped_edges_cache.get(key)
+        if cached is not None:
+            return copy.deepcopy(cached)
+        grouped_out = self._grouped_edges_uncached(entity_id, entity_kind=entity_kind)
+        if len(self._grouped_edges_cache) < 512:
+            self._grouped_edges_cache[key] = copy.deepcopy(grouped_out)
+        return grouped_out
+
+    def _grouped_edges_uncached(
+        self, entity_id: str, *, entity_kind: str = ""
+    ) -> dict[str, Any]:
         placeholders = ",".join("?" for _ in CARD_EDGE_KINDS)
         neighbor_placeholders = ",".join("?" for _ in CARD_NEIGHBOR_RELS)
         skip_tpl = str(entity_kind or "").upper() == EntityKind.TILING_KEY.value
@@ -6843,19 +7712,33 @@ class UoSqlQuery:
         loc = int(line or 0)
         if not needle or loc <= 0:
             return None
+        key = (needle, loc)
+        if key in self._enclosing_cache:
+            return self._enclosing_cache[key]
+        found = self._enclosing_def_uncached(needle, loc)
+        if len(self._enclosing_cache) < 8192:
+            self._enclosing_cache[key] = found
+        return found
+
+    def _enclosing_def_uncached(
+        self, needle: str, loc: int
+    ) -> dict[str, Any] | None:
         leaf = needle.rsplit("/", 1)[-1]
         kinds = tuple(_ENCLOSE_KINDS)
         ph = ",".join("?" for _ in kinds)
+        # A callee recorded at its call site has line_end == line_start, and
+        # the smallest-span tie-break made that one-line row beat the function
+        # it sits inside. Only a span with a body can enclose anything.
         sql = f"""
             SELECT e.id, e.kind, e.name, e.file, e.line_start, e.line_end
             FROM entity e
             WHERE e.kind IN ({ph})
               AND IFNULL(e.line_start, 0) > 0
-              AND IFNULL(e.line_end, 0) >= e.line_start
+              AND IFNULL(e.line_end, 0) > e.line_start
               AND ? BETWEEN e.line_start AND e.line_end
               AND (
                     REPLACE(REPLACE(IFNULL(e.file, ''), '\\', '/'), '\\', '/') = ?
-                 OR REPLACE(REPLACE(IFNULL(e.file, ''), '\\', '/'), '\\', '/') LIKE '%' || ?
+                 OR REPLACE(REPLACE(IFNULL(e.file, ''), '\\', '/'), '\\', '/') LIKE '%/' || ?
               )
             ORDER BY (e.line_end - e.line_start) ASC, e.name
             LIMIT 8
@@ -6884,6 +7767,56 @@ class UoSqlQuery:
             )
         return hits[0] if hits else None
 
+    def _enclosing_type(
+        self, file: str, line: int, *, span_start: int = 0
+    ) -> dict[str, Any] | None:
+        """The TYPE a header site belongs to.
+
+        A struct is often recorded with a one-line span, so containment alone
+        finds nothing; the source span that covers the site starts on the
+        declaration line, which is the same type.
+        """
+        needle = _strip_dot_slash(str(file or "").replace("\\", "/"))
+        loc = int(line or 0)
+        if not needle or loc <= 0:
+            return None
+        leaf = needle.rsplit("/", 1)[-1]
+        anchor = int(span_start or 0) or loc
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, kind, name, file, line_start, line_end
+                FROM entity
+                WHERE kind = ?
+                  AND IFNULL(line_start, 0) > 0
+                  AND (
+                        ? BETWEEN line_start AND IFNULL(line_end, line_start)
+                     OR line_start = ?
+                  )
+                  AND (
+                        REPLACE(IFNULL(file, ''), '\\', '/') = ?
+                     OR REPLACE(IFNULL(file, ''), '\\', '/') LIKE '%/' || ?
+                  )
+                ORDER BY (IFNULL(line_end, line_start) - line_start) ASC
+                LIMIT 4
+                """,
+                (EntityKind.TYPE.value, loc, anchor, needle, leaf),
+            ).fetchall()
+        for row in rows:
+            path = _norm_file(str(row[3] or ""))
+            if path and not _file_same(path, needle):
+                continue
+            return {
+                "id": str(row[0] or ""),
+                "kind": str(row[1] or ""),
+                "name": str(row[2] or ""),
+                "file": path or needle,
+                "line": int(row[4] or 0),
+                "line_start": int(row[4] or 0),
+                "line_end": int(row[5] or 0),
+            }
+        return None
+
     def _covering_source_span(
         self, file: str, line: int
     ) -> tuple[int, int, str] | None:
@@ -6903,7 +7836,7 @@ class UoSqlQuery:
                       AND ? BETWEEN line_start AND line_end
                       AND (
                             REPLACE(REPLACE(IFNULL(file, ''), '\\', '/'), '\\', '/') = ?
-                         OR REPLACE(REPLACE(IFNULL(file, ''), '\\', '/'), '\\', '/') LIKE '%' || ?
+                         OR REPLACE(REPLACE(IFNULL(file, ''), '\\', '/'), '\\', '/') LIKE '%/' || ?
                       )
                     ORDER BY (line_end - line_start) ASC
                     LIMIT 8
@@ -6922,6 +7855,427 @@ class UoSqlQuery:
                 return start, end, str(_row_get(row, "snippet") or "")
         return None
 
+    def _guard_by_relation(self) -> dict[str, str]:
+        """relation.id → the guard that fired it. One scan per snapshot."""
+        if self._guard_rel_cache is not None:
+            return self._guard_rel_cache
+        with self._connect() as conn:
+            guards = conn.execute(
+                """
+                SELECT r.src, e.name AS guard_name
+                FROM relation r
+                JOIN entity e ON e.id = r.dst
+                WHERE r.kind = 'GUARDED_BY'
+                  AND LOWER(IFNULL(r.status, '')) IN ('confirmed', 'extracted', 'verified')
+                """
+            ).fetchall()
+        by_rel: dict[str, str] = {}
+        for row in guards:
+            name = str(_row_get(row, "guard_name") or _row_get(row, "name") or "").strip()
+            if not name or _is_noise_name_sql(name):
+                continue
+            src = str(_row_get(row, "r.src") or _row_get(row, "src") or "")
+            if src and src not in by_rel:
+                by_rel[src] = name
+        self._guard_rel_cache = by_rel
+        return by_rel
+
+    _BRANCH_SPAN_SQL = """
+        SELECT name,
+               IFNULL(json_extract(data, '$.guard_body_start'), line_start),
+               line_end
+        FROM entity
+        WHERE kind = ?
+          AND IFNULL(line_start, 0) > 0
+          AND IFNULL(line_end, 0) >= line_start
+          AND file {match}
+    """
+
+    def _branch_spans(self, file: str) -> list[tuple[int, int, str]]:
+        """BRANCH spans in one file, so a site there can name its own guard.
+
+        Host def-use records the guard as a BRANCH entity sitting on the guarded
+        line rather than as a GUARDED_BY edge on the write, so the write itself
+        looks unconditional. Reading the spans back is what turns
+        ``isBn2MultiBlk = false`` at 1693 into ``when dropMaskOuter``.
+
+        The span is the guarded body where the build recorded one, not
+        ``line_start``: a negated guard is written at the ``if`` but only holds
+        inside the ``else``, so starting at the condition would report every
+        site in the ``then`` block under the negation of its actual guard.
+
+        Read a file at a time. A site lookup only ever needs the one file it
+        sits in, and decoding every branch in the operator up front costs more
+        than the whole query it was supposed to serve.
+        """
+        path = str(file or "")
+        if not path:
+            return []
+        cached = self._branch_index_cache.get(path)
+        if cached is not None:
+            return cached
+        kind = EntityKind.BRANCH.value
+        with self._connect() as conn:
+            rows = conn.execute(
+                self._BRANCH_SPAN_SQL.format(match="= ?"), (kind, path)
+            ).fetchall()
+            if not rows:
+                leaf = path.replace("\\", "/").rsplit("/", 1)[-1]
+                if leaf:
+                    rows = conn.execute(
+                        self._BRANCH_SPAN_SQL.format(match="LIKE '%/' || ?"), (kind, leaf)
+                    ).fetchall()
+        spans: list[tuple[int, int, str]] = []
+        for name, start, end in rows:
+            text = str(name or "").strip()
+            if not text or _is_noise_name_sql(text):
+                continue
+            lo, hi = int(start or 0), int(end or 0)
+            if lo <= 0 or hi < lo:
+                continue
+            spans.append((lo, hi, text))
+        spans.sort(key=lambda item: (item[0], item[1] - item[0]))
+        self._branch_index_cache[path] = spans
+        return spans
+
+    _TYPE_SPAN_SQL = """
+        SELECT name, line_start, line_end
+        FROM entity
+        WHERE kind = ?
+          AND IFNULL(line_start, 0) > 0
+          AND IFNULL(line_end, 0) >= line_start
+          AND file {match}
+    """
+
+    def _type_spans(self, file: str) -> list[tuple[int, int, str]]:
+        """TYPE spans in one file, innermost last, so a member can name its owner."""
+        path = str(file or "")
+        if not path:
+            return []
+        cached = self._type_span_cache.get(path)
+        if cached is not None:
+            return cached
+        kind = EntityKind.TYPE.value
+        with self._connect() as conn:
+            rows = conn.execute(
+                self._TYPE_SPAN_SQL.format(match="= ?"), (kind, path)
+            ).fetchall()
+            if not rows:
+                leaf = path.replace("\\", "/").rsplit("/", 1)[-1]
+                if leaf:
+                    rows = conn.execute(
+                        self._TYPE_SPAN_SQL.format(match="LIKE '%/' || ?"), (kind, leaf)
+                    ).fetchall()
+        spans: list[tuple[int, int, str]] = []
+        for name, start, end in rows:
+            text = str(name or "").strip()
+            lo, hi = int(start or 0), int(end or 0)
+            if text and lo > 0 and hi >= lo:
+                spans.append((lo, hi, text))
+        spans.sort(key=lambda item: (item[0], item[1] - item[0]))
+        self._type_span_cache[path] = spans
+        return spans
+
+    def owner_of(self, file: str, line: int, data: Any = None) -> str:
+        """Class or struct a member at this location belongs to. '' when free.
+
+        `data.scope` is authoritative when the build filled it, but it is empty
+        for whole headers, so fall back to the innermost enclosing TYPE span.
+        Without an owner, two classes declaring the same member name are one
+        entity to a caller, and `A::x` silently answers about `B::x`.
+        """
+        blob = data if isinstance(data, dict) else _parse_data(data)
+        scope = str((blob or {}).get("scope") or "").strip()
+        if scope:
+            return _last_ident(scope.replace(".", "::"))
+        loc = int(line or 0)
+        if loc <= 0:
+            return ""
+        best = ""
+        best_width = -1
+        for start, end, name in self._type_spans(str(file or "")):
+            if start > loc:
+                break
+            if loc > end:
+                continue
+            width = end - start
+            if best_width < 0 or width < best_width:
+                best, best_width = name, width
+        if best:
+            return best
+        # An out-of-class definition sits outside every class body span, so the
+        # only thing that still names its class is the qualifier on the member
+        # being defined.
+        enclosing = self._enclosing_def(str(file or ""), loc)
+        owner = str((enclosing or {}).get("name") or "").replace(".", "::")
+        if "::" in owner:
+            return _last_ident(owner.rsplit("::", 1)[0])
+        return ""
+
+    def site_guard(self, file: str, line: int) -> str:
+        """Condition under which the code at this location runs. '' when none.
+
+        A cited location without its condition reads as unconditional. That is
+        the difference between "the kernel reads this field" and "the kernel
+        reads this field only on the IS_N_EQUAL path".
+        """
+        return _join_guards(self._branch_guards_at(file, line))
+
+    def _branch_guards_at(self, file: str, line: int) -> list[str]:
+        """Guards enclosing one line, innermost first.
+
+        A branch written on the line itself is skipped: a read inside
+        ``if (x > 0)`` is not conditional on ``x > 0``, it is what decides it.
+        Reporting the site's own condition as its guard inverts the reading.
+        """
+        loc = int(line or 0)
+        if loc <= 0:
+            return []
+        key = (str(file or ""), loc)
+        hit = self._branch_guard_cache.get(key)
+        if hit is not None:
+            return hit
+        spans = self._branch_spans(str(file or ""))
+        found: list[tuple[int, str]] = []
+        seen: set[str] = set()
+        for start, end, name in spans:
+            if start > loc:
+                break
+            if loc > end or name in seen or start == end == loc:
+                continue
+            seen.add(name)
+            found.append((end - start, name))
+        found.sort(key=lambda item: item[0])
+        out = [name for _width, name in found[:3]]
+        self._branch_guard_cache[key] = out
+        return out
+
+    def _state_index(self) -> dict[str, list[dict[str, Any]]]:
+        """Confirmed WRITES/DERIVES sites grouped by file, ordered by line.
+
+        The write site of every field in the product is one unfiltered join;
+        the range predicate lives in ``relation.data`` JSON, so SQL cannot
+        narrow it without decoding all 131k rows anyway. A committed ``.uo``
+        never changes, so the decode happens once per snapshot and a site
+        lookup becomes a bisect.
+        """
+        if self._state_index_cache is not None:
+            return self._state_index_cache
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT r.id, r.data, dst.name AS dst_name, src.name AS src_name
+                FROM relation r
+                JOIN entity dst ON dst.id = r.dst
+                LEFT JOIN entity src ON src.id = r.src
+                WHERE r.kind IN ('WRITES', 'DERIVES')
+                  AND LOWER(IFNULL(r.status, '')) IN ('confirmed', 'extracted', 'verified')
+                """
+            ).fetchall()
+        by_rel = self._guard_by_relation()
+        index: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            name = str(_row_get(row, "dst_name") or "")
+            if not name or _is_noise_name_sql(name):
+                continue
+            data = _parse_data(_row_get(row, "r.data") or _row_get(row, "data"))
+            line = int(data.get("line") or data.get("line_start") or 0)
+            if line <= 0:
+                continue
+            rid = str(_row_get(row, "r.id") or _row_get(row, "id") or "")
+            file = str(data.get("file") or "")
+            # Host def-use stores the assigned expression as the source entity,
+            # not under a `rhs` key; reading only `data` reported every write as
+            # a bare line number.
+            rhs = str(
+                data.get("rhs")
+                or data.get("expression")
+                or _row_get(row, "src_name")
+                or ""
+            ).strip()
+            when = by_rel.get(rid, "")
+            if not when:
+                when = _join_guards(self._branch_guards_at(file, line))
+            index.setdefault(file, []).append(
+                {
+                    "name": name,
+                    "leaf": _last_ident(name).lower(),
+                    "line": line,
+                    "rhs": rhs,
+                    "when": when,
+                    "writer": str(data.get("function") or ""),
+                }
+            )
+        for sites in index.values():
+            sites.sort(key=lambda item: item["line"])
+        self._state_index_cache = index
+        return index
+
+    def site_write_facts(self, file: str, line: int, name: str = "") -> dict[str, Any]:
+        """What the graph records about the write at one location.
+
+        Attribute-carried site lists (``producer_sites`` and friends) hold only
+        file/line, so a symbol card could cite three writes without saying what
+        any of them assigned. The relation index knows.
+        """
+        loc = int(line or 0)
+        if loc <= 0:
+            return {}
+        want = _last_ident(str(name or "").replace(".", "::")).lower()
+        index = self._state_index()
+        for key in self._state_files_for(file):
+            sites = index.get(key) or []
+            left = bisect_left(sites, loc, key=lambda item: item["line"])
+            right = bisect_right(sites, loc, key=lambda item: item["line"])
+            for item in sites[left:right]:
+                if want and item["leaf"] != want:
+                    continue
+                return {
+                    "rhs": item["rhs"],
+                    "when": item["when"],
+                    "function": item["writer"] or self._enclosing_name(file, loc),
+                }
+        enclosing = self._enclosing_name(file, loc)
+        return {"function": enclosing} if enclosing else {}
+
+    def _enclosing_name(self, file: str, line: int) -> str:
+        """Function a cited line sits in. '' when the graph has no span for it."""
+        enclosing = self._enclosing_def(file, line)
+        return _last_ident(str((enclosing or {}).get("name") or ""))
+
+    def _operation_index(self) -> dict[str, list[tuple[int, str, str]]]:
+        """Classified kernel operations per file, ordered by line.
+
+        Extraction labels every call site with what it does to the pipeline --
+        ``sync_signal``, ``queue_dequeue``, ``memory_transfer``, ``reg_load``.
+        That is the answer to "what does this block actually do", and nothing
+        read it back.
+        """
+        if self._operation_index_cache is not None:
+            return self._operation_index_cache
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT file, line_start, name, data FROM entity "
+                "WHERE kind = ? AND IFNULL(line_start, 0) > 0",
+                (EntityKind.OPERATION.value,),
+            ).fetchall()
+        index: dict[str, list[tuple[int, str, str]]] = {}
+        for file, line, name, raw in rows:
+            data = _parse_data(raw)
+            category = str(data.get("category") or "").strip()
+            if not category or category.upper() == "UNKNOWN":
+                continue
+            callee = str(data.get("callee") or name or "")
+            index.setdefault(str(file or ""), []).append(
+                (int(line or 0), category, callee)
+            )
+        for rows_for_file in index.values():
+            rows_for_file.sort(key=lambda item: item[0])
+        self._operation_index_cache = index
+        return index
+
+    def _operations_in_span(
+        self, file: str, start: int, end: int
+    ) -> list[dict[str, Any]]:
+        """Operation categories inside one source unit, most frequent first."""
+        lo, hi = int(start or 0), int(end or 0)
+        if lo <= 0 or hi < lo:
+            return []
+        index = self._operation_index()
+        tally: Counter[str] = Counter()
+        # A category count is a sum over unlike calls: `sync_signal x12` covered
+        # eight SetFlag, three FetchEventID and one GetTPipePtr, and a reader
+        # after the flag count had to derive it from the body. Keep the split.
+        per_callee: dict[str, Counter[str]] = {}
+        # Keyed by the operation index's own files: a callee can sit in a file
+        # that records no writes at all, and matching against the write index
+        # silently dropped every such callee.
+        for key in self._index_files_for(index, file):
+            rows = index.get(key) or []
+            left = bisect_left(rows, lo, key=lambda item: item[0])
+            right = bisect_right(rows, hi, key=lambda item: item[0])
+            for _line, category, callee in rows[left:right]:
+                tally[category] += 1
+                if callee:
+                    per_callee.setdefault(category, Counter())[callee] += 1
+        out: list[dict[str, Any]] = []
+        for category, count in tally.most_common(8):
+            split = per_callee.get(category) or Counter()
+            row: dict[str, Any] = {"category": category, "count": count}
+            # `callees` is the same names without their counts. Carrying both
+            # spends budget that the card pays for out of a neighbour list.
+            if split:
+                row["by_callee"] = [
+                    {"name": name, "count": n} for name, n in split.most_common(4)
+                ]
+            out.append(row)
+        return out
+
+    def _delegated_operations(
+        self, entity_id: str, *, limit: int = 12
+    ) -> list[dict[str, Any]]:
+        """Pipeline profile of what this function calls, one hop out.
+
+        A dispatcher that delegates its real work reads as almost empty when
+        only its own body is classified; the callees carry the operations, and
+        the graph already knows who they are.
+        """
+        if not entity_id:
+            return []
+        kinds = tuple(_DEF_CARD_KINDS)
+        ph = ",".join("?" for _ in kinds)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT DISTINCT dst.name, dst.file, dst.line_start, dst.line_end
+                FROM relation r
+                JOIN entity dst ON dst.id = r.dst
+                WHERE r.src = ?
+                  AND r.kind = 'CALLS'
+                  AND LOWER(IFNULL(r.status, '')) IN ('confirmed', 'extracted', 'verified')
+                  AND dst.kind IN ({ph})
+                  AND IFNULL(dst.line_start, 0) > 0
+                  AND IFNULL(dst.line_end, 0) > dst.line_start
+                LIMIT ?
+                """,
+                (entity_id, *kinds, int(limit)),
+            ).fetchall()
+        tally: Counter[str] = Counter()
+        via: dict[str, list[str]] = {}
+        for name, file, start, end in rows:
+            for row in self._operations_in_span(str(file or ""), int(start or 0), int(end or 0)):
+                category = str(row.get("category") or "")
+                tally[category] += int(row.get("count") or 0)
+                bucket = via.setdefault(category, [])
+                leaf = _last_ident(str(name or ""))
+                if leaf and leaf not in bucket and len(bucket) < 3:
+                    bucket.append(leaf)
+        return [
+            {"category": category, "count": count, "callees": via.get(category, [])}
+            for category, count in tally.most_common(8)
+        ]
+
+    def _index_files_for(self, index: dict[str, Any], file: str) -> list[str]:
+        """Keys of `index` that name the same file as `file`."""
+        needle = str(file or "")
+        cache_key = (id(index), needle)
+        hit = self._index_files_cache.get(cache_key)
+        if hit is not None:
+            return hit
+        keys = [key for key in index if not key or _file_same(key, needle)]
+        self._index_files_cache[cache_key] = keys
+        return keys
+
+    def _state_files_for(self, file: str) -> list[str]:
+        """Write-index keys that name the same file as `file`."""
+        needle = str(file or "")
+        hit = self._state_files_cache.get(needle)
+        if hit is not None:
+            return hit
+        keys = self._index_files_for(self._state_index(), needle)
+        self._state_files_cache[needle] = keys
+        return keys
+
     def _state_changes_in_span(
         self,
         file: str,
@@ -6934,78 +8288,341 @@ class UoSqlQuery:
         if lo <= 0 or hi < lo:
             return []
         want = _last_ident(str(highlight or "").replace(".", "::")).lower()
+        index = self._state_index()
         writes: list[dict[str, Any]] = []
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT r.id, r.kind, r.src, r.dst, r.data, r.status,
-                       dst.name AS dst_name, dst.kind AS dst_kind,
-                       src.name AS src_name
-                FROM relation r
-                JOIN entity dst ON dst.id = r.dst
-                LEFT JOIN entity src ON src.id = r.src
-                WHERE r.kind IN ('WRITES', 'DERIVES')
-                  AND LOWER(IFNULL(r.status, '')) IN ('confirmed', 'extracted', 'verified')
-                """
-            ).fetchall()
-            guards = conn.execute(
-                """
-                SELECT r.src, r.data, e.name AS guard_name, e.line_start
-                FROM relation r
-                JOIN entity e ON e.id = r.dst
-                WHERE r.kind = 'GUARDED_BY'
-                  AND LOWER(IFNULL(r.status, '')) IN ('confirmed', 'extracted', 'verified')
-                """
-            ).fetchall()
-        by_rel: dict[str, list[str]] = {}
-        for row in guards:
-            name = str(_row_get(row, "guard_name") or "").strip()
-            if not name or _is_noise_name_sql(name):
-                continue
-            src = str(_row_get(row, "r.src") or _row_get(row, "src") or "")
-            if src:
-                by_rel.setdefault(src, []).append(name)
-        for row in rows:
-            data = _parse_data(_row_get(row, "r.data") or _row_get(row, "data"))
-            path = str(data.get("file") or "")
-            line = int(data.get("line") or data.get("line_start") or 0)
-            if line < lo or line > hi:
-                continue
-            if path and not _file_same(path, file):
-                continue
-            name = str(_row_get(row, "dst_name") or "")
-            if not name or _is_noise_name_sql(name):
-                continue
-            if want and _last_ident(name).lower() != want:
-                continue
-            rid = str(_row_get(row, "r.id") or _row_get(row, "id") or "")
-            when = ""
-            for cand in by_rel.get(rid, []):
-                if cand:
-                    when = cand
-                    break
-            writes.append(
-                {
-                    "name": name,
-                    "line": line,
-                    "rhs": str(data.get("rhs") or data.get("expression") or "").strip(),
-                    "when": when,
-                    "writer": str(_row_get(row, "src_name") or ""),
-                }
-            )
+        for key in self._state_files_for(file):
+            sites = index.get(key) or []
+            left = bisect_left(sites, lo, key=lambda item: item["line"])
+            right = bisect_right(sites, hi, key=lambda item: item["line"])
+            for item in sites[left:right]:
+                if want and item["leaf"] != want:
+                    continue
+                writes.append(item)
+        writes.sort(key=lambda item: item["line"])
         grouped: dict[str, list[dict[str, Any]]] = {}
         order: list[str] = []
         seen: set[tuple[str, int, str]] = set()
         for item in writes:
-            key = (item["name"], int(item["line"]), str(item.get("rhs") or ""))
-            if key in seen:
+            key3 = (item["name"], int(item["line"]), str(item.get("rhs") or ""))
+            if key3 in seen:
                 continue
-            seen.add(key)
+            seen.add(key3)
             if item["name"] not in grouped:
                 grouped[item["name"]] = []
                 order.append(item["name"])
-            grouped[item["name"]].append(item)
+            grouped[item["name"]].append(
+                {
+                    "name": item["name"],
+                    "line": item["line"],
+                    "rhs": item["rhs"],
+                    "when": item["when"],
+                    "writer": item["writer"],
+                }
+            )
         return [{"name": name, "sites": grouped[name]} for name in order]
+
+    def _tiling_data_fields(self, owner: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        """Per-field host→kernel map for one TilingData struct.
+
+        A TilingData type is the ABI between host and kernel, so the question
+        asked of it is always "who fills each field and who reads it". Resolving
+        the struct returned only its declaration, which is the one thing the
+        source already shows.
+        """
+        name = _last_ident(str(owner or ""))
+        if not name:
+            return []
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, name, line_start, data FROM entity "
+                "WHERE kind = ? ORDER BY line_start",
+                (EntityKind.TILING_FIELD.value,),
+            ).fetchall()
+        def _cites(value: Any, cap: int) -> list[str]:
+            out_cites: list[str] = []
+            for site in value or []:
+                if not isinstance(site, dict):
+                    continue
+                fn = _last_ident(str(site.get("function") or ""))
+                site_line = int(site.get("line") or site.get("line_start") or 0)
+                cite = f"{fn}:{site_line}" if fn and site_line else (fn or str(site_line or ""))
+                if cite and cite not in out_cites:
+                    out_cites.append(cite)
+                if len(out_cites) >= cap:
+                    break
+            return out_cites
+
+        out: list[dict[str, Any]] = []
+        for eid, field, line, raw in rows:
+            data = _parse_data(raw)
+            if _last_ident(str(data.get("owner") or "")) != name:
+                continue
+            writes = _cites(data.get("value_defining_sites"), 3)
+            transport = _cites(data.get("host_writer_sites"), 2)
+            out.append(
+                {
+                    "name": str(field or ""),
+                    "line": int(line or 0),
+                    "writes": writes,
+                    "transport": transport,
+                    "readers": self._field_reader_names(str(eid or "")),
+                }
+            )
+            if len(out) >= int(limit):
+                break
+        return out
+
+    def _field_reader_names(self, entity_id: str, *, limit: int = 3) -> list[str]:
+        if not entity_id:
+            return []
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT src.name FROM relation r
+                JOIN entity src ON src.id = r.src
+                WHERE r.dst = ? AND r.kind = 'READS'
+                  AND src.kind IN ('METHOD', 'FUNCTION', 'KERNEL')
+                  AND LOWER(IFNULL(r.status, '')) IN ('confirmed', 'extracted', 'verified')
+                LIMIT ?
+                """,
+                (entity_id, int(limit) * 3),
+            ).fetchall()
+        out: list[str] = []
+        for (name,) in rows:
+            leaf = _last_ident(str(name or ""))
+            if leaf and leaf not in out and not _is_noise_name_sql(str(name or "")):
+                out.append(leaf)
+            if len(out) >= int(limit):
+                break
+        return out
+
+    def _allocation_index(self) -> dict[str, list[dict[str, Any]]]:
+        """Where each buffer/queue is given its memory, keyed by the name passed.
+
+        ``InitBuffer(inQueuePing, 1, SIZE)`` is the declaration of how much UB a
+        queue owns; the card only cited the later ``AllocTensor``, which is
+        where a tile is taken out of it. Those are different questions.
+        """
+        if self._alloc_index_cache is not None:
+            return self._alloc_index_cache
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT file, line_start, data FROM entity WHERE kind = ?",
+                (EntityKind.OPERATION.value,),
+            ).fetchall()
+        index: dict[str, list[dict[str, Any]]] = {}
+        for file, line, raw in rows:
+            data = _parse_data(raw)
+            if str(data.get("category") or "") not in {"buffer_init", "memory_init"}:
+                continue
+            args = data.get("args")
+            if isinstance(args, str):
+                args = [args]
+            args = [str(a) for a in (args or []) if str(a or "").strip()]
+            if not args:
+                continue
+            target = _last_ident(args[0])
+            if not target:
+                continue
+            index.setdefault(target, []).append(
+                {
+                    "callee": str(data.get("callee") or ""),
+                    "file": _norm_file(str(file or "")),
+                    "line": int(line or 0),
+                    "size": args[-1] if len(args) > 1 else "",
+                }
+            )
+        for sites in index.values():
+            sites.sort(key=lambda row: int(row.get("line") or 0))
+        self._alloc_index_cache = index
+        return index
+
+    def allocation_sites(self, name: str) -> list[dict[str, Any]]:
+        leaf = _last_ident(str(name or ""))
+        if not leaf:
+            return []
+        return list(self._allocation_index().get(leaf) or [])[:4]
+
+    def tier_template_parameter(self, file: str, line: int) -> tuple[str, str] | None:
+        """The template parameter the declaration at *file:line* takes its tier from.
+
+        A member of a class template gets its memory space from the enclosing
+        ``template <...>``, so the declaration alone reads as tier-less. Both
+        halves are in the snapshot, so this is a read of the source rather
+        than an inference from it.
+        """
+        from ascendc_codemap_mcp.engine.semantics.ascendc_storage import (
+            tier_template_parameter,
+        )
+
+        want = int(line or 0)
+        if not file or want <= 0:
+            return None
+        with self._connect() as conn:
+            path = _snapshot_path_for(conn, str(file))
+            body = _snapshot_file_lines(conn, path)
+        if not body:
+            return None
+        text = {ln: src for ln, src in body}
+        decl = text.get(want, "")
+        if "<" not in decl:
+            return None
+        header = _enclosing_template_header(text, want)
+        return tier_template_parameter(decl, header) if header else None
+
+    def _resource_facts(
+        self, kind: str, data: dict[str, Any], file: str, line: int
+    ) -> list[tuple[str, Any]]:
+        """Identity facts, naming the tier parameter when the declaration has one."""
+        from ascendc_codemap_mcp.engine.query.bundle import _resource_identity
+
+        parametric = None
+        if str(data.get("memory_space") or "").upper() == "UNKNOWN":
+            parametric = self.tier_template_parameter(file, line)
+        return _resource_identity(kind, data, parametric_tier=parametric)
+
+    def _unit_resources(self, file: str, start: int, end: int) -> list[dict[str, Any]]:
+        """Registers, buffers, queues and events declared inside this unit.
+
+        The same entity answers with its class and memory space when asked by
+        name, and with nothing but its kind when asked by file+line. Reading a
+        VF body and being told only ``REGISTER vregSrc`` is the version that
+        sends you back for another call.
+        """
+        lo, hi = int(start or 0), int(end or 0)
+        if not file or lo <= 0 or hi < lo:
+            return []
+        kinds = (
+            EntityKind.REGISTER.value,
+            EntityKind.BUFFER.value,
+            EntityKind.QUEUE.value,
+            EntityKind.EVENT.value,
+            EntityKind.PIPE.value,
+        )
+        ph = ",".join("?" for _ in kinds)
+        leaf = str(file or "").replace("\\", "/").rsplit("/", 1)[-1]
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT kind, name, line_start, data FROM entity
+                WHERE kind IN ({ph})
+                  AND line_start BETWEEN ? AND ?
+                  AND (
+                        REPLACE(IFNULL(file, ''), '\\', '/') = ?
+                     OR REPLACE(IFNULL(file, ''), '\\', '/') LIKE '%/' || ?
+                  )
+                ORDER BY line_start
+                """,
+                (*kinds, lo, hi, str(file).replace("\\", "/"), leaf),
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for kind, name, line, raw in rows:
+            key = (str(kind or ""), str(name or ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            facts = self._resource_facts(
+                str(kind or ""), _parse_data(raw), file, int(line or 0)
+            )
+            if not facts:
+                continue
+            out.append(
+                {
+                    "kind": str(kind or ""),
+                    "name": str(name or ""),
+                    "line": int(line or 0),
+                    "facts": facts,
+                }
+            )
+        out.extend(self._resources_used_in(file, lo, hi, seen))
+        out.sort(key=lambda r: int(r.get("line") or 0))
+        return out[:24]
+
+    def _resources_used_in(
+        self, file: str, lo: int, hi: int, seen: set[tuple[str, str]]
+    ) -> list[dict[str, Any]]:
+        """Resources this span touches, wherever the entity happens to be filed.
+
+        Two templates declaring the same event name share one entity, filed at
+        whichever was indexed first. Listing only entities declared inside the
+        span gave the second template its buffers and none of its events,
+        though it sets and waits the same four.
+        """
+        from ascendc_codemap_mcp.engine.query.bundle import _resource_identity
+
+        index = self._event_site_index()
+        out: list[dict[str, Any]] = []
+        for key in self._index_files_for(index, file):
+            sites = index.get(key) or []
+            left = bisect_left(sites, lo, key=lambda item: item[0])
+            right = bisect_right(sites, hi, key=lambda item: item[0])
+            for site, kind, name, raw in sites[left:right]:
+                ident = (str(kind or ""), str(name or ""))
+                if ident in seen:
+                    continue
+                facts = _resource_identity(str(kind or ""), _parse_data(raw))
+                if not facts:
+                    continue
+                seen.add(ident)
+                out.append(
+                    {
+                        "kind": str(kind or ""),
+                        "name": str(name or ""),
+                        "line": int(site or 0),
+                        "facts": facts,
+                    }
+                )
+        out.sort(key=lambda row: int(row.get("line") or 0))
+        return out
+
+    def _event_site_index(self) -> dict[str, list[tuple[int, str, str, str]]]:
+        """Every place an event is set or waited, per file, ordered by line.
+
+        The site's file and line live inside the edge's JSON, so selecting on
+        them scanned all 131k relations to reach the 150 that are sync edges --
+        80ms on a lookup that runs on every card. Read them once instead.
+        """
+        if self._event_site_index_cache is not None:
+            return self._event_site_index_cache
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT r.data, e.kind, e.name, e.data
+                FROM relation r
+                JOIN entity e ON e.id IN (r.src, r.dst) AND e.kind = 'EVENT'
+                WHERE r.kind IN ('SIGNALS', 'AWAITS')
+                """
+            ).fetchall()
+        index: dict[str, list[tuple[int, str, str, str]]] = {}
+        for raw_edge, kind, name, raw_entity in rows:
+            edge = _parse_data(raw_edge)
+            line = int(edge.get("line") or 0)
+            if line <= 0:
+                continue
+            path = _strip_dot_slash(str(edge.get("file") or "").replace("\\", "/"))
+            index.setdefault(path, []).append((line, str(kind or ""), str(name or ""), raw_entity))
+        for bucket in index.values():
+            bucket.sort(key=lambda item: item[0])
+        self._event_site_index_cache = index
+        return index
+
+    def _definition_starts_here(
+        self, file: str, hit: dict[str, Any], line: int
+    ) -> bool:
+        """False when a definition only *looks* like it starts on this line.
+
+        An over-long recorded start makes the next function claim a line that
+        belongs to the previous one, which then shows up as an unrelated symbol
+        sitting at the site.
+        """
+        if str(hit.get("kind") or "").upper() not in _DEF_CARD_KINDS:
+            return True
+        start = int(hit.get("line_start") or hit.get("line") or 0)
+        end = int(hit.get("line_end") or 0)
+        if start <= 0 or end <= start:
+            return True
+        return self._clamp_definition_start(file, start, end) <= int(line or 0)
 
     def query_site_unit(
         self,
@@ -7029,6 +8646,10 @@ class UoSqlQuery:
         enclosing = self._enclosing_def(path, loc)
         fn_start = int((enclosing or {}).get("line_start") or 0)
         fn_end = int((enclosing or {}).get("line_end") or 0)
+        if fn_start > 0 and fn_end >= fn_start:
+            fn_start = max(fn_start, self._clamp_definition_start(path, fn_start, fn_end))
+            if loc < fn_start:
+                fn_start = int((enclosing or {}).get("line_start") or fn_start)
         missing_snapshot = False
         if enclosing and fn_start > 0 and fn_end >= fn_start:
             fn_len = fn_end - fn_start + 1
@@ -7073,9 +8694,15 @@ class UoSqlQuery:
             hit
             for hit in seeds
             if int(hit.get("line") or hit.get("line_start") or 0) == loc
+            and self._definition_starts_here(path, hit, loc)
         ]
         compact = [_compact_around_hit(hit, snippet=False) for hit in (site_hits or seeds[:1])]
-        enc = enclosing or (compact[0] if compact else {})
+        # A line inside a struct has no enclosing *function*, and the card then
+        # opened with a bare file:range. Naming the type it belongs to is the
+        # same question answered one kind up.
+        enc = enclosing or self._enclosing_type(path, loc, span_start=unit_start) or (
+            compact[0] if compact else {}
+        )
         state = (
             []
             if missing_snapshot
@@ -7113,13 +8740,28 @@ class UoSqlQuery:
             "truncated": False,
             "highlight": str(highlight or ""),
         }
+        payload["operations"] = self._operations_in_span(path, unit_start, unit_end)
+        payload["unit_resources"] = self._unit_resources(path, unit_start, unit_end)
         payload["field_bundles"] = self._unit_field_bundles(payload)
         if missing_snapshot:
-            payload["hint"] = (
-                "this file is not in snapshot; resolve a search locator "
-                "or Read the workspace file"
-            )
-            payload["error"] = "not_in_snapshot"
+            with self._connect() as conn:
+                span = _snapshot_line_range(conn, path)
+            if span:
+                # An indexed file asked for a line past its end was reported as
+                # an absent file. A reader told the file is missing stops using
+                # file+line; told the line is, they pass a different one.
+                payload["hint"] = (
+                    f"{path} is in the snapshot but ends at line {span[1]}; "
+                    f"line {loc} is past it; check the file, or resolve a "
+                    "search locator"
+                )
+                payload["error"] = "line_out_of_range"
+            else:
+                payload["hint"] = (
+                    "this file is not in snapshot; resolve a search locator "
+                    "or Read the workspace file"
+                )
+                payload["error"] = "not_in_snapshot"
         else:
             attach_query_hints(payload, path, count=int(payload.get("count") or 0), mode="around")
         return _fit_payload(payload)
@@ -7232,6 +8874,11 @@ class UoSqlQuery:
         ident = str(name or "").rsplit("::", 1)[-1].strip()
         if not ident:
             return 0
+        # `$.callee` lives in JSON, so this cannot be index-only; a session
+        # asks the same idents repeatedly.
+        cached = self._call_site_count_cache.get(ident)
+        if cached is not None:
+            return cached
         with self._connect() as conn:
             row = conn.execute(
                 """
@@ -7243,7 +8890,10 @@ class UoSqlQuery:
                 """,
                 (EntityKind.OPERATION.value, ident, ident, ident),
             ).fetchone()
-        return int(row[0] or 0) if row else 0
+        total = int(row[0] or 0) if row else 0
+        if len(self._call_site_count_cache) < 4096:
+            self._call_site_count_cache[ident] = total
+        return total
 
     def list_call_sites(
         self, name: str, *, limit: int = 8
@@ -7580,7 +9230,7 @@ class UoSqlQuery:
     ) -> tuple[list[dict[str, Any]], int, dict[str, Any]]:
         from ascendc_codemap_mcp.engine.query.rg import (
             compile_search,
-            is_pure_literal,
+            fts_prefilter,
             line_matches,
             path_matches,
             rank_hit,
@@ -7592,10 +9242,12 @@ class UoSqlQuery:
         start = max(0, int(offset or 0))
         arch = str(self._architecture or "")
         rows: list[tuple[Any, ...]] = []
-        fts_q = _fts_match_query(phrase) if is_pure_literal(phrase) and len(phrase) >= 3 else ""
-        if has_source_line(conn):
-            rows = conn.execute("SELECT path, line, text FROM source_line").fetchall()
-        elif has_source_fts(conn) and fts_q:
+        # The trigram index only stands in for the scan when it provably returns
+        # a superset; `fts_prefilter` returns '' whenever it cannot prove that,
+        # and the regex below is still what decides a hit either way.
+        fts_q = fts_prefilter(phrase)
+        scanned = False
+        if fts_q and has_source_fts(conn):
             try:
                 rows = conn.execute(
                     "SELECT sl.path, sl.line, sl.text "
@@ -7603,8 +9255,12 @@ class UoSqlQuery:
                     "WHERE f.source_fts MATCH ?",
                     (fts_q,),
                 ).fetchall()
+                scanned = True
             except sqlite3.OperationalError:
                 rows = []
+                scanned = False
+        if not scanned and has_source_line(conn):
+            rows = conn.execute("SELECT path, line, text FROM source_line").fetchall()
         matched: list[tuple[str, int, str]] = []
         for path, line, text in rows:
             if not path_matches(str(path or ""), file_filter):
@@ -7624,6 +9280,9 @@ class UoSqlQuery:
         leaf = _last_ident(str(ident or "").replace(".", "::"))
         if not leaf:
             return {}
+        cached = self._field_ids_cache.get(leaf)
+        if cached is not None:
+            return {kind: list(ids) for kind, ids in cached.items()}
         kinds = (
             EntityKind.TILING_FIELD.value,
             EntityKind.FIELD.value,
@@ -7670,6 +9329,7 @@ class UoSqlQuery:
         for kind, items in grouped.items():
             attributed = [eid for eid, ok in items if ok]
             buckets[kind] = attributed or [eid for eid, _ in items]
+        self._field_ids_cache[leaf] = {kind: list(ids) for kind, ids in buckets.items()}
         return buckets
 
     def _flatten_field_ids(self, ident: str) -> list[str]:
@@ -7707,26 +9367,19 @@ class UoSqlQuery:
                 """,
                 fids,
             ).fetchall()
-            guards = conn.execute(
-                """
-                SELECT r.src, r.data, e.name, e.line_start
-                FROM relation r
-                JOIN entity e ON e.id = r.dst
-                WHERE r.kind = 'GUARDED_BY'
-                  AND LOWER(IFNULL(r.status, '')) IN ('confirmed', 'extracted', 'verified')
-                """
-            ).fetchall()
-        by_rel: dict[str, str] = {}
-        for row in guards:
-            gname = str(_row_get(row, "e.name") or _row_get(row, "name") or "")
-            if not gname or _is_noise_name_sql(gname):
-                continue
-            src = str(_row_get(row, "r.src") or _row_get(row, "src") or "")
-            if src:
-                by_rel[src] = gname
+        by_rel = self._guard_by_relation()
         seen: set[tuple[str, int, str]] = set()
         for row in rows:
             data = _parse_data(_row_get(row, "r.data") or _row_get(row, "data"))
+            # A tiling key depends on the operator inputs transitively, and the
+            # graph records that as a direct edge from every INPUT root. Listing
+            # them as assignments claims `query` and `head_num` are written into
+            # the key, which is not what the source says.
+            if str(_row_get(row, "src.kind") or _row_get(row, "kind") or "").upper() in {
+                EntityKind.INPUT.value,
+                EntityKind.OUTPUT.value,
+            }:
+                continue
             writer = str(_row_get(row, "src.name") or _row_get(row, "name") or "")
             line = int(data.get("line") or _row_get(row, "src.line_start") or _row_get(row, "line_start") or 0)
             file = str(data.get("file") or _row_get(row, "src.file") or _row_get(row, "file") or "")
@@ -7817,6 +9470,7 @@ class UoSqlQuery:
                 WHERE r.dst IN ({ph})
                   AND r.kind IN ('WRITES', 'DERIVES')
                   AND LOWER(IFNULL(r.status, '')) IN ('confirmed', 'extracted', 'verified')
+                  AND src.kind NOT IN ('INPUT', 'OUTPUT')
                 """,
                 fids,
             ).fetchall()
@@ -7904,7 +9558,7 @@ class UoSqlQuery:
                 """
                 SELECT r.status, r.src, r.dst, r.data, r.kind AS r_kind,
                        s.kind AS s_kind, s.name AS s_name, s.file AS s_file,
-                       s.line_start AS s_line, s.data AS s_data,
+                       s.line_start AS s_line, s.line_end AS s_end, s.data AS s_data,
                        d.kind AS d_kind, d.name AS d_name, d.file AS d_file,
                        d.line_start AS d_line, d.data AS d_data
                 FROM relation r
@@ -7937,14 +9591,23 @@ class UoSqlQuery:
                 if guard:
                     item["guard"] = guard
                 out.append(item)
-            if not out and _located(file, line):
+            if out:
+                return out
+            # The relation records where the call is written; the entity records
+            # where the caller is declared. Falling straight through to the
+            # entity printed "Called by Entry::Run @50" for a call on line 61,
+            # and sent the reader to the signature instead of the site.
+            rel_file = str(rel_data.get("file") or "")
+            rel_line = int(rel_data.get("line") or 0)
+            if _located(rel_file, rel_line):
+                out.append({"file": _norm_file(rel_file), "line": rel_line})
+            elif _located(file, line):
                 out.append({"file": _norm_file(file), "line": int(line or 0)})
             return out
 
         outgoing: dict[str, dict[str, Any]] = {}
         incoming: dict[str, dict[str, Any]] = {}
         possible: dict[str, dict[str, Any]] = {}
-        branch_whens: list[str] = []
 
         def _accumulate(
             store: dict[str, dict[str, Any]],
@@ -7955,6 +9618,7 @@ class UoSqlQuery:
             file: str,
             line: int,
             rel_data: dict[str, Any],
+            end: int = 0,
         ) -> None:
             if not name or _is_noise_name_sql(name):
                 return
@@ -7976,6 +9640,23 @@ class UoSqlQuery:
                 key = (str(site.get("file") or ""), int(site.get("line") or 0))
                 if any((str(x.get("file") or ""), int(x.get("line") or 0)) == key for x in sites):
                     continue
+                if (
+                    end > int(line or 0) > 0
+                    and kind != EntityKind.MACRO.value
+                    and _file_same(str(site.get("file") or ""), file)
+                    and not (int(line or 0) <= key[1] <= end)
+                ):
+                    # The site has to lie inside the body of the function being
+                    # credited with it. A call on line 773 attributed to a
+                    # function that ends on 763 names a caller that cannot be
+                    # one, and the reader who opens the file finds a stranger.
+                    #
+                    # Only a real span can say that, so an entity whose end
+                    # equals its start is treated as unmeasured rather than as
+                    # one line long. A macro is exempt outright: its sites are
+                    # the expansions, which is the whole point of listing them.
+                    item["rejected"] = int(item.get("rejected") or 0) + 1
+                    continue
                 sites.append(site)
                 guard = str(site.get("guard") or "").strip()
                 if guard and guard not in item["when"]:
@@ -7993,6 +9674,7 @@ class UoSqlQuery:
             s_name = str(_row_get(row, "s_name") or "")
             s_file = str(_row_get(row, "s_file") or "")
             s_line = int(_row_get(row, "s_line") or 0)
+            s_end = int(_row_get(row, "s_end") or 0)
             d_kind = str(_row_get(row, "d_kind") or "")
             d_name = str(_row_get(row, "d_name") or "")
             d_file = str(_row_get(row, "d_file") or "")
@@ -8023,14 +9705,15 @@ class UoSqlQuery:
                 if not _located(s_file, s_line) and not src_sites:
                     continue
                 if s_kind == EntityKind.BRANCH.value:
-                    if confirmed:
-                        gname = str(s_name or "").strip()
-                        for site in src_sites:
-                            guard = str(site.get("guard") or "").strip()
-                            if guard and guard not in branch_whens:
-                                branch_whens.append(guard)
-                        if gname and gname not in branch_whens and not src_sites:
-                            branch_whens.append(gname)
+                    # A branch is a condition on a call, not the thing making
+                    # it. Its guard reaches the callers through the per-site
+                    # lookup below, which knows which sites it actually encloses.
+                    continue
+                if not confirmed and s_kind not in _CALLER_KINDS:
+                    # A queue member or a TPipe cannot call anything. Offering
+                    # one as a candidate caller sends the reader to a line that
+                    # holds a declaration, and the guess costs more than the
+                    # empty list it replaced.
                     continue
                 target = incoming if confirmed else possible
                 _accumulate(
@@ -8040,21 +9723,65 @@ class UoSqlQuery:
                     name=s_name,
                     file=s_file,
                     line=s_line,
+                    end=s_end,
                     rel_data=rel_data,
                 )
 
-        if branch_whens:
-            for item in incoming.values():
-                for guard in branch_whens:
-                    if guard not in item["when"]:
-                        item["when"].append(guard)
+        # A caller whose every site was rejected as out-of-body has nothing
+        # left to point at, and keeping the row would fall back to printing its
+        # declaration line — which is how the bad site got in front of a reader
+        # in the first place, just with a different number on it.
+        for store in (outgoing, incoming, possible):
+            for leaf in [
+                key
+                for key, item in store.items()
+                if item.get("rejected") and not item.get("sites")
+            ]:
+                store.pop(leaf, None)
+            for item in store.values():
+                item.pop("rejected", None)
+
+        # Every call site sits under whatever branch encloses that site, so the
+        # condition has to be resolved one site at a time. Appending each guard
+        # seen on any incoming edge to every caller put the `then` condition on
+        # a call living in the matching `else` and stated the opposite of what
+        # the code does. An ambiguous dispatch gets the same treatment: listing
+        # candidates without their condition reads as "any of these, always",
+        # which is the reverse of what a template fork means.
+        for store in (incoming, possible):
+            for item in store.values():
+                for site in item.get("sites") or []:
+                    if not isinstance(site, dict):
+                        continue
+                    found = [str(site.get("guard") or "").strip()]
+                    found.extend(
+                        self._branch_guards_at(
+                            str(site.get("file") or ""), int(site.get("line") or 0)
+                        )
+                    )
+                    kept: list[str] = []
+                    for guard in found:
+                        if guard and guard not in kept:
+                            kept.append(guard)
+                    if not kept:
+                        continue
+                    site["guard"] = _join_guards(kept[:3])
+                    for guard in kept:
+                        if guard not in item["when"]:
+                            item["when"].append(guard)
 
         if not outgoing and not incoming and not possible:
             return None
+        # Carry the totals beside the pages. A list cut to twelve and printed
+        # without saying so is the reason a reader cites "these are all the
+        # callers" from a card that never claimed it.
         return {
             "calls": list(outgoing.values())[:12],
             "called_by": list(incoming.values())[:12],
             "possible_callers": list(possible.values())[:12],
+            "calls_total": len(outgoing),
+            "called_by_total": len(incoming),
+            "possible_callers_total": len(possible),
         }
 
     _UNIT_FIELD_CAP = 3
@@ -8078,22 +9805,70 @@ class UoSqlQuery:
                 found.append(leaf)
         return found
 
+    def _unit_field_relevance(self, payload: dict[str, Any]) -> dict[str, tuple[int, int]]:
+        """Rank fields by what this site does to them, not by how often the
+        enclosing function happens to name them.
+
+        `resolve(file, line)` means "I am looking at this line". Token frequency
+        answers a different question and reliably loses to whatever the function
+        mentions most, so the line's own WRITES / DERIVES targets come first and
+        frequency is only the tie-break of last resort.
+        """
+        loc = int(payload.get("line") or 0)
+        rank: dict[str, tuple[int, int]] = {}
+
+        def offer(name: str, tier: int, distance: int) -> None:
+            leaf = _last_ident(str(name or "").replace(".", "::"))
+            if not leaf or leaf in _FOCUS_SKIP_IDENTS or len(leaf) < 3:
+                return
+            key = (tier, distance)
+            if leaf not in rank or key < rank[leaf]:
+                rank[leaf] = key
+
+        # Tier 0/2: what the graph records as written here, nearest line first.
+        for group in payload.get("state_changes") or []:
+            if not isinstance(group, dict):
+                continue
+            name = str(group.get("name") or "")
+            for site in group.get("sites") or []:
+                if not isinstance(site, dict):
+                    continue
+                line = int(site.get("line") or 0)
+                distance = abs(line - loc) if line and loc else 9999
+                offer(name, 0 if distance == 0 else 2, distance)
+
+        # Tier 1: entities the seed scan anchored to this exact line.
+        for row in payload.get("cards") or payload.get("seeds") or []:
+            if isinstance(row, dict):
+                offer(str(row.get("name") or ""), 1, 0)
+
+        # Tier 1: an explicit highlight is the caller saying what it came for.
+        offer(
+            str(payload.get("highlight") or payload.get("explore_pattern") or ""),
+            1,
+            0,
+        )
+        return rank
+
     def _unit_field_bundles(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         snippet = str(payload.get("snippet") or "")
-        highlight = _last_ident(
-            str(payload.get("highlight") or payload.get("explore_pattern") or "")
-        )
         counts: Counter[str] = Counter()
         for tok in _TOKEN_RE.findall(snippet):
             if tok in _FOCUS_SKIP_IDENTS or len(tok) < 3:
                 continue
             counts[tok] += 1
-        if not counts:
+        relevance = self._unit_field_relevance(payload)
+        candidates = set(counts) | set(relevance)
+        if not candidates:
             return []
-        leaves = self._field_leaves_among(list(counts))
+        leaves = self._field_leaves_among(sorted(candidates))
         ranked = sorted(
             leaves,
-            key=lambda n: (0 if n == highlight else 1, -counts.get(n, 0), n.lower()),
+            key=lambda n: (
+                relevance.get(n, (4, 9999)),
+                -counts.get(n, 0),
+                n.lower(),
+            ),
         )
         from ascendc_codemap_mcp.engine.query.bundle import build_symbol_bundle
 
@@ -8177,6 +9952,42 @@ class UoSqlQuery:
             seed = str(primary.get("name") or "")
         if ":" in seed and any(ch.isdigit() for ch in seed):
             seed = str((cards[0] if cards else {}).get("name") or "")
+        # A definition card and a site card answer the same question about the
+        # same lines; only the site card carried the pipeline profile and the
+        # resources declared there, so asking by name forced a second call by
+        # file+line to get either one.
+        primary_card = cards[0] if cards else {}
+        primary_kind = str(primary_card.get("kind") or "").upper()
+        if primary_kind in _UNIT_SNIPPET_KINDS:
+            span_start = int(primary_card.get("line") or 0)
+            span_end = int(primary_card.get("line_end") or 0)
+            if span_start > 0 and span_end >= span_start:
+                span_file = str(primary_card.get("file") or "")
+                # A class declares its buffers; a function runs a pipeline. Both
+                # are read by name, so neither should need a second call.
+                resources = self._unit_resources(span_file, span_start, span_end)
+                if resources:
+                    payload["unit_resources"] = resources
+                if primary_kind in _DEF_CARD_KINDS:
+                    operations = self._operations_in_span(span_file, span_start, span_end)
+                    if operations:
+                        payload["operations"] = operations
+                    delegated = self._delegated_operations(
+                        str(primary_card.get("id") or primary_card.get("_entity_id") or "")
+                    )
+                    if delegated:
+                        payload["delegated_operations"] = delegated
+        # A TilingData name usually also exists as a plain TYPE; whichever card
+        # ranks first, the ABI question is the same.
+        for card in cards:
+            if str(card.get("kind") or "") in {
+                EntityKind.TILING_DATA.value,
+                EntityKind.TYPE.value,
+            }:
+                fields = self._tiling_data_fields(str(card.get("name") or ""))
+                if fields:
+                    payload["tiling_data_fields"] = fields
+                    break
         if seed:
             from ascendc_codemap_mcp.engine.query.bundle import (
                 attach_entity_projections,
@@ -8225,24 +10036,44 @@ class UoSqlQuery:
                 support = self.compiled_support_for(seed)
                 if support:
                     payload["compiled_support"] = support
+        # Everything above lands after the card was already fitted, so the body
+        # had been cut to make room for a budget these blocks were never charged
+        # against. Re-fit with the whole card present; the order sheds these
+        # first and gives a large function its body back.
+        fitted = _fit_payload(payload)
+        if fitted is not payload:
+            payload.clear()
+            payload.update(fitted)
         return payload
 
     def _confirmed_neighbors(
-        self, entity_id: str, kinds: tuple[str, ...]
+        self, entity_id: str, kinds: tuple[str, ...], *, direction: str = "any"
     ) -> list[tuple[str, str, str, str, int, dict[str, Any], dict[str, Any]]]:
+        """Neighbours across ``kinds``. ``direction`` picks the edge end.
+
+        ``incoming`` keeps edges pointing at the seed, ``outgoing`` those
+        leaving it. A section that names a direction has to filter on one, or
+        it prints callees under a heading that promises callers.
+        """
         if not entity_id or not kinds:
             return []
         ph = ",".join("?" for _ in kinds)
+        if direction == "incoming":
+            where, args = "r.dst = ?", (entity_id, entity_id)
+        elif direction == "outgoing":
+            where, args = "r.src = ?", (entity_id, entity_id)
+        else:
+            where, args = "(r.src = ? OR r.dst = ?)", (entity_id, entity_id, entity_id)
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
                 SELECT r.kind, e.kind, e.name, e.file, e.line_start, e.data, r.data
                 FROM relation r
                 JOIN entity e ON e.id = CASE WHEN r.src = ? THEN r.dst ELSE r.src END
-                WHERE (r.src = ? OR r.dst = ?) AND r.kind IN ({ph})
+                WHERE {where} AND r.kind IN ({ph})
                   AND LOWER(IFNULL(r.status,'')) IN ('confirmed','extracted','verified')
                 """,
-                (entity_id, entity_id, entity_id, *kinds),
+                (*args, *kinds),
             ).fetchall()
         out = []
         for row in rows:
@@ -8339,10 +10170,29 @@ class UoSqlQuery:
         }
 
     def _used_by_facet(self, entity_id: str) -> dict[str, int] | None:
+        """Entities that consume this one, by name.
+
+        Walking these edges undirected put the seed's own callees in the list,
+        so the section read as a caller list with the arrows reversed. Each
+        relation is followed the way it points instead: a caller and a reader
+        arrive at the seed, while data flows away from it to reach its consumer.
+        """
         counts: dict[str, int] = {}
-        for rkind, _ekind, name, _file, _line, _edata, _rdata in self._confirmed_neighbors(
-            entity_id, ("CALLS", "READS", "FLOWS_TO")
-        ):
+        rows = [
+            *(
+                (r[0], r[2])
+                for r in self._confirmed_neighbors(
+                    entity_id, ("CALLS", "READS"), direction="incoming"
+                )
+            ),
+            *(
+                (r[0], r[2])
+                for r in self._confirmed_neighbors(
+                    entity_id, ("FLOWS_TO",), direction="outgoing"
+                )
+            ),
+        ]
+        for rkind, name in rows:
             if rkind not in {"CALLS", "READS", "FLOWS_TO"} or not name:
                 continue
             if _is_noise_name_sql(name):
@@ -8454,6 +10304,169 @@ class UoSqlQuery:
                     return out
         return out
 
+    def _related_search_tokens(
+        self,
+        conn: sqlite3.Connection,
+        phrase: str,
+        *,
+        file_filter: str = "",
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Narrower patterns a zero-hit search could try, with their own counts.
+
+        These are suggestions, never results: each carries the pattern it
+        belongs to so a caller can never mistake one for a hit on `phrase`.
+        """
+        out: list[dict[str, Any]] = []
+        for token in _recovery_tokens(phrase):
+            try:
+                _cards, total, _extra = self._search_regex_lines(
+                    conn, token, file_filter=file_filter, limit=1, offset=0
+                )
+            except Exception:  # noqa: BLE001
+                continue
+            if total > 0:
+                out.append({"pattern": token, "matches": int(total)})
+            if len(out) >= max(1, int(limit)):
+                break
+        out.sort(key=lambda row: (row["matches"], row["pattern"]))
+        return out
+
+    _RESOLVABLE_KINDS = (
+        EntityKind.TILING_FIELD.value,
+        EntityKind.FIELD.value,
+        EntityKind.TILING_KEY.value,
+        EntityKind.TILING_DATA.value,
+        EntityKind.EVENT.value,
+        EntityKind.BUFFER.value,
+        EntityKind.QUEUE.value,
+        EntityKind.REGISTER.value,
+        EntityKind.METHOD.value,
+        EntityKind.FUNCTION.value,
+        EntityKind.KERNEL.value,
+    )
+
+    def _resolvable_symbols(
+        self, phrase: str, cards: list[dict[str, Any]], *, limit: int = 4
+    ) -> list[dict[str, Any]]:
+        """Names in this result that already have a semantic card.
+
+        Search answers "where does this text appear"; the expensive part of a
+        review is then reconstructing the field's writers, guards and consumers
+        by reading each hit. When one of those names is already an entity, the
+        answer is one resolve away -- but nothing in the result said so, so the
+        reading happened anyway.
+
+        A name reached only through a use site -- a base class whose header is
+        outside the tree, a registry method declared elsewhere -- has an entity
+        row but no body to show, so resolving it returns callers and nothing
+        else. Offering it here reads as a promise of the full picture and one
+        reader spent six searches finding out it was not, so require a
+        definition before suggesting the call.
+
+        The body may sit under a different kind than the row matched here:
+        `CrossCoreSetFlag` suggests off a bodyless FUNCTION but resolves to an
+        OPERATION with 122 sites. Ask whether the name has a definition
+        anywhere, not whether this particular row carries one.
+        """
+        seeds: list[str] = []
+        ident = _last_ident(str(phrase or ""))
+        if ident and len(ident) >= 3:
+            seeds.append(ident)
+        for card in cards[:12]:
+            for token in _TOKEN_RE.findall(str(card.get("text") or ""))[:24]:
+                if len(token) >= 4 and token not in _FOCUS_SKIP_IDENTS and token not in seeds:
+                    seeds.append(token)
+        if not seeds:
+            return []
+        wanted = seeds[:40]
+        # Field entities are named by their access path, so an exact-name join
+        # misses the very symbol the caller typed; the leaf index is what makes
+        # `fBaseParams.isBn2MultiBlk` findable from `isBn2MultiBlk`.
+        leaves = [name.lower() for name in wanted]
+        ph_names = ",".join("?" for _ in leaves)
+        ph_kinds = ",".join("?" for _ in self._RESOLVABLE_KINDS)
+        with self._connect() as conn:
+            if self._accel_ready(conn):
+                rows = conn.execute(
+                    f"""
+                    SELECT DISTINCT e.name, e.kind
+                    FROM entity_name_leaf l
+                    JOIN entity e ON e.id = l.entity_id
+                    WHERE l.leaf IN ({ph_names})
+                      AND e.kind IN ({ph_kinds})
+                    """,
+                    (*leaves, *self._RESOLVABLE_KINDS),
+                ).fetchall()
+                bodied = {
+                    str(row[0] or "").lower()
+                    for row in conn.execute(
+                        f"""
+                        SELECT DISTINCT l.leaf
+                        FROM entity_name_leaf l
+                        JOIN entity e ON e.id = l.entity_id
+                        WHERE l.leaf IN ({ph_names})
+                          AND IFNULL(e.file, '') <> ''
+                        """,
+                        leaves,
+                    ).fetchall()
+                }
+            else:
+                rows = conn.execute(
+                    f"""
+                    SELECT name, kind FROM entity
+                    WHERE kind IN ({ph_kinds})
+                      AND name COLLATE NOCASE IN ({ph_names})
+                    """,
+                    (*self._RESOLVABLE_KINDS, *wanted),
+                ).fetchall()
+                bodied = {
+                    _last_ident(str(row[0] or "")).lower()
+                    for row in conn.execute(
+                        f"""
+                        SELECT DISTINCT name FROM entity
+                        WHERE name COLLATE NOCASE IN ({ph_names})
+                          AND IFNULL(file, '') <> ''
+                        """,
+                        wanted,
+                    ).fetchall()
+                }
+        order = {name.lower(): index for index, name in enumerate(wanted)}
+        best: dict[str, set[str]] = {}
+        for name, kind in rows:
+            leaf = _last_ident(str(name or ""))
+            if not leaf or _is_noise_name_sql(str(name or "")):
+                continue
+            if leaf.lower() not in bodied:
+                continue
+            best.setdefault(leaf, set()).add(str(kind or ""))
+        # A suggestion is only worth a call if it is about what was asked and
+        # carries cross-layer facts; a std helper that happened to appear in a
+        # hit line is neither.
+        core = "".join(ch for ch in str(phrase or "").lower() if ch.isalnum())
+        rank = {
+            EntityKind.TILING_FIELD.value: 0,
+            EntityKind.TILING_KEY.value: 0,
+            EntityKind.TILING_DATA.value: 0,
+            EntityKind.FIELD.value: 1,
+            EntityKind.EVENT.value: 1,
+            EntityKind.BUFFER.value: 1,
+            EntityKind.QUEUE.value: 1,
+            EntityKind.REGISTER.value: 1,
+        }
+        out = [
+            {"symbol": leaf, "kinds": sorted(kinds)}
+            for leaf, kinds in best.items()
+        ]
+        out.sort(
+            key=lambda row: (
+                0 if core and core in str(row["symbol"]).lower() else 1,
+                min((rank.get(k, 2) for k in row["kinds"]), default=2),
+                order.get(str(row["symbol"]).lower(), 999),
+            )
+        )
+        return out[: max(1, int(limit))]
+
     def query_search(
         self, plan: Any, *, limit: int = 20, offset: int = 0
     ) -> dict[str, Any]:
@@ -8493,7 +10506,8 @@ class UoSqlQuery:
             }
         kind = str(getattr(plan, "kind", "") or "").strip().upper()
         extra: dict[str, Any] = {}
-        recovered_token = ""
+        related: list[dict[str, Any]] = []
+        file_miss: list[str] | None = None
         with self._connect() as conn:
             symbols: list[dict[str, Any]] = []
             if kind:
@@ -8510,22 +10524,26 @@ class UoSqlQuery:
                     conn, phrase, file_filter=file_filter, limit=cap, offset=start
                 )
                 if total == 0:
-                    for tok in _recovery_tokens(phrase):
-                        cards, total, extra = self._search_regex_lines(
-                            conn, tok, file_filter=file_filter, limit=cap, offset=start
-                        )
-                        if total > 0:
-                            recovered_token = tok
-                            break
-                if total == 0:
+                    # A pattern that matched nothing matched nothing. Widening it
+                    # here would report someone else's hits under the caller's
+                    # pattern, and the caller cannot tell the two apart.
+                    related = self._related_search_tokens(
+                        conn, phrase, file_filter=file_filter
+                    )
                     symbols = self._suggest_lexicon_symbols(
                         conn, phrase, file_filter=file_filter, limit=cap
                     )
+            if total == 0 and file_filter:
+                file_miss = _glob_nearest(conn, file_filter)
         returned = len(cards)
         nxt = start + returned if start + returned < total else None
+        # The rendered answer is the unit grouping, and that is built from every
+        # match rather than from this page. Offering a cursor next to it hands
+        # back the same view under a new offset, which reads as a stalled pager.
+        if nxt is not None and _units_cover_all(extra, total):
+            nxt = None
         hint = ""
-        if recovered_token:
-            hint = f"no match for {phrase}; showing {recovered_token}"
+        resolvable = self._resolvable_symbols(phrase, cards)
         payload = {
             "ok": True,
             "shape": "search",
@@ -8543,9 +10561,12 @@ class UoSqlQuery:
             "hint": hint,
             "symbols": symbols,
         }
-        if recovered_token:
-            payload["recovered_token"] = recovered_token
-            payload["original_pattern"] = phrase
+        if file_miss is not None:
+            payload["file_filter_miss"] = {"glob": file_filter, "nearest": file_miss}
+        if related:
+            payload["related_patterns"] = related
+        if resolvable:
+            payload["resolvable_symbols"] = resolvable
         if extra:
             payload["template_lines"] = int(extra.get("template_lines") or 0)
             payload["source_units"] = int(extra.get("source_units") or 0)

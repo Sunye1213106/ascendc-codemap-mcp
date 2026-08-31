@@ -94,6 +94,50 @@ def test_search_file_glob_and_zero_is_success(tmp_path: Path) -> None:
     assert empty.get("ok") is True
 
 
+def test_a_glob_that_names_no_file_says_so_and_points_at_the_real_one(
+    tmp_path: Path,
+) -> None:
+    """A zero from `file=` is not a zero from the pattern.
+
+    Globs get typed from a CamelCase class name while the file is stored in
+    snake_case, and a bare `0 matches` sends the reader off widening a pattern
+    that never ran.
+    """
+    op = tmp_path / "toy_op"
+    op.mkdir()
+    _ready(
+        op,
+        [
+            ("op_kernel/arch35/fag_s1s2_post_regbase.h", 144, "inQueue.AllocTensor();"),
+            ("op_kernel/arch35/block.h", 10, "other.AllocTensor();"),
+        ],
+    )
+    missed = query(
+        project=str(op),
+        architecture="arch35",
+        operation="search",
+        name="AllocTensor",
+        file="**/*PostRegbase*",
+    )
+    text = str((missed.get("data") or {}).get("text") or "")
+    assert "matched no file in the snapshot" in text
+    assert "fag_s1s2_post_regbase.h" in text
+    assert missed.get("ok") is True
+
+    # A glob that does select files keeps saying nothing about the glob: the
+    # zero there really is the pattern's.
+    real_zero = query(
+        project=str(op),
+        architecture="arch35",
+        operation="search",
+        name="NoSuchPhraseZZZ",
+        file="op_kernel/**/*.h",
+    )
+    ztext = str((real_zero.get("data") or {}).get("text") or "")
+    assert ztext.startswith("0 matches")
+    assert "matched no file in the snapshot" not in ztext
+
+
 def test_search_pages_same_result_set(tmp_path: Path) -> None:
     op = tmp_path / "toy_op"
     op.mkdir()

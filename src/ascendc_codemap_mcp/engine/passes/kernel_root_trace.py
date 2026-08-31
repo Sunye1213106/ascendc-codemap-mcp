@@ -53,11 +53,13 @@ from ascendc_codemap_mcp.engine.semantics.ascendc_storage import (
     is_non_storage_type,
     is_storage_type_text,
     is_valid_storage_name,
-    memory_space_from_type_text,
     register_class_from_type,
     resolve_buffer_decl,
     storage_root_kind_from_space,
     tposition_from_type_text,
+)
+from ascendc_codemap_mcp.engine.semantics.ascendc_storage import (
+    memory_space_from_type_text as _cann_memory_space,
 )
 from ascendc_codemap_mcp.engine.semantics.ascendc_vf import (
     AMBIGUOUS_VF_ROOTS,
@@ -313,6 +315,16 @@ def _type_identity_key(type_text: str, *, usr: str = "", qualified: str = "") ->
 
 
 _TRACE_ARCHITECTURE = ""
+
+
+def memory_space_from_type_text(type_text: str) -> str | None:
+    """Physical tier for *type_text* on the chip this trace is running for.
+
+    CANN ``GetPhyType`` reads C1 / C2 / CO2 / C2PIPE2GM out of an
+    ``#if __NPU_ARCH__`` chain, so the tier is only decided once the
+    architecture is bound. Same module-global binding as ``_vf_blocked``.
+    """
+    return _cann_memory_space(type_text, _TRACE_ARCHITECTURE)
 
 
 def _vf_blocked(name: str) -> bool:
@@ -584,6 +596,30 @@ def _prove_ascendc_api_root(
     if short in _MEMBER_ONLY_ROOTS or short in _VECTOR_AMBIGUOUS_ROOTS or is_ambiguous_vf_name(short):
         return False, ""
     return True, short
+
+
+_FLAG_IDENT_RE = re.compile(r"[A-Za-z_]\w*")
+#: A flag argument may be arithmetic on a base id, but not a call and not a
+#: subscript: those name something this pass cannot follow to a single flag.
+_FLAG_EXPR_OK = re.compile(r"^[\w\s+\-*/()]+$")
+
+
+def _flag_identity(text: str) -> tuple[str, str]:
+    """``(base flag, whole expression)`` for a sync flag argument.
+
+    Cross-core flags are routinely written as ``id0_ + AIV0_AIV1_OFFSET``.
+    Requiring a bare identifier dropped every such site, so a handshake with
+    five sets and five waits was reported as three and four — a difference a
+    reader is entitled to read as a bug in the operator. The offset is part of
+    the identity, since two offsets off one base are two different flags.
+    """
+    expr = " ".join(str(text or "").split())
+    if not expr or not _FLAG_EXPR_OK.match(expr):
+        return "", ""
+    names = _FLAG_IDENT_RE.findall(expr)
+    if not names:
+        return "", ""
+    return names[0], expr
 
 
 def _root_entity_id(spelling: str) -> str:
@@ -2189,6 +2225,10 @@ def finalize_kernel_root_trace(
                     ),
                 )
             else:
+                existing = _existing_type_id(codemap, tbase)
+                if existing:
+                    type_ents[tbase] = existing
+                    continue
                 mid = make_id("Type", "alias_target", tbase, row["file"], int(row["line"]))
                 ment = codemap.upsert(
                     EntityKind.TYPE,
@@ -2198,6 +2238,13 @@ def finalize_kernel_root_trace(
                         "role": "source_type",
                         "root_status": "UNRESOLVED",
                         "provenance": _PROV,
+                        # This node stands where the alias names the type, not
+                        # where the type is declared. Without the mark, the
+                        # `using T = std::conditional_t<…, A, B>` line counted
+                        # as a second definition site of A, and a card said
+                        # "2 definition sites (all listed)" about a class
+                        # declared exactly once.
+                        "reference_only": True,
                     },
                     file=str(row["file"]),
                     line=int(row["line"]),
@@ -2498,15 +2545,30 @@ def finalize_kernel_root_trace(
             ent = codemap.entities.get(eid)
             return ent is not None and ent.kind_name() in kinds
 
-        for scope in scopes:
-            hit = buffer_by_key.get((scope, name))
-            if _ok(hit or ""):
-                return hit or ""
         nf = str(nfile or "").replace("\\", "/")
+
+        def _in_file(eid: str) -> bool:
+            ent = codemap.entities.get(eid) if eid else None
+            if ent is None:
+                return False
+            return str(getattr(ent, "file", "") or "").replace("\\", "/") == nf
+
+        # A scope is an unqualified function name, so two classes that both
+        # spell a method ProcessSink share one key and the index keeps whichever
+        # was written last. Asking for the file first keeps a local of one class
+        # from resolving to the same-named local of the other.
+        scope_hits = [
+            eid for eid in (buffer_by_key.get((s, name)) for s in scopes) if _ok(eid or "")
+        ]
         if nf:
+            for hit in scope_hits:
+                if _in_file(hit or ""):
+                    return hit or ""
             hit = buffer_by_file.get((nf, name))
             if _ok(hit or ""):
                 return hit or ""
+        if scope_hits:
+            return scope_hits[0] or ""
         hit = buffer_by_name.get(name) or ""
         return hit if _ok(hit) else ""
 
@@ -2756,7 +2818,9 @@ def finalize_kernel_root_trace(
         nfile = str(row["file"])
         line = int(row["line"])
         owner = str(row["owner"])
-        resolved = resolve_buffer_decl(expanded) or resolve_buffer_decl(type_text)
+        resolved = resolve_buffer_decl(expanded, _TRACE_ARCHITECTURE) or resolve_buffer_decl(
+            type_text, _TRACE_ARCHITECTURE
+        )
         if not space:
             space = "UNKNOWN"
         root_spell = catalog_root
@@ -3014,7 +3078,9 @@ def finalize_kernel_root_trace(
             reg_count += 1
             continue
 
-        resolved = resolve_buffer_decl(expanded) or resolve_buffer_decl(type_text)
+        resolved = resolve_buffer_decl(expanded, _TRACE_ARCHITECTURE) or resolve_buffer_decl(
+            type_text, _TRACE_ARCHITECTURE
+        )
         space = memory_space_from_type_text(expanded) or memory_space_from_type_text(type_text) or "UNKNOWN"
         is_wrapper = bool((wraps_storage or branch_bases) and not catalog_root)
         wrapper_spell = base if (is_wrapper and not branch_bases) else ""
@@ -3713,8 +3779,9 @@ def finalize_kernel_root_trace(
         # handshake, so they never get SIGNALS/AWAITS.
         if ent is not None and is_flag_sync(callee) and not is_tque_callee(callee):
             sync = resolve_sync_site(callee, args, targs)
-            identity = str(sync.get("flag") or (args[0] if args else "")).strip()
-            if re.fullmatch(r"[A-Za-z_]\w*", identity):
+            raw_flag = str(sync.get("flag") or (args[0] if args else "")).strip()
+            base, identity = _flag_identity(raw_flag)
+            if base:
                 event_id = make_id("Event", "sync", function, identity)
                 event = codemap.upsert(
                     EntityKind.EVENT,
@@ -3723,6 +3790,7 @@ def finalize_kernel_root_trace(
                     attrs={
                         "scope": function,
                         "identity": identity,
+                        "identity_base": base,
                         "event_type": str(sync.get("event") or ""),
                         "mechanism": str(sync.get("mechanism") or ""),
                         "cross_core": bool(sync.get("cross_core")),

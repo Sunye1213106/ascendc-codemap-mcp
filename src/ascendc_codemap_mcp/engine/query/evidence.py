@@ -156,6 +156,13 @@ def _sanitize_expr(text: str) -> str:
     return text[:120]
 
 
+#: Carried for every kind. These say whether a node is the declaration of its
+#: name or only a place the name appears, which decides whether it counts as a
+#: definition site — a question no per-kind fact list happened to ask, so the
+#: mark set during indexing never reached the card that needed it.
+_PROVENANCE_FACTS = ("reference_only", "call_target", "internal_unresolved")
+
+
 def _short_args(value: Any, *, depth: int = 0) -> Any:
     if depth > 3:
         return value
@@ -213,6 +220,9 @@ def project_entity(
         rhs = _first_rhs(attrs)
         if rhs:
             facts["rhs"] = rhs
+    for key in _PROVENANCE_FACTS:
+        if attrs.get(key):
+            facts[key] = attrs[key]
     hit: dict[str, Any] = {
         "id": raw.get("id") or "",
         "kind": kind,

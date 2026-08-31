@@ -692,7 +692,11 @@ def execute(query: Any, plan: QueryPlan) -> dict[str, Any]:
 def _resolve_seed(query: Any, plan: QueryPlan) -> dict[str, Any]:
     if plan.file and plan.line > 0:
         site = getattr(query, "query_site_unit", None)
-        if callable(site):
+        # A caller who named an end asked for those lines, not for the unit that
+        # happens to enclose the start. Sending them through the unit view
+        # returned the same window they were trying to read past.
+        span = int(plan.line_end or 0) > int(plan.line or 0)
+        if callable(site) and not span:
             return site(plan.file, plan.line, highlight=str(plan.symbol or ""), limit=plan.limit)
         return query.query_around(
             plan.file, plan.line, line_end=int(plan.line_end or plan.line), limit=plan.limit

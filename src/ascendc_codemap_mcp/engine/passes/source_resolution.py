@@ -132,7 +132,14 @@ def resolve_source_gaps(
     stats.update(_extract_calls_macros_and_frontiers(codemap, sources))
     stats.update(_resolve_tiling_reads(codemap, sources))
     stats.update(_extract_compile_facts(codemap, sources + host_sources, architecture))
-    stats.update(_extract_runtime_structs_and_resources(codemap, sources, architecture))
+    # Host param structs are what most review questions are about, and they were
+    # never turned into types: the host sources were loaded for compile facts
+    # only, so a line inside `FuzzyBaseInfoParamsRegbase` belonged to nothing.
+    stats.update(
+        _extract_runtime_structs_and_resources(
+            codemap, sources + host_sources, architecture
+        )
+    )
     stats["enum_membership_edges"] = link_enum_membership(codemap)
     arch_dir = root / "op_kernel" / str(architecture or "")
     assign_sources = sources
@@ -899,6 +906,13 @@ def _extract_runtime_structs_and_resources(
                 )
                 if owner_ent is None:
                     continue
+                # The closing brace is already known here. Leaving it off made
+                # every struct a one-line entity, so nothing could be resolved
+                # as being *inside* a type and a card for one showed only its
+                # declaration line.
+                end_line = _line_at(newlines, close_pos)
+                if end_line > int(owner_ent.line_start or 0):
+                    owner_ent.line_end = end_line
                 structs += 1
                 pending: str | None = None
                 pending_line = 0

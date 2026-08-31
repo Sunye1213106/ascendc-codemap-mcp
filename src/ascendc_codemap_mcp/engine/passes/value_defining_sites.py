@@ -381,23 +381,28 @@ def _match_pairs(text: str, opener: str, closer: str) -> dict[int, int]:
     return out
 
 
-def _guard_regions(masked: str) -> list[tuple[int, int, str, str]]:
-    """(start, end, keyword, condition) for every guarded region in the file.
+def _guard_regions(masked: str) -> list[tuple[int, int, str, int, int]]:
+    """(start, end, keyword, cond_start, cond_end) for each guarded region.
 
     Guards decide whether a defining write runs at all, so a field's value under
     a given key is a statement about these conditions. Both braced blocks and
     single-statement bodies are covered; an unmatched head is skipped rather
     than guessed at.
+
+    The condition is returned as an offset pair rather than text: masking blanks
+    string literals to keep quotes from breaking the brace matcher, so slicing
+    the condition here would render `strcmp(layout, "TND")` as `strcmp(layout,
+    )` and hide the very value the guard turns on. Offsets are the same in both
+    buffers, so the caller slices the raw source.
     """
     parens = _match_pairs(masked, "(", ")")
     braces = _match_pairs(masked, "{", "}")
-    regions: list[tuple[int, int, str, str]] = []
+    regions: list[tuple[int, int, str, int, int]] = []
     for m in _GUARD_HEAD.finditer(masked):
         open_paren = m.end() - 1
         close_paren = parens.get(open_paren)
         if close_paren is None:
             continue
-        cond = masked[open_paren + 1:close_paren].strip()
         j = close_paren + 1
         while j < len(masked) and masked[j].isspace():
             j += 1
@@ -411,21 +416,22 @@ def _guard_regions(masked: str) -> list[tuple[int, int, str, str]]:
             if end < 0:
                 continue
             start = close_paren
-        regions.append((start, end, m.group(1), cond))
+        regions.append((start, end, m.group(1), open_paren + 1, close_paren))
     return regions
 
 
-def _guards_at(regions: list[tuple[int, int, str, str]], offset: int,
+def _guards_at(regions: list[tuple[int, int, str, int, int]], offset: int,
                raw: str) -> list[dict]:
     """Conditions whose region encloses ``offset``, outermost first."""
     hits = [r for r in regions if r[0] <= offset <= r[1]]
     hits.sort(key=lambda r: r[0])
     out: list[dict] = []
-    for start, _end, kw, cond in hits:
+    for start, _end, kw, cond_start, cond_end in hits:
         if kw != "if":
             # Loop headers bound iteration, not value choice; keep them out of
             # the pin argument so a lemma never rests on a loop bound.
             continue
+        cond = " ".join(raw[cond_start:cond_end].split())
         out.append({"keyword": kw, "condition": cond[:300], "line": _line(raw, start)})
     return out
 

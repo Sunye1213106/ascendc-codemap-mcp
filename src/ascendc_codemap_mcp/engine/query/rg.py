@@ -33,6 +33,89 @@ def is_pure_literal(pattern: str) -> bool:
     return "\\" not in text
 
 
+_META_CHARS = frozenset(".^$*+?{}[]|()")
+
+
+def _mandatory_literal(pattern: str) -> str:
+    """Leading substring every match must contain verbatim.
+
+    Stops at the first metacharacter, and drops the character before a
+    quantifier because the quantifier can make that one atom optional
+    (``hasRope?`` guarantees ``hasRop``, not ``hasRope``).
+    """
+    out: list[str] = []
+    for ch in str(pattern or ""):
+        if ch == "\\":
+            break
+        if ch in _META_CHARS:
+            if ch in "*?{" and out:
+                out.pop()
+            break
+        out.append(ch)
+    return "".join(out)
+
+
+def _top_level_branches(pattern: str) -> list[str]:
+    """Split on ``|`` at nesting depth 0. Empty list when the split is unsafe."""
+    text = str(pattern or "")
+    branches: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    in_class = False
+    index = 0
+    while index < len(text):
+        ch = text[index]
+        if ch == "\\":
+            buf.append(ch)
+            index += 1
+            if index < len(text):
+                buf.append(text[index])
+                index += 1
+            continue
+        if in_class:
+            if ch == "]":
+                in_class = False
+            buf.append(ch)
+        elif ch == "[":
+            in_class = True
+            buf.append(ch)
+        elif ch == "(":
+            depth += 1
+            buf.append(ch)
+        elif ch == ")":
+            depth -= 1
+            buf.append(ch)
+        elif ch == "|" and depth == 0:
+            branches.append("".join(buf))
+            buf = []
+        else:
+            buf.append(ch)
+        index += 1
+    branches.append("".join(buf))
+    return branches
+
+
+def fts_prefilter(pattern: str, *, min_len: int = 3) -> str:
+    """FTS5 trigram expression that over-approximates `pattern`, or ''.
+
+    A trigram index answers substring questions, so it can only stand in for a
+    scan when every way the regex can match still contains a known literal.
+    When that cannot be proven the caller must scan; returning '' is the safe
+    answer, never a narrower one.
+    """
+    text = str(pattern or "")
+    if not text:
+        return ""
+    literals: list[str] = []
+    for branch in _top_level_branches(text):
+        literal = _mandatory_literal(branch)
+        if len(literal) < int(min_len):
+            return ""
+        literals.append(literal)
+    quoted = [f'"{lit.replace(chr(34), " ")}"' for lit in literals]
+    return " OR ".join(quoted)
+
+
 def path_matches(path: str, glob: str) -> bool:
     if not glob:
         return True

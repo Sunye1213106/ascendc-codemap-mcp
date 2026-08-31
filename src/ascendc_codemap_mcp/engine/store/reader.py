@@ -8,6 +8,7 @@ import os
 import sqlite3
 import sys
 import threading
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -28,8 +29,15 @@ def _idle_sec() -> float:
         return 2.0
 
 
+@lru_cache(maxsize=256)
+def _resolved_product_key(text: str) -> str:
+    return str(Path(text).expanduser().resolve())
+
+
 def _product_key(path: str | Path) -> str:
-    return str(Path(path).expanduser().resolve())
+    # One resolve() is a filesystem round trip, and a single query asks for the
+    # connection well over a hundred times.
+    return _resolved_product_key(str(path))
 
 
 def _configure_readonly(conn: sqlite3.Connection) -> sqlite3.Connection:
@@ -99,6 +107,12 @@ def shared_uo(path: str | Path) -> sqlite3.Connection:
 
 
 def _close_conn(conn: sqlite3.Connection) -> None:
+    try:
+        from ascendc_codemap_mcp.engine.query.sql import drop_source_line_cache
+
+        drop_source_line_cache(conn)
+    except Exception:  # noqa: BLE001
+        pass
     try:
         conn.execute("PRAGMA mmap_size = 0")
     except sqlite3.Error:

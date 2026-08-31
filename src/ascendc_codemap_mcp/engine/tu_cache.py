@@ -24,7 +24,7 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-CACHE_VERSION = 8
+CACHE_VERSION = 9
 _ENV_ENABLE = "UO_TU_CACHE"
 _ENV_ROOT = "UO_CACHE_ROOT"
 
@@ -401,6 +401,8 @@ def deserialize_walk_result(payload: dict[str, Any]) -> Any:
             negated=bool(row.get("negated")),
             file=str(row.get("file") or ""),
             line=int(row.get("line") or 0),
+            body_start=int(row.get("body_start") or 0),
+            line_end=int(row.get("line_end") or 0),
             kind=str(row.get("kind") or "if"),
         )
 

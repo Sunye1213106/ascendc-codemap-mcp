@@ -151,6 +151,16 @@ def _query_result(payload: dict[str, Any]) -> CallToolResult:
 
 _explore_result = _query_result
 
+
+def _compat_result(payload: dict[str, Any]) -> CallToolResult:
+    """Same text, but structured output still satisfies the retired Envelope schema."""
+    result = _query_result(payload)
+    structured = dict(result.structured_content or {})
+    structured.setdefault("ok", bool(payload.get("ok", True)))
+    structured["deprecated"] = "use codemap_query(operation=search|resolve)"
+    return CallToolResult(content=result.content, structured_content=structured)
+
+
 DEFAULT_MCP_TOOLS = (
     "codemap_query",
     "codemap_doctor",
@@ -247,11 +257,12 @@ def codemap_query(
     symbol: str = "",
     file: str = "",
     line: int = 0,
+    line_end: int = 0,
     kind: str = "",
     cursor: str = "",
     limit: int = 20,
 ) -> CallToolResult:
-    """search ≈ regex over the indexed source snapshot (pattern=; name= is an alias). Enum values, strings, macros, and comments all match — not just symbol names. file= is an optional glob; ** matches zero directories. resolve ≈ read + semantic context. Identity is codemap_id or project+architecture."""
+    """search ≈ regex over the indexed source snapshot (pattern=; name= is an alias). Enum values, strings, macros, and comments all match — not just symbol names. file= is an optional glob; ** matches zero directories. resolve ≈ read + semantic context; line_end= reads a range, which is how you finish a snippet that was cut. Identity is codemap_id or project+architecture."""
     return _query_result(
         query_impl(
             operation=operation,
@@ -263,6 +274,7 @@ def codemap_query(
             symbol=symbol,
             file=file,
             line=line,
+            line_end=line_end,
             kind=kind,
             cursor=cursor,
             limit=limit,
@@ -346,6 +358,67 @@ async def codemap_update(
     payload = await _run_cancellable(work)
     await _notify_maps(ctx)
     return _envelope(payload)
+
+
+# Renaming a public tool orphans every agent session that already handshook the
+# old name: the host validates against its cached list and the call never
+# reaches the server. These stay registered (and answer on the current
+# contract) while `listed_tool_names` keeps them out of the advertised set, so
+# a live session degrades to "deprecated" instead of "tool not found".
+@mcp.tool(title="Query CodeMap (compat)", annotations=READ, structured_output=True)
+def codemap_explore(
+    codemap_id: str = "",
+    query: str = "",
+    file: str = "",
+    line: int = 0,
+    line_end: int = 0,
+    evidence_id: str = "",
+    cursor: str = "",
+    limit: int = 20,
+    expected_snapshot_id: str = "",
+) -> CallToolResult:
+    """Deprecated alias for codemap_query. Use codemap_query(operation=search|resolve)."""
+    del line_end, evidence_id, expected_snapshot_id
+    return _compat_result(
+        query_impl(
+            operation="resolve",
+            codemap_id=codemap_id,
+            symbol=query,
+            file=file,
+            line=line,
+            cursor=cursor,
+            limit=limit,
+        )
+    )
+
+
+@mcp.tool(title="Query CodeMap (compat)", annotations=READ, structured_output=True)
+def query_codemap(
+    codemap_id: str = "",
+    project: str = "",
+    architecture: str = "",
+    pattern: str = "",
+    file: str = "",
+    line: int = 0,
+    line_end: int = 0,
+    limit: int = 20,
+    cursor: str = "",
+) -> CallToolResult:
+    """Deprecated alias for codemap_query. Use codemap_query(operation=search|resolve)."""
+    del line_end
+    return _compat_result(
+        query_impl(
+            operation="resolve",
+            codemap_id=codemap_id,
+            project=project,
+            architecture=architecture,
+            symbol=pattern,
+            file=file,
+            line=line,
+            cursor=cursor,
+            limit=limit,
+        )
+    )
 
 
 @mcp.tool(title="Index operator (compat)", annotations=WRITE_ADDITIVE, structured_output=True)

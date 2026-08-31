@@ -293,6 +293,46 @@ _CONTROL_HEADS = frozenset({
     "if", "else", "while", "for", "switch", "catch", "do", "return",
     "constexpr", "likely", "unlikely",
 })
+_TRAILING_IDENT_RE = re.compile(r"([A-Za-z_]\w*)\s*(?:\[[^\]]*\])?\s*$")
+
+
+def _trailing_ident(text: str) -> str:
+    """The name a parameter declaration binds, ignoring its type and default."""
+    match = _TRAILING_IDENT_RE.search(text.split("=", 1)[0].strip())
+    return match.group(1) if match else ""
+
+
+def _param_names(head_text: str, name: str) -> frozenset[str]:
+    """Names bound by a function head's parameter list.
+
+    A parameter shadows a TilingData field of the same name for the whole
+    body, so ``if (deterMaxRound > 1)`` inside ``CalTNDDenseIndex(uint32_t
+    deterMaxRound)`` is a test on the argument. Matching the branch to the
+    field by name alone asserted a dependency on tiling that the code does
+    not have, and the reader had to open the file to find that out.
+    """
+    at = head_text.rfind(name + "(")
+    if at < 0:
+        at = head_text.rfind(name)
+    open_pos = head_text.find("(", max(0, at))
+    close_pos = head_text.rfind(")")
+    if open_pos < 0 or close_pos <= open_pos:
+        return frozenset()
+    out: set[str] = set()
+    depth = 0
+    current: list[str] = []
+    for ch in head_text[open_pos + 1 : close_pos]:
+        if ch in "(<[":
+            depth += 1
+        elif ch in ")>]":
+            depth = max(0, depth - 1)
+        if ch == "," and depth == 0:
+            out.add(_trailing_ident("".join(current)))
+            current = []
+        else:
+            current.append(ch)
+    out.add(_trailing_ident("".join(current)))
+    return frozenset(n for n in out if n)
 _BRANCH_NAME_KINDS = (
     EntityKind.TILING_FIELD,
     EntityKind.MACRO,
@@ -448,21 +488,21 @@ def enrich_kernel_field_branches(
             continue
         masked = mask_cached(raw)
         file = _rel(root, path)
-        functions: list[tuple[int, str]] = []
+        functions: list[tuple[int, str, frozenset[str]]] = []
         for head in _FN_HEAD_RE.finditer(masked):
             name = head.group("name")
             if name in _CONTROL_HEADS:
                 continue
-            functions.append((head.start(), name))
+            functions.append((head.start(), name, _param_names(head.group(0), name)))
 
-        def _fn_at(pos: int) -> str:
-            fn = ""
-            for start, name in functions:
+        def _fn_at(pos: int) -> tuple[str, frozenset[str]]:
+            fn, params = "", frozenset()
+            for start, name, names in functions:
                 if start <= pos:
-                    fn = name
+                    fn, params = name, names
                 else:
                     break
-            return fn
+            return fn, params
 
         for match in _IF_HEAD_RE.finditer(masked):
             open_pos = match.end() - 1
@@ -474,14 +514,21 @@ def enrich_kernel_field_branches(
             if not found:
                 continue
             line = _line(raw, match.start())
-            fn = _fn_at(match.start())
+            fn, params = _fn_at(match.start())
             kind = "if_constexpr" if "constexpr" in match.group(0) else "if"
+            # Scan the masked copy so an identifier spelled inside a string is
+            # not read as an operand, but record the raw slice: masking blanks
+            # literals, and a guard that turns on `layout == "TND"` is useless
+            # once the value it compares against has been blanked out.
+            shown = raw[open_pos + 1 : close_pos]
             for field_name in found:
+                if field_name in params:
+                    continue
                 _mint(
                     file=file,
                     line=line,
                     field_name=field_name,
-                    cond=cond,
+                    cond=shown,
                     fn=fn,
                     branch_kind=kind,
                 )
@@ -498,7 +545,7 @@ def enrich_kernel_field_branches(
                     line=line,
                     field_name=field_name,
                     cond=cond or field_name,
-                    fn=_fn_at(match.start()),
+                    fn=_fn_at(match.start())[0],
                     branch_kind=kind,
                 )
     _attach_named_kernel_branches(codemap, named)

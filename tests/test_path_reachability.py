@@ -124,7 +124,14 @@ def test_search_globstar_hits_top_level_host_file(tmp_path: Path) -> None:
     assert "flash_attention_score_grad_tiling.cpp" in text
 
 
-def test_search_recovers_camel_token_on_miss(tmp_path: Path) -> None:
+def test_search_miss_stays_a_miss_and_only_suggests(tmp_path: Path) -> None:
+    """A pattern that matched nothing reports nothing, whatever else exists.
+
+    Widening the pattern in place used to return another token's hits under the
+    caller's pattern, and nothing in the payload said which one they belonged
+    to. Suggestions are allowed, but only as their own pattern with their own
+    count.
+    """
     op = tmp_path / "toy_op"
     op.mkdir()
     dest = write_uo_fixture(op)
@@ -146,10 +153,20 @@ def test_search_recovers_camel_token_on_miss(tmp_path: Path) -> None:
     )
     text = _text(payload)
     data = payload.get("data") or {}
-    assert "FooBuffer" in text
-    assert "no match for BufferNum; showing buffer" in text.lower() or (
-        "showing buffer" in str(data.get("hint") or "").lower()
-    )
+    assert text.splitlines()[0] == "0 matches"
+    assert int(data.get("total") or 0) == 0
+    assert not (data.get("cards") or [])
+    assert "FooBuffer" not in text
+    assert "showing" not in text.lower()
+    related = {
+        str(row.get("pattern")): int(row.get("matches") or 0)
+        for row in (data.get("related_patterns") or [])
+    }
+    assert related.get("buffer") == 1
+    # The zero has to be attributed to the pattern before substitutes appear,
+    # or a reader spends a call re-confirming the pattern was not rewritten.
+    assert "ran as written and matched nothing" in text
+    assert "not retries of it" in text
 
 
 def test_resolve_file_line_lists_fields_in_unit(tmp_path: Path) -> None:

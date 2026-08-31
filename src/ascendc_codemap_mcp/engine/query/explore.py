@@ -8,6 +8,7 @@ of how the seed was found. No human asides.
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -24,12 +25,16 @@ from ascendc_codemap_mcp.engine.query.completeness import (
 )
 
 MAX_EXPLORE_CHARS = 25_000
+#: Headroom the search layout leaves for the header rewrite and any trailing note.
+_SEARCH_TAIL_RESERVE = 400
 FILE_SECTION_PREFIX = "### "
 _INTERNAL_ID_RE = re.compile(
     r"(?:SRCPOL(?:COND)?|SRCMACRO|SRCFRONTIER|E_TYPE_|REL::|entity_id=)[^\s]*"
 )
 _PROOF_LINES = 16
 _MAX_RANGE_LINES = 40
+#: Hits previewed per source unit before the rest are counted rather than listed.
+_UNIT_HIT_PREVIEW = 3
 #: Whole-card source budget. A set answer with many hits must not spend it all
 #: on one file.
 _MAX_SOURCE_LINES = 120
@@ -87,6 +92,7 @@ _CONTRACT_SEED_PREF = [
 ]
 
 
+@lru_cache(maxsize=32768)
 def _is_validation_name(name: str) -> bool:
     leaf = str(name or "").replace("::", ".").rsplit(".", 1)[-1]
     if leaf in _VALIDATION_NAMES:
@@ -122,6 +128,7 @@ _DEF_BODY_KINDS = frozenset(
 )
 
 
+@lru_cache(maxsize=32768)
 def _is_noise_name(name: str) -> bool:
     raw = str(name or "")
     qualified = raw.replace(".", "::")
@@ -210,16 +217,30 @@ def _clip_source(
     if not file or int(line or 0) <= 0 or query is None:
         return ""
     from ascendc_codemap_mcp.engine.query.sql import (
+        _restore_blank_lines,
         _source_line_rows,
         _source_line_window,
     )
+
+    # One card renders the same location from several facets, and the enclosing
+    # unit is re-derived every time.
+    cache = getattr(query, "_clip_source_cache", None)
+    key = (str(file), int(line), int(line_end or 0), int(max_lines))
+    if cache is not None and key in cache:
+        return cache[key]
+
+    def _remember(value: str) -> str:
+        if cache is not None and len(cache) < 4096:
+            cache[key] = value
+        return value
 
     try:
         with query._connect() as conn:
             if int(line_end or 0) >= int(line):
                 rows = _source_line_rows(conn, file, int(line), int(line_end))
                 if rows:
-                    return "\n".join(f"{ln}:{txt}" for ln, txt in rows)
+                    rows = _restore_blank_lines(rows, int(line_end))
+                    return _remember("\n".join(f"{ln}:{txt}" for ln, txt in rows))
             half = max(0, int(max_lines) // 2)
             from ascendc_codemap_mcp.engine.query.sql import STATEMENT_AFTER, STATEMENT_BEFORE
 
@@ -234,15 +255,15 @@ def _clip_source(
 
                 unit = clip_logical_unit(window_rows, int(line), max_lines=max(int(max_lines), 16))
                 if unit:
-                    return "\n".join(f"{ln}:{txt}" for ln, txt in unit)
+                    return _remember("\n".join(f"{ln}:{txt}" for ln, txt in unit))
             window = _source_line_window(
                 conn, file, int(line), before=half, after=max(half, int(max_lines) - half)
             )
             if window:
-                return window
+                return _remember(window)
     except Exception:  # noqa: BLE001
         return ""
-    return ""
+    return _remember("")
 
 
 def _loc_row(ent: dict[str, Any], *, role: str, snippet: str = "") -> dict[str, Any]:
@@ -739,14 +760,24 @@ def _site_line(row: dict[str, Any]) -> tuple[str, int, str, str]:
 
 
 def _snippet_rows(snippet: str, fallback_line: int) -> list[tuple[int, str]]:
+    """Numbered source rows. Unnumbered text is contiguous from the anchor.
+
+    Callers key rows by line number, so giving every unnumbered line the same
+    anchor collapsed a stored span snippet down to its first line and dropped
+    the rest without saying so. A span snippet is the entity's own contiguous
+    text, so counting on from the anchor is what it already means.
+    """
     rows: list[tuple[int, str]] = []
+    offset = 0
     for raw in str(snippet or "").splitlines():
         if ":" in raw[:8]:
             num, _, rest = raw.partition(":")
             if num.strip().isdigit():
                 rows.append((int(num), rest))
+                offset = 0
                 continue
-        rows.append((fallback_line, raw))
+        rows.append((fallback_line + offset, raw))
+        offset += 1
     return rows
 
 
@@ -832,6 +863,11 @@ def _render_source(sites: list[dict[str, Any]], *, tight: bool) -> list[str]:
 
     out: list[str] = ["**Source**"]
     budget = max_lines_total
+    # The per-file cap exists so one file cannot eat a multi-hit card. A card
+    # showing a single definition has no one to share with, and capping it there
+    # cut function bodies at 120 lines while most of the budget went unspent.
+    if len(order) == 1:
+        max_lines_per_file = max_lines_total
     for file in order:
         bucket = by_file[file]
         if not bucket or budget <= 0:
@@ -926,12 +962,73 @@ def _useful_rows(rows: Any, seed_name: str) -> list[dict[str, Any]]:
     return _dedup_rows(out)
 
 
+def _render_glob_miss(payload: dict[str, Any]) -> list[str]:
+    """Say when the zero came from `file=`, not from the pattern.
+
+    A glob naming no file and a glob naming files that hold no match both print
+    zero, but only the second is a statement about the pattern. Readers who
+    cannot tell them apart go on to widen a pattern that was never the problem.
+    """
+    miss = payload.get("file_filter_miss")
+    if not isinstance(miss, dict):
+        return []
+    glob = str(miss.get("glob") or "")
+    lines = [f"file={glob} matched no file in the snapshot, so the pattern never ran"]
+    nearest = [str(p) for p in (miss.get("nearest") or []) if p]
+    if nearest:
+        lines.append("  files with that name, spelled as they are stored")
+        lines.extend(f"    {path}" for path in nearest)
+    else:
+        lines.append("  drop file= to search the whole snapshot")
+    lines.append("")
+    return lines
+
+
+def _render_related_patterns(payload: dict[str, Any]) -> list[str]:
+    """Suggestions for a zero-hit search. Each keeps its own pattern and count."""
+    rows = [r for r in (payload.get("related_patterns") or []) if isinstance(r, dict)]
+    if not rows:
+        return []
+    # Offering substitutes right after a zero is what made readers suspect the
+    # pattern had been rejected or quietly rewritten. A `\.` or a character
+    # class that costs a retry to re-confirm costs more than this line.
+    pattern = str(payload.get("pattern") or payload.get("explore_pattern") or "").strip()
+    ran = f"`{pattern}` ran as written and matched nothing." if pattern else (
+        "The pattern ran as written and matched nothing."
+    )
+    lines = [f"{ran} These are other patterns, not retries of it:"]
+    for row in rows:
+        pattern = str(row.get("pattern") or "")
+        matches = int(row.get("matches") or 0)
+        if pattern:
+            lines.append(f"  {pattern}  {matches} matches")
+    lines.append("")
+    return lines
+
+
+def _render_resolvable(payload: dict[str, Any]) -> list[str]:
+    """Point at the semantic cards this text already has.
+
+    This goes above the hit list, not below it. Its whole purpose is to stop the
+    caller reading hits one by one, and a broad pattern truncates its own list --
+    so placed underneath, the advice arrived only for the searches that did not
+    need it.
+    """
+    rows = [r for r in (payload.get("resolvable_symbols") or []) if isinstance(r, dict)]
+    if not rows:
+        return []
+    lines = ["Resolve for the full picture (writers, guards, consumers)"]
+    for row in rows:
+        symbol = str(row.get("symbol") or "")
+        kinds = ", ".join(str(k) for k in (row.get("kinds") or []) if k)
+        if symbol:
+            lines.append(f"  resolve symbol={symbol}" + (f"   {kinds}" if kinds else ""))
+    lines.append("")
+    return lines
+
+
 def _render_search_markdown(payload: dict[str, Any]) -> list[str]:
-    recovered = str(payload.get("recovered_token") or "").strip()
-    original = str(payload.get("original_pattern") or payload.get("pattern") or "").strip()
     prefix: list[str] = []
-    if recovered:
-        prefix.append(f"no match for {original}; showing {recovered}")
     units = [u for u in (payload.get("units") or []) if isinstance(u, dict)]
     leftover = [r for r in (payload.get("leftover") or []) if isinstance(r, dict)]
     cards = [c for c in (payload.get("cards") or []) if isinstance(c, dict)]
@@ -941,37 +1038,82 @@ def _render_search_markdown(payload: dict[str, Any]) -> list[str]:
         real_total = int(payload.get("total") or 0)
         if real_total <= 0:
             real_total = sum(len(u.get("hits") or []) for u in units) + len(leftover)
-        lines = [f"{real_total} matches · {unit_n} source units"]
+        header = f"{real_total} matches · {unit_n} source units"
+        lines: list[str] = [header]
         if tpl_n:
             lines.append(f"+{tpl_n} template lines (collapsed)")
+        lines.extend(_render_resolvable(payload))
+        shown = 0
+        units_shown = 0
+        # Laying out every unit and letting the payload clipper cut the tail
+        # produced a header counting lines the reader never received, over a
+        # body that ended mid-statement. Stop at a whole unit instead.
+        budget = MAX_EXPLORE_CHARS - sum(len(row) + 1 for row in lines) - _SEARCH_TAIL_RESERVE
         for unit in units:
             name = str(unit.get("name") or "")
             file = str(unit.get("file") or "")
             start = int(unit.get("line_start") or 0)
             end = int(unit.get("line_end") or 0)
             loc = f"{file}:{start}-{end}" if file and start and end else file
-            lines.append(f"{name}  {loc}".rstrip())
-            for hit in (unit.get("hits") or [])[:3]:
-                if not isinstance(hit, dict):
-                    continue
+            block = [f"{name}  {loc}".rstrip()]
+            hits = [h for h in (unit.get("hits") or []) if isinstance(h, dict)]
+            kept = 0
+            for hit in hits[:_UNIT_HIT_PREVIEW]:
                 hline = int(hit.get("line") or 0)
                 text = str(hit.get("text") or "").rstrip()
                 if hline and text:
-                    lines.append(f"  {hline}:{text}")
+                    block.append(f"  {hline}:{text}")
+                    kept += 1
+            # A unit that shows three of nine reads exactly like a unit that has
+            # three, and the reader has no way to tell which they are looking at.
+            rest = len(hits) - _UNIT_HIT_PREVIEW
+            if rest > 0:
+                block.append(f"  … {rest} more in this unit")
+            cost = sum(len(row) + 1 for row in block)
+            if units_shown and cost > budget:
+                break
+            lines.extend(block)
+            budget -= cost
+            shown += kept
+            units_shown += 1
         for row in leftover:
             file = str(row.get("file") or "")
             line = int(row.get("line") or 0)
             text = str(row.get("text") or "").rstrip()
             loc = f"{file}:{line}" if file and line else (file or "?")
-            lines.append(f"{loc}:{text}" if text else loc)
-        cursor = str(payload.get("next_cursor") or "")
-        if cursor:
-            lines.append(f"next_cursor={cursor}")
+            entry = f"{loc}:{text}" if text else loc
+            if len(entry) + 1 > budget:
+                break
+            lines.append(entry)
+            budget -= len(entry) + 1
+            shown += 1
+        # "51 matches" above a list of twenty reads as a complete list of
+        # fifty-one. Say which of the two this is, and how to get the rest.
+        if units_shown < unit_n:
+            lines[0] = (
+                f"{header} — showing {shown} lines from {units_shown} of {unit_n} units; "
+                f"narrow the pattern or pass file= to reach the rest"
+            )
+        elif shown < real_total:
+            # Every unit being present is not the same as every line being
+            # present, and the per-unit "3 more" notes put the arithmetic on
+            # the reader: one pattern folded a hundred lines across twenty-four
+            # units and the decisive one was inside the fold.
+            hidden = real_total - shown
+            lines[0] = (
+                f"{header} — every unit listed, showing {shown} lines; "
+                f"{hidden} more folded into the units below, "
+                f"resolve a unit to read them"
+            )
+        else:
+            lines[0] = f"{header} — complete"
         return prefix + lines
     total = int(payload.get("total") or len(cards))
     showing = len(cards)
     if total == 0 and not cards:
         lines = ["0 matches", ""]
+        lines.extend(_render_glob_miss(payload))
+        lines.extend(_render_related_patterns(payload))
         symbols = [s for s in (payload.get("symbols") or []) if isinstance(s, dict)]
         if symbols:
             lines.append("Symbols")
@@ -1096,13 +1238,32 @@ def _render_proof(confirmed: int, unresolved: int, exhaustive: Any, *, total: in
 
 def _render_site_cite(site: dict[str, Any]) -> str:
     line = int(site.get("line") or 0)
-    rhs = str(site.get("rhs") or site.get("expression") or "").strip()
-    when = str(site.get("when") or "").strip()
+    rhs = _clip_expr(site.get("rhs") or site.get("expression"))
+    when = _clip_guard(site.get("when"))
     bit = f"  {line}" if line else "  ?"
     if rhs:
         bit += f" = {rhs}"
     if when:
-        bit += f"   when {when}"
+        bit += f" when {when}"
+    return bit
+
+
+def _render_write_site(site: dict[str, Any]) -> str:
+    """One site, one line: ``<function>:<line> = <value> when <guard>``.
+
+    Splitting the function name onto its own row made a three-site field read
+    as six unrelated lines, and dropped the pairing that makes it an answer.
+    """
+    fn = str(site.get("function") or site.get("writer") or "").strip()
+    line = int(site.get("line") or 0)
+    head = f"{fn}:{line}" if fn and line else (fn or (str(line) if line else "?"))
+    rhs = _clip_expr(site.get("rhs") or site.get("expression"), _REMOTE_EXPR_MAX)
+    when = _clip_guard(site.get("when"))
+    bit = f"  {head}"
+    if rhs:
+        bit += f" = {rhs}"
+    if when:
+        bit += f" when {when}"
     return bit
 
 
@@ -1114,38 +1275,55 @@ def _render_bundle(bundle: dict[str, Any]) -> list[str]:
     if host:
         lines.append("Host value definitions")
         for site in host:
-            fn = str(site.get("function") or "")
-            cite = _render_site_cite(site)
-            if fn and fn not in cite:
-                lines.append(f"  {fn}")
-            lines.append(cite if cite.startswith("  ") else f"  {cite}")
+            lines.append(_render_write_site(site))
     transport = [s for s in (bundle.get("transport") or []) if isinstance(s, dict)]
     if transport:
         lines.append("Transport")
         for site in transport:
             line = int(site.get("line") or 0)
+            fn = str(site.get("function") or "").strip()
             recv = str(site.get("receiver") or "")
-            bit = f"  {line}" if line else "  ?"
+            head = f"{fn}:{line}" if fn and line else (str(line) if line else "?")
+            bit = f"  {head}"
             if recv:
                 bit += f"  {recv}"
             lines.append(bit)
+    accessors = [s for s in (bundle.get("accessors") or []) if isinstance(s, dict)]
+    if accessors:
+        lines.append("Accessors")
+        for row in accessors[:6]:
+            role = str(row.get("role") or "")
+            name = str(row.get("name") or "")
+            line = int(row.get("line") or 0)
+            bit = f"  {role} {name}" if role else f"  {name}"
+            if line:
+                bit += f"  {line}"
+            lines.append(bit.rstrip())
     consumers = [s for s in (bundle.get("kernel_consumers") or []) if isinstance(s, dict)]
     if consumers:
         lines.append("Kernel consumers")
         for row in consumers:
             name = str(row.get("name") or "")
             line = int(row.get("line") or 0)
-            lines.append(f"  {name}  {line}".rstrip())
+            bit = f"  {name}  {line}".rstrip()
+            when = _clip_guard(row.get("when"))
+            if when:
+                bit += f"  when {when}"
+            lines.append(bit)
     assignments = [s for s in (bundle.get("assignments") or []) if isinstance(s, dict)]
+    # A name that is both a TILING_FIELD and a FIELD carries two site lists that
+    # describe the same writes; printing both reads as two findings.
+    host_sites = {(str(s.get("file") or ""), int(s.get("line") or 0)) for s in host}
+    assignments = [
+        s
+        for s in assignments
+        if (str(s.get("file") or ""), int(s.get("line") or 0)) not in host_sites
+    ]
     if assignments:
         lines.append("Assignments")
         for site in assignments:
-            fn = str(site.get("function") or "")
-            cite = _render_site_cite(site)
-            if fn and fn not in cite:
-                lines.append(f"  {fn}")
-            lines.append(cite if cite.startswith("  ") else f"  {cite}")
-    consumed = [str(n) for n in (bundle.get("consumed_by") or []) if n]
+            lines.append(_render_write_site(site))
+    consumed = _consumer_names(bundle.get("consumed_by"))
     if consumed:
         lines.append("Consumed by")
         lines.append("  " + "  ".join(consumed[:8]))
@@ -1160,43 +1338,170 @@ def _render_bundle(bundle: dict[str, Any]) -> list[str]:
     resource = bundle.get("resource") if isinstance(bundle.get("resource"), dict) else {}
     lines.extend(_render_resource(resource))
     controls = bundle.get("controls") if isinstance(bundle.get("controls"), dict) else {}
-    lines.extend(_render_control_proj(controls))
+    cited = " ".join(
+        str(site.get("when") or "")
+        for site in (*host, *assignments)
+        if isinstance(site, dict)
+    )
+    lines.extend(_render_control_proj(controls, already_cited=cited))
     if lines:
         lines.append("")
     return lines
+
+
+def _sync_totals(sync: dict[str, Any]) -> list[str]:
+    """What the recorded sites support, and no more.
+
+    The two numbers count guarded sites, not executed calls: one site can issue
+    a second flag at an offset, and an `isReuse` pair is two sites only one of
+    which ever compiles. Reading a difference between them as a defect made the
+    tool call a balanced cross-core handshake UNBALANCED, so a difference is now
+    left to the reader and only a missing side is called out.
+    """
+    signals = sync.get("signal_count")
+    awaits = sync.get("await_count")
+    if signals is None and awaits is None:
+        return []
+    sig = signals if isinstance(signals, int) else None
+    awa = awaits if isinstance(awaits, int) else None
+    head = f"  set sites={sig if sig is not None else '?'}"
+    head += f"  wait sites={awa if awa is not None else '?'}"
+    if sig and not awa:
+        head += "  — set with no wait recorded"
+    elif awa and not sig:
+        head += "  — wait with no set recorded"
+    out = [head]
+    guarded = _guarded_sync_sites(sync)
+    if guarded and sig and awa:
+        # Saying only "not call counts" left the reader to guess how far off
+        # they were. Naming how many sites are conditional says which way, and
+        # by how much at most: two sites under `X` and `!X` are two lines and
+        # one call, so a difference between the totals is not yet a defect.
+        out.append(
+            f"    counted at source; {guarded} of these sit under a condition, "
+            f"so a run issues fewer than the totals"
+        )
+    return out
+
+
+def _guarded_sync_sites(sync: dict[str, Any]) -> int:
+    scopes = [s for s in (sync.get("scopes") or []) if isinstance(s, dict)]
+    pools = [s.get("edges") for s in scopes] + [sync.get("edges")]
+    seen: set[tuple[str, int]] = set()
+    for edges in pools:
+        for edge in edges or []:
+            if not isinstance(edge, dict) or not str(edge.get("when") or "").strip():
+                continue
+            seen.add((str(edge.get("file") or ""), int(edge.get("line") or 0)))
+    return len(seen)
+
+
+def _sync_edge_lines(edges: Any, *, indent: str) -> list[str]:
+    """Every set and every wait, with the branch it sits under."""
+    rows = [e for e in (edges or []) if isinstance(e, dict)]
+    # One name can be the event of two templates. Bare line numbers then read as
+    # one implementation setting twice rather than two setting once each.
+    files = {str(e.get("file") or "") for e in rows}
+    show_file = len(files) > 1
+    out: list[str] = []
+    for rel, label in (("SIGNALS", "set at"), ("AWAITS", "wait at")):
+        picked = [e for e in rows if str(e.get("rel") or "") == rel]
+        for row in sorted(
+            picked, key=lambda e: (str(e.get("file") or ""), int(e.get("line") or 0))
+        ):
+            where = f"{row.get('file')}:" if show_file else ""
+            bit = f"{indent}{label} {where}{int(row.get('line') or 0)}"
+            when = _when_clauses([row.get("when")], limit=1)
+            if when:
+                bit += f"  when {when[0]}"
+            out.append(bit)
+    return out
 
 
 def _render_resource(resource: dict[str, Any]) -> list[str]:
     if not resource:
         return []
     lines: list[str] = []
+    identity = [
+        row
+        for row in (resource.get("identity") or [])
+        if isinstance(row, (list, tuple)) and len(row) == 2
+    ]
+    if identity:
+        lines.append("Resource")
+        lines.append("  " + "  ".join(f"{key}={value}" for key, value in identity))
+    allocated = [s for s in (resource.get("allocated_at") or []) if isinstance(s, dict)]
+    if allocated:
+        lines.append("Allocated at")
+        for row in allocated:
+            callee = str(row.get("callee") or "")
+            line = int(row.get("line") or 0)
+            size = str(row.get("size") or "")
+            bit = f"  {callee}:{line}" if callee and line else f"  {line or '?'}"
+            if size:
+                bit += f"  size {size}"
+            lines.append(bit)
     backing = [s for s in (resource.get("backing") or []) if isinstance(s, dict)]
     if backing:
-        lines.append("Backing")
-        for row in backing[:6]:
+        shown = backing[:6]
+        rest = len(backing) - len(shown)
+        head = "Backing"
+        if rest > 0:
+            head += f" ({len(shown)} of {len(backing)} sites)"
+        lines.append(head)
+        # Two sites in different files read as two lines of one file when only
+        # the line number is printed, so name the file once it stops being one.
+        multifile = len({str(r.get("file") or "") for r in backing}) > 1
+        for row in shown:
             name = str(row.get("name") or "")
             space = str(row.get("physical_space") or "")
             via = str(row.get("via") or "")
             line = int(row.get("line") or 0)
+            file = str(row.get("file") or "")
             bit = f"  {name}"
             if space:
                 bit += f"  {space}"
             if via:
                 bit += f"  {via}"
             if line:
-                bit += f"  {line}"
+                bit += f"  {file}:{line}" if multifile and file else f"  {line}"
             lines.append(bit)
     sync = resource.get("sync") if isinstance(resource.get("sync"), dict) else {}
-    if sync and any(sync.get(k) not in (None, "", []) for k in ("paired", "signal_count", "await_count", "mechanism", "edges")):
+    if sync and any(
+        sync.get(k) not in (None, "", [])
+        for k in ("paired", "signal_count", "await_count", "mechanism", "edges", "scopes")
+    ):
         lines.append("Sync pairing")
-        if sync.get("paired") is not None:
-            lines.append(f"  paired={sync.get('paired')}")
-        if sync.get("signal_count") is not None:
-            lines.append(f"  signal_count={sync.get('signal_count')}")
-        if sync.get("await_count") is not None:
-            lines.append(f"  await_count={sync.get('await_count')}")
-        if sync.get("mechanism"):
+        if sync.get("mechanism") and not identity:
             lines.append(f"  mechanism={sync.get('mechanism')}")
+        lines.extend(_sync_totals(sync))
+        scopes = [s for s in (sync.get("scopes") or []) if isinstance(s, dict)]
+        # The ratio above is the pairing question; a setter scope and a waiter
+        # scope each hold one half of it, so the halves are named separately.
+        for scope in scopes:
+            head = str(scope.get("scope") or "?")
+            line_no = int(scope.get("line") or 0)
+            if line_no:
+                head += f":{line_no}"
+            counts = [
+                f"{label}={scope.get(key)}"
+                for key, label in (
+                    ("signal_count", "set sites"),
+                    ("await_count", "wait sites"),
+                )
+                if int(scope.get(key) or 0) > 0
+            ]
+            lines.append(f"    {head}" + ("  " + "  ".join(counts) if counts else ""))
+            calls = [c for c in (scope.get("calls") or []) if isinstance(c, dict)]
+            if calls:
+                # Sites are guarded places; this is what the function executes.
+                named = ", ".join(
+                    f"{c.get('name')} ×{int(c.get('count') or 0)}" for c in calls[:4]
+                )
+                lines.append(f"      this scope issues {named} in all (every id)")
+            lines.extend(_sync_edge_lines(scope.get("edges"), indent="      "))
+        if not scopes:
+            lines.extend(_sync_edge_lines(sync.get("edges"), indent="    "))
     order = [s for s in (resource.get("order") or []) if isinstance(s, dict)]
     if order:
         lines.append("Order")
@@ -1213,36 +1518,62 @@ def _render_resource(resource: dict[str, Any]) -> list[str]:
     return lines
 
 
-def _render_control_proj(controls: dict[str, Any]) -> list[str]:
+def _render_control_proj(
+    controls: dict[str, Any], *, already_cited: str = ""
+) -> list[str]:
     if not controls:
         return []
+    from ascendc_codemap_mcp.engine.query.sql import _simplify_negation
+
     lines: list[str] = []
     guarded = [s for s in (controls.get("guarded_by") or []) if isinstance(s, dict)]
-    if guarded:
+    shown: set[str] = set()
+    # A guard printed beside the write it gates already says more than the same
+    # expression repeated under its own heading.
+    rows = [
+        row
+        for row in guarded
+        if _simplify_negation(str(row.get("name") or "")) not in already_cited
+    ]
+    if rows:
         lines.append("Guarded by")
-        for row in guarded[:12]:
-            name = str(row.get("name") or "")
+        for row in rows[:12]:
+            name = _simplify_negation(str(row.get("name") or ""))
             count = int(row.get("count") or 1)
             line_nos = [int(n) for n in (row.get("lines") or []) if int(n or 0) > 0]
-            bit = f"  {name}"
+            shown.add(name)
+            bit = f"  {_clip_expr(name)}"
             if count > 1:
                 bit += f"  x{count}"
             if line_nos:
                 bit += f"  lines {min(line_nos)}-{max(line_nos)}" if len(line_nos) > 1 else f"  {line_nos[0]}"
             lines.append(bit)
-    names = [str(n) for n in (controls.get("controls") or []) if n]
-    folded = [s for s in (controls.get("controls_folded") or []) if isinstance(s, dict)]
+    for row in guarded:
+        shown.add(_simplify_negation(str(row.get("name") or "")))
+    # `Controls` reprinted the same expressions one section lower, which reads
+    # as a second, independent fact.
+    names = [
+        _simplify_negation(str(n))
+        for n in (controls.get("controls") or [])
+        if n and _simplify_negation(str(n)) not in shown
+    ]
+    folded = [
+        s
+        for s in (controls.get("controls_folded") or [])
+        if isinstance(s, dict)
+        and _simplify_negation(str(s.get("name") or "")) not in shown
+    ]
     if names or folded:
         lines.append("Controls")
         for row in folded[:8]:
-            name = str(row.get("name") or "")
+            name = _simplify_negation(str(row.get("name") or ""))
             count = int(row.get("count") or 1)
-            bit = f"  {name}"
+            bit = f"  {_clip_expr(name)}"
             if count > 1:
                 bit += f"  x{count}"
             lines.append(bit)
         for name in names[:8]:
-            lines.append(f"  {name}")
+            lines.append(f"  {_clip_expr(name)}")
     return lines
 
 
@@ -1273,7 +1604,7 @@ def _render_assignments(facet: dict[str, Any]) -> list[str]:
             if when:
                 bit += f"   when {when}"
             lines.append(bit)
-    consumed = [str(n) for n in (facet.get("consumed_by") or []) if n]
+    consumed = _consumer_names(facet.get("consumed_by"))
     if consumed:
         lines.append("Consumed by")
         lines.append("  " + "  ".join(consumed[:8]))
@@ -1314,22 +1645,42 @@ def _render_host_kernel(facet: dict[str, Any]) -> list[str]:
     return lines
 
 
-def _render_facets(facets: dict[str, Any], *, projection: str = "summary") -> list[str]:
+def _render_facets(
+    facets: dict[str, Any], *, projection: str = "summary", seed_name: str = ""
+) -> list[str]:
     lines: list[str] = []
+    resource_facet = facets.get("resource") if isinstance(facets.get("resource"), dict) else {}
+    already_backed = {
+        str(row.get("name") or "")
+        for row in (resource_facet.get("backing") or [])
+        if isinstance(row, dict)
+    }
     lines.extend(_render_assignments(facets.get("assignments") if isinstance(facets.get("assignments"), dict) else {}))
     lines.extend(_render_host_kernel(facets.get("host_kernel") if isinstance(facets.get("host_kernel"), dict) else {}))
     storage = facets.get("storage") if isinstance(facets.get("storage"), dict) else None
     if storage:
-        lines.append("Storage")
+        rows: list[str] = []
+        seen_backing: set[str] = set()
         for row in storage.get("backed_by") or []:
             if not isinstance(row, dict):
                 continue
-            space = str(row.get("physical_space") or "")
             name = str(row.get("name") or "")
-            lines.append(f"  backed by {name}" + (f"  {space}" if space else ""))
+            # The resource projection already cites this backing with its real
+            # space and the call that allocated it; repeating it here as
+            # "UNKNOWN", twice, reads as two weaker findings.
+            if not name or name in seen_backing or name in already_backed:
+                continue
+            seen_backing.add(name)
+            space = str(row.get("physical_space") or "")
+            if space.upper() == "UNKNOWN":
+                space = ""
+            rows.append(f"  backed by {name}" + (f"  {space}" if space else ""))
         for typ in storage.get("instance_of") or []:
-            lines.append(f"  INSTANCE_OF {typ}")
-        lines.append("")
+            rows.append(f"  INSTANCE_OF {typ}")
+        if rows:
+            lines.append("Storage")
+            lines.extend(rows)
+            lines.append("")
     controls = facets.get("controls") if isinstance(facets.get("controls"), dict) else None
     if controls:
         lines.append("Controls")
@@ -1356,20 +1707,136 @@ def _render_facets(facets: dict[str, Any], *, projection: str = "summary") -> li
         lines.append("")
     used = facets.get("used_by") if isinstance(facets.get("used_by"), dict) else None
     if used:
-        lines.append("Used by")
-        items = list(used.items())
-        if str(projection or "") == "locations":
-            for name, n in items[:20]:
+        keep = set(_consumer_names(used))
+        seed_leaf = _last_ident(str(seed_name or "")).lower()
+        items = [
+            (name, n)
+            for name, n in used.items()
+            if name in keep and _last_ident(str(name)).lower() != seed_leaf
+        ]
+        if items:
+            cap = 20 if str(projection or "") == "locations" else 8
+            head = "Used by"
+            if len(items) > cap:
+                head += f" ({cap} of {len(items)})"
+            lines.append(head)
+            for name, n in items[:cap]:
                 lines.append(f"  {name} ×{n}")
-        else:
-            for name, n in items[:8]:
-                lines.append(f"  {name} ×{n}")
-        lines.append("")
+            lines.append("")
     resource = facets.get("resource") if isinstance(facets.get("resource"), dict) else {}
     lines.extend(_render_resource(resource))
     controls_proj = facets.get("controls_proj") if isinstance(facets.get("controls_proj"), dict) else {}
     lines.extend(_render_control_proj(controls_proj))
     return lines
+
+
+def _collapse_runs(numbers: list[int]) -> list[str]:
+    """``[1381,1382,1383,1385,1386]`` → ``['1381-1383', '1385-1386']``."""
+    out: list[str] = []
+    start = prev = None
+    for value in numbers:
+        if start is None:
+            start = prev = value
+            continue
+        if value == prev + 1:
+            prev = value
+            continue
+        out.append(f"{start}-{prev}" if prev > start else f"{start}")
+        start = prev = value
+    if start is not None:
+        out.append(f"{start}-{prev}" if prev > start else f"{start}")
+    return out
+
+
+#: An assigned value is echoed from a line the card already prints, so cutting
+#: it costs nothing. A guard can live far above the write and be the only place
+#: the condition appears, so it gets room to arrive whole.
+_EXPR_ECHO_MAX = 96
+_GUARD_ECHO_MAX = 240
+#: A field's write sites sit in files this card never prints. Nothing echoes
+#: them, so an elided right-hand side is the only copy the reader gets, and one
+#: cut mid-call sent a reader back for the line it came from.
+_REMOTE_EXPR_MAX = 220
+
+
+def _clip_expr(text: str, limit: int = _EXPR_ECHO_MAX) -> str:
+    """Shorten an expression that the Source block above already prints in full."""
+    flat = " ".join(str(text or "").split())
+    if len(flat) <= limit:
+        return flat
+    return flat[: limit - 1].rstrip() + "…"
+
+
+def _clip_guard(text: str) -> str:
+    return _clip_expr(text, _GUARD_ECHO_MAX)
+
+
+# A loop or switch header is not a condition on the site: `for (i < n)` says the
+# site runs on some iteration, and `while (true)` says nothing at all. Echoing
+# either after "when" reads as a claim about when the code runs that is not true.
+_LOOP_GUARD_RE = re.compile(r"^(?:for|while|do|switch|cxx_for_range)\s*\(")
+
+
+def _when_clauses(values: Any, limit: int = 3) -> list[str]:
+    """Guard texts fit to print after "when", conditions only."""
+    from ascendc_codemap_mcp.engine.query.sql import _simplify_negation
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        text = str(value or "").strip()
+        if not text or _LOOP_GUARD_RE.match(text):
+            continue
+        text = _clip_guard(_simplify_negation(text))
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+        if len(out) >= limit:
+            break
+    return out
+
+
+_NOT_A_CONSUMER = re.compile(r'[()"\']|&&|\|\||==|!=|>=|<=')
+
+
+def _consumer_names(values: Any) -> list[str]:
+    """Consumers, as names. A log call and a predicate are neither.
+
+    "Consumed by" is a list of places to go read next, so an entry has to be
+    something a caller can resolve; expression text mixed into the same run-on
+    line makes the resolvable names harder to find, not easier.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        text = str(value or "").strip()
+        if not text or _NOT_A_CONSUMER.search(text) or len(text) > 80:
+            continue
+        if _is_validation_name(text) or _is_noise_name(text):
+            continue
+        if text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
+_IDENTITY_RHS_RE = re.compile(r"^(?:static_cast\s*<[^>]*>\s*)?\(?\s*([A-Za-z_][\w.:>-]*)\s*\)?$")
+
+
+def _is_identity_rhs(name: str, rhs: str) -> bool:
+    """Whether the right-hand side only restates the field being written.
+
+    `IsNEqual ← static_cast<uint8_t>(isNEqual)` carries one fact — the write
+    happened here — and spends a line saying the value came from the field of
+    the same name. Forty of them in a row buried the two lines that named a
+    different source, and a reader nearly missed them.
+    """
+    match = _IDENTITY_RHS_RE.match(str(rhs or "").strip())
+    if match is None:
+        return False
+    return _last_ident(match.group(1)).lower() == _last_ident(str(name or "")).lower()
 
 
 def _render_state_changes(changes: Any) -> list[str]:
@@ -1383,80 +1850,243 @@ def _render_state_changes(changes: Any) -> list[str]:
         sites = [s for s in (group.get("sites") or []) if isinstance(s, dict)]
         for site in sites:
             line = int(site.get("line") or 0)
-            rhs = str(site.get("rhs") or "").strip()
-            when = str(site.get("when") or "").strip()
+            raw_rhs = str(site.get("rhs") or "")
+            rhs = "" if _is_identity_rhs(name, raw_rhs) else _clip_expr(raw_rhs)
+            when = _clip_guard(site.get("when"))
             bit = f"    {line}" if line else "    ?"
             if rhs:
                 bit += f" ← {rhs}"
             if when:
-                bit += f" [{when}]"
+                bit += f" when {when}"
             lines.append(bit)
     lines.append("")
     return lines
 
 
-def _call_loc(row: dict[str, Any]) -> str:
+def _base_name(path: str) -> str:
+    return str(path or "").replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def _site_text(pairs: list[tuple[str, int]], home: str) -> str:
+    """Where the sites are. A bare line number only when the file is the card's.
+
+    ``Called by X @773`` reads as line 773 of the file on screen, so a caller
+    living in another file has to say which, or the reader opens the wrong one.
+    """
+    grouped: dict[str, list[int]] = {}
+    order: list[str] = []
+    for file, line in pairs:
+        base = _base_name(file)
+        tag = "" if base and base == home else base
+        if tag not in grouped:
+            grouped[tag] = []
+            order.append(tag)
+        if line not in grouped[tag]:
+            grouped[tag].append(line)
+    if order == [""] and len(grouped[""]) == 1:
+        return f"@{grouped[''][0]}"
+    chunks = []
+    for tag in order:
+        nums = ", ".join(str(n) for n in grouped[tag])
+        chunks.append(f"{tag}:{nums}" if tag else nums)
+    return "— " + "; ".join(chunks)
+
+
+def _call_loc(row: dict[str, Any], *, home: str = "") -> list[str]:
+    """One caller or callee, as the lines to print for it.
+
+    A row becomes several lines when its sites disagree about the condition:
+    two calls in the two halves of an ``if constexpr`` are one name and two
+    answers, and folding them onto one line has to pick a winner, which states
+    the wrong polarity for whichever site loses.
+    """
     name = str(row.get("name") or "").strip()
     parts = name.replace(".", "::").split("::")
     display = parts[-1] if parts else name
     if display in {"Init", "Set", "Get"} and len(parts) >= 2:
         display = "::".join(parts[-2:])
-    sites = [s for s in (row.get("sites") or []) if isinstance(s, dict)]
-    when = [str(w).strip() for w in (row.get("when") or []) if str(w).strip()]
-    site_lines = sorted({int(s.get("line") or 0) for s in sites if int(s.get("line") or 0) > 0})
-    kind = str(row.get("kind") or "")
-    if kind == "MACRO" or len(site_lines) > 1:
-        grouped: dict[str, list[int]] = {}
-        order: list[str] = []
-        for site in sites:
-            raw = str(site.get("file") or "").replace("\\", "/")
-            base = raw.rsplit("/", 1)[-1] if raw else ""
-            line = int(site.get("line") or 0)
-            if not base or line <= 0:
-                continue
-            if base not in grouped:
-                grouped[base] = []
-                order.append(base)
-            if line not in grouped[base]:
-                grouped[base].append(line)
-        if order:
-            parts = []
-            for base in order:
-                lines_s = ", ".join(str(n) for n in grouped[base])
-                parts.append(f"{base}:{lines_s}")
-            loc = f"- {display} — {'; '.join(parts)}"
-        else:
-            loc = f"- {display}"
-    else:
-        line = site_lines[0] if site_lines else int(row.get("line") or 0)
-        loc = f"- {display} @{line}" if line else f"- {display}"
-    if when:
-        loc += "  " + "  ".join(f"when {w}" for w in when[:3])
-    return loc
+    home_base = _base_name(home)
+    groups: dict[str, list[tuple[str, int]]] = {}
+    order: list[str] = []
+    for site in row.get("sites") or []:
+        if not isinstance(site, dict):
+            continue
+        line = int(site.get("line") or 0)
+        if line <= 0:
+            continue
+        guard = str(site.get("guard") or "")
+        if guard not in groups:
+            groups[guard] = []
+            order.append(guard)
+        pair = (str(site.get("file") or row.get("file") or ""), line)
+        if pair not in groups[guard]:
+            groups[guard].append(pair)
+
+    def _tail(text: str, guards: Any) -> str:
+        when = _when_clauses(guards)
+        return text + "  " + "  ".join(f"when {w}" for w in when) if when else text
+
+    if not order:
+        line = int(row.get("line") or 0)
+        head = f"- {display} @{line}" if line else f"- {display}"
+        return [_tail(head, row.get("when"))]
+    return [
+        _tail(f"- {display} {_site_text(groups[guard], home_base)}", [guard])
+        for guard in order
+    ]
 
 
-def _render_call_graph(calls: dict[str, Any] | None) -> list[str]:
+def _render_call_graph(
+    calls: dict[str, Any] | None,
+    *,
+    name: str = "",
+    has_body: bool = False,
+    home: str = "",
+) -> list[str]:
     if not isinstance(calls, dict):
         return []
     lines: list[str] = []
     called_by = [r for r in (calls.get("called_by") or []) if isinstance(r, dict)]
     outgoing = [r for r in (calls.get("calls") or []) if isinstance(r, dict)]
     possible = [r for r in (calls.get("possible_callers") or []) if isinstance(r, dict)]
+
+    def _head(label: str, shown: list[dict[str, Any]], key: str) -> str:
+        total = int(calls.get(key) or len(shown))
+        return f"**{label}**" if total <= len(shown) else (
+            f"**{label} ({len(shown)} of {total})**"
+        )
+
     if called_by:
-        lines.append("**Called by**")
+        lines.append(_head("Called by", called_by, "called_by_total"))
         for row in called_by:
-            lines.append(_call_loc(row))
+            lines.extend(_call_loc(row, home=home))
+        lines.append("")
+    else:
+        # A tiling template's hooks are invoked by the framework base class,
+        # which is not in the tree, so their caller list is empty. Dropping the
+        # section made that look like a question the card had not been asked,
+        # and one reader searched eleven times for the call order before
+        # concluding it was unavailable. Printing it only when a body was found
+        # left the same gap one step further along: two cards, one saying
+        # "nothing calls this" and one silent, with no way to tell whether the
+        # silent one meant zero or meant unchecked.
+        leaf = _last_ident(name) or name
+        subject = f"{leaf} to" if leaf else "it to"
+        lines.append("**Called by**")
+        # "Never called" is a claim about the whole tree, and an unresolved
+        # call site is indistinguishable here from an absent one. State the
+        # search that was run instead, so a reader who suspects a caller knows
+        # what has not been ruled out.
+        note = (
+            f"- no resolved caller. No indexed call site binds {subject} a "
+            f"definition; that fits a framework hook called from outside the "
+            f"snapshot, and equally a call this CodeMap failed to resolve"
+            if has_body
+            else
+            f"- no resolved caller, and no definition either. This CodeMap "
+            f"indexes one operator, so a shared header's other users are out "
+            f"of range and 'no callers' means none within it"
+        )
+        lines.append(note)
         lines.append("")
     if outgoing:
-        lines.append("**Calls**")
+        lines.append(_head("Calls", outgoing, "calls_total"))
         for row in outgoing:
-            lines.append(_call_loc(row))
+            lines.extend(_call_loc(row, home=home))
         lines.append("")
     if possible:
-        lines.append(f"**Possible callers ({len(possible)} candidates)**")
+        total = int(calls.get("possible_callers_total") or len(possible))
+        seen = f"{len(possible)} of {total} candidates" if total > len(possible) else (
+            f"{len(possible)} candidates"
+        )
+        lines.append(f"**Possible callers ({seen})**")
         for row in possible:
-            lines.append(_call_loc(row))
+            lines.extend(_call_loc(row, home=home))
         lines.append("")
+    return lines
+
+
+def _render_tiling_data_fields(rows: Any) -> list[str]:
+    """Each field of a TilingData struct with who fills it and who reads it."""
+    items = [r for r in (rows or []) if isinstance(r, dict) and r.get("name")]
+    if not items:
+        return []
+    lines = ["TilingData fields  (host write → transport → kernel read)"]
+    for row in items:
+        name = str(row.get("name") or "")
+        line = int(row.get("line") or 0)
+        head = f"  {name}"
+        if line:
+            head += f"  {line}"
+        writes = [str(x) for x in (row.get("writes") or []) if x]
+        transport = [str(x) for x in (row.get("transport") or []) if x]
+        readers = [str(x) for x in (row.get("readers") or []) if x]
+        parts: list[str] = []
+        if writes:
+            parts.append("host " + ", ".join(writes))
+        if transport:
+            parts.append("via " + ", ".join(transport))
+        if readers:
+            parts.append("kernel " + ", ".join(readers))
+        if parts:
+            head += "  " + "  ".join(parts)
+        elif not line:
+            continue
+        lines.append(head)
+    lines.append("")
+    return lines
+
+
+def _render_unit_resources(rows: Any) -> list[str]:
+    """Resources declared in this unit, each with the facts its own card shows."""
+    items = [r for r in (rows or []) if isinstance(r, dict) and r.get("name")]
+    if not items:
+        return []
+    lines = ["Resources in this unit"]
+    for row in items:
+        kind = str(row.get("kind") or "")
+        name = str(row.get("name") or "")
+        line = int(row.get("line") or 0)
+        facts = [
+            f"{key}={value}"
+            for key, value in (row.get("facts") or [])
+            if key not in {"scope"}
+        ]
+        head = f"  {kind} {name}"
+        if line:
+            head += f"  {line}"
+        if facts:
+            head += "  " + "  ".join(facts)
+        lines.append(head)
+    lines.append("")
+    return lines
+
+
+def _render_operations(rows: Any, *, title: str = "Pipeline operations") -> list[str]:
+    """What this unit does to the pipeline, by classified call site."""
+    items = [r for r in (rows or []) if isinstance(r, dict) and r.get("category")]
+    if not items:
+        return []
+    lines = [title]
+    for row in items:
+        category = str(row.get("category") or "")
+        count = int(row.get("count") or 0)
+        split = [c for c in (row.get("by_callee") or []) if isinstance(c, dict)]
+        bit = f"  {category} ×{count}"
+        if split:
+            # The category total answers "how busy"; only the split answers
+            # "how many flags", which is the question that gets asked.
+            named = ", ".join(
+                f"{c.get('name')} ×{int(c.get('count') or 0)}" for c in split[:4]
+            )
+            rest = len(split) - 4
+            bit += "  " + named + (f", +{rest} more" if rest > 0 else "")
+        else:
+            callees = [str(c) for c in (row.get("callees") or []) if c]
+            if callees:
+                bit += "  " + ", ".join(callees[:3])
+        lines.append(bit)
+    lines.append("")
     return lines
 
 
@@ -1487,6 +2117,33 @@ def _render_unit_fields(rows: Any) -> list[str]:
     return lines
 
 
+def _site_coverage_line(
+    payload: dict[str, Any], *, ident: str, file: str, line: int
+) -> str:
+    """Say what a site view covers, and name the half it does not.
+
+    Addressing a target by file and line and addressing it by name return
+    different sections of the same subject: the site view carries the state
+    changes and the fields, the symbol card carries the definition sites, the
+    callers and the guards. Neither contains the other, and only the symbol
+    card ever said how complete it was -- so a reader driven here by a clipped
+    body or an ambiguous name lost the completeness signal without being told
+    it had a second half to ask for.
+    """
+    if not (file and line):
+        return ""
+    where = f"the unit around {file}:{line}"
+    if not ident:
+        return f"Coverage: {where} · lists complete for this unit"
+    leaf = _last_ident(ident) or ident
+    tail = (
+        f"state changes and fields below are every one in this unit; "
+        f"definition sites, callers and guards for {leaf} are on its symbol "
+        f"card — resolve symbol={leaf}"
+    )
+    return f"Coverage: {where} · {tail}"
+
+
 def _render_site_markdown(payload: dict[str, Any], *, projection: str) -> list[str]:
     file = str(payload.get("file") or "")
     line = int(payload.get("line") or 0)
@@ -1508,6 +2165,9 @@ def _render_site_markdown(payload: dict[str, Any], *, projection: str) -> list[s
         lines.append(f"{file}:{line}")
     if fn_start and fn_end and (unit_start != fn_start or unit_end != fn_end):
         lines.append(f"Showing {unit_start}-{unit_end}")
+    cover = _site_coverage_line(payload, ident=ident, file=file, line=line)
+    if cover:
+        lines.append(cover)
     if lines:
         lines.append("")
     if snippet:
@@ -1540,12 +2200,298 @@ def _render_site_markdown(payload: dict[str, Any], *, projection: str) -> list[s
         enc = payload.get("enclosing") if isinstance(payload.get("enclosing"), dict) else {}
         facets = enc.get("facets") if isinstance(enc.get("facets"), dict) else {}
         calls = facets.get("calls") if isinstance(facets.get("calls"), dict) else None
-    lines.extend(_render_call_graph(calls))
+    lines.extend(_render_call_graph(calls, home=str(payload.get("file") or "")))
+    lines.extend(_render_operations(payload.get("operations")))
+    lines.extend(_render_unit_resources(payload.get("unit_resources")))
     lines.extend(_render_unit_fields(payload.get("field_bundles")))
     hint = str(payload.get("hint") or "").strip()
     if hint:
         lines.append(hint)
     return lines
+
+
+def _rival_owners(query: Any, primary: dict[str, Any]) -> set[str]:
+    """Classes that declare their own member of the same name as the seed.
+
+    References are found by leaf name, so a call to `NzPost::ProcessSink` was
+    listed under `S1S2PostRegbase::ProcessSink` -- a reader could only conclude
+    the two are connected, which they are not. A site sitting inside a class
+    that has its own version is referring to that one.
+
+    Only classes that declare the name are excluded. A caller in an unrelated
+    class is a real reference and stays.
+    """
+    owner_of = getattr(query, "owner_of", None)
+    hits_for = getattr(query, "_exact_name_hits", None)
+    if not callable(owner_of) or not callable(hits_for):
+        return set()
+    name = str(primary.get("name") or "")
+    leaf = name.replace(".", "::").rsplit("::", 1)[-1]
+    if not leaf:
+        return set()
+    seed = (
+        name.replace(".", "::").rsplit("::", 1)[0].rsplit("::", 1)[-1]
+        if "::" in name
+        else owner_of(str(primary.get("file") or ""), int(primary.get("line") or 0))
+    )
+    if not seed:
+        return set()
+    owners: set[str] = set()
+    try:
+        for hit in hits_for(leaf, limit=32):
+            found = owner_of(
+                str(hit.get("file") or ""),
+                int(hit.get("line_start") or hit.get("line") or 0),
+                hit.get("data"),
+            )
+            if found and found != seed:
+                owners.add(found)
+    except Exception:
+        return set()
+    return owners
+
+
+def _mark_rival_owner_uses(
+    query: Any, primary: dict[str, Any], uses: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Name the class a reference sits in when that class has its own version.
+
+    References are found by leaf name, so a call to `NzPost::ProcessSink` was
+    listed plainly under `S1S2PostRegbase::ProcessSink` and read as a link
+    between two unrelated templates.
+
+    Dropping them is the wrong trade. `KernelBase::Init` calling `preSfmg.Init()`
+    sits in a class with its own `Init` and is still a real reference, and losing
+    a true caller costs more than showing a suspect one. Say which class the
+    line is in and let the reader judge.
+    """
+    rivals = _rival_owners(query, primary)
+    owner_at = getattr(query, "owner_of", None)
+    if not rivals or not callable(owner_at):
+        return uses
+    for use in uses:
+        owner = owner_at(str(use.get("file") or ""), int(use.get("line") or 0))
+        if owner in rivals:
+            use["rival_owner"] = owner
+    return uses
+
+
+def _sibling_definition_rows(
+    payload: dict[str, Any], card: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Every declaration site of this name, one row per file:line.
+
+    The sites hang off whichever card carried the cross-reference extras, and
+    that is not always the card that gets rendered: `ping_` resolves to the
+    BUFFER, while the sites were attached to the FIELD it was minted from. The
+    result was a card claiming three definition sites and listing none. Fall
+    back to the matched-entity rows, which carry file and line for every hit.
+
+    Cached on the payload because the card is rendered once with its extras
+    and again from the slimmed copy.
+    """
+    rows = payload.get("other_definitions")
+    if isinstance(rows, list):
+        return rows
+    extras = card.get("extras") if isinstance(card.get("extras"), dict) else {}
+    sites = [s for s in (extras.get("definition_sites") or []) if isinstance(s, dict)]
+    if not sites:
+        sites = [s for s in (payload.get("matched_entities") or []) if isinstance(s, dict)]
+    rows = []
+    seen: set[tuple[str, int]] = set()
+    for site in sites:
+        file = str(site.get("file") or "")
+        line = int(site.get("line") or 0)
+        if not file or (file, line) in seen:
+            continue
+        seen.add((file, line))
+        rows.append({"file": file, "line": line, "name": str(site.get("name") or "")})
+    payload["other_definitions"] = rows
+    return rows
+
+
+def _render_sibling_definitions(
+    payload: dict[str, Any],
+    card: dict[str, Any],
+    *,
+    shown_file: str,
+    shown_line: int,
+) -> list[str]:
+    """The definitions of this name that the card did not open.
+
+    A name defined on both sides of the boundary resolves to whichever site
+    ranked first, and the coverage line counted the others without saying
+    where they were. A reader after the kernel copy of `CalTNDDenseIndex` got
+    the host one, with nothing to indicate a kernel one existed.
+
+    The card is rendered once with its cross-reference extras and again from
+    the slimmed payload, so the list is cached where slimming can keep it.
+    """
+    rows = _sibling_definition_rows(payload, card)
+    leaf = _last_ident(str(card.get("name") or ""))
+    here = (str(shown_file or ""), int(shown_line or 0))
+    rest = [
+        r for r in rows
+        if isinstance(r, dict) and (str(r.get("file") or ""), int(r.get("line") or 0)) != here
+    ]
+    if not rest:
+        return []
+    lines = ["**Other definitions of this name**"]
+    for row in rest:
+        file = str(row.get("file") or "")
+        line = int(row.get("line") or 0)
+        name = str(row.get("name") or "")
+        qualifier = f"  {name}" if name and _last_ident(name) != leaf else ""
+        lines.append(f"- {file}:{line}{qualifier}   resolve file={file} line={line}")
+    lines.append("")
+    return lines
+
+
+def _matched_lookalikes(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Entities the name reached that are neither the card nor its definitions.
+
+    The coverage count is only checkable against the list behind it, so the
+    count and the list have to be decided together: a card that says "listed
+    below" and then lists nothing is the same broken promise in a new place.
+    """
+    rows = [r for r in (payload.get("matched_entities") or []) if isinstance(r, dict)]
+    if len(rows) < 2:
+        return []
+    cards = [c for c in (payload.get("cards") or []) if isinstance(c, dict)]
+    card = cards[0] if cards else {}
+    leaf = _last_ident(str(card.get("name") or "")).lower()
+    here = (
+        str(card.get("name") or ""),
+        _norm_path(str(card.get("file") or "")),
+        int(card.get("line") or card.get("line_start") or 0),
+    )
+    # Where the definition list will carry these rows, this heading would
+    # repeat them and say something weaker about them. Ask the list, not the
+    # count: the count came from a different card than the one being rendered,
+    # so trusting it suppressed this heading on cards that listed nothing.
+    here_site = (here[1], here[2])
+    if [
+        r
+        for r in _sibling_definition_rows(payload, card)
+        if (_norm_path(str(r.get("file") or "")), int(r.get("line") or 0)) != here_site
+    ]:
+        return []
+    rest: list[dict[str, Any]] = []
+    for row in rows:
+        name = str(row.get("name") or "")
+        file = _norm_path(str(row.get("file") or ""))
+        line = int(row.get("line") or 0)
+        if (name, file, line) == here:
+            continue
+        # A second row for the same name with nowhere to go is the primary
+        # seen through another index, not a look-alike worth reporting.
+        if not file and _last_ident(name).lower() == leaf:
+            continue
+        rest.append(row)
+    return rest
+
+
+def _render_matched_entities(payload: dict[str, Any]) -> list[str]:
+    """Name the look-alikes, so "did I get the right one" needs no search."""
+    rest = _matched_lookalikes(payload)
+    if not rest:
+        return []
+    lines = ["**Other entities matching this name**"]
+    for row in rest:
+        name = str(row.get("name") or "")
+        kind = str(row.get("kind") or "")
+        file = str(row.get("file") or "")
+        line = int(row.get("line") or 0)
+        loc = f"  {file}:{line}" if file and line else (f"  {file}" if file else "")
+        lines.append(f"- {name}  {kind}{loc}".rstrip())
+    lines.append("")
+    return lines
+
+
+def _payload_has_definition(payload: dict[str, Any]) -> bool:
+    """Whether this card can show a body, as opposed to only use sites.
+
+    An entity minted from a call or a base-class clause carries a name and a
+    kind but no file, because the declaration it refers to was never in the
+    snapshot. The card rendered identically to a resolved one either way.
+    """
+    if [c for c in (payload.get("candidate_sources") or []) if isinstance(c, dict)]:
+        return True
+    cards = [c for c in (payload.get("cards") or []) if isinstance(c, dict)]
+    if not cards:
+        return True
+    return bool(str(cards[0].get("file") or "").strip())
+
+
+def _coverage_line(payload: dict[str, Any]) -> str:
+    """State whether the lists below are all of them.
+
+    Reviewers cannot cite "these are the only writers" from a list that might
+    be a first page, so they either re-derive it with a text search or hedge the
+    conclusion. The card already knows which case it is -- `coverage` records
+    whether siblings were checked, and the fitting pass records what it shed --
+    but none of it was rendered, so every answer looked equally provisional.
+    """
+    cov = payload.get("coverage")
+    cov = cov if isinstance(cov, dict) else {}
+    sites = int(cov.get("definition_sites_count") or 0)
+    sites_complete = bool(cov.get("definition_sites_complete"))
+    state = str(cov.get("completeness") or "")
+    parts: list[str] = []
+    # "lists complete" over a card that never had a body reads as "this is all
+    # there is to know about the name", when what happened is that the tree
+    # holds no definition at all. Say which of the two it is first.
+    if not _payload_has_definition(payload):
+        return (
+            "Coverage: no definition in this CodeMap — the name is reached only "
+            "through the use sites below, so its body is outside the indexed "
+            "tree. Nothing further to resolve; read the header in the source "
+            "repository if the body matters."
+        )
+    lookalikes = _matched_lookalikes(payload)
+    if sites <= 1 and lookalikes:
+        # One definition plus look-alikes is not the same fact as several
+        # definitions, and the reader cannot tell which they have without the
+        # names: `IsEmptyOutput` read as three definitions of itself until two
+        # of them turned out to be branches on the call.
+        parts.append(
+            f"1 definition · {len(lookalikes)} other entities matched the name, "
+            f"listed below"
+        )
+    elif sites > 1:
+        if sites_complete:
+            parts.append(f"{sites} definition sites (all listed)")
+        else:
+            # Saying a list is partial without saying how to finish it just
+            # moves the guesswork. Search pages to completion and now declares
+            # when it has reached it.
+            seed = str(payload.get("explore_pattern") or payload.get("pattern") or "").strip()
+            hint = f"; search pattern={seed} for all" if seed else ""
+            parts.append(f"{sites} definition sites (first page only{hint})")
+    elif sites == 1 and sites_complete:
+        # `first_hit` on a name with one definition means unique, not unchecked.
+        parts.append("the only definition of this name")
+    elif state == "first_hit":
+        parts.append("first match only; siblings not checked")
+    elif state == "siblings_checked":
+        parts.append("siblings checked")
+    # Naming the list that was cut is the whole value of admitting the cut. An
+    # unnamed admission reads as "distrust everything here", and one reader
+    # rebuilt a caller list that had arrived complete.
+    shed = [str(x) for x in (payload.get("trimmed_lists") or []) if str(x).strip()]
+    if shed:
+        parts.append(f"{', '.join(shed[:3])} trimmed to fit; the rest complete")
+    elif payload.get("context_trimmed"):
+        parts.append("cross-reference lists trimmed to fit")
+    elif payload.get("truncated"):
+        parts.append("some lists trimmed to fit")
+    else:
+        # "Lists complete" was read as a warranty over every section on the
+        # card, and it is not one: it means nothing was dropped to fit a size
+        # budget. A section with its own cap says so in its own heading, so
+        # name the scope here and let those headings speak for themselves.
+        parts.append("nothing dropped to fit; a capped section says so in its heading")
+    return "Coverage: " + " · ".join(parts) if parts else ""
 
 
 def _render_resolve_markdown(payload: dict[str, Any], *, projection: str) -> list[str]:
@@ -1561,6 +2507,16 @@ def _render_resolve_markdown(payload: dict[str, Any], *, projection: str) -> lis
             lines.append(kind)
         if file and line:
             lines.append(f"{file}:{line}")
+        lines.append("")
+    # Whatever made this answer approximate belongs above the answer, not in a
+    # structured field the reader never sees.
+    note = str(payload.get("match_note") or "").strip()
+    if note:
+        lines.append(f"> {note}")
+        lines.append("")
+    coverage = _coverage_line(payload)
+    if coverage:
+        lines.append(coverage)
         lines.append("")
     candidates = [c for c in (payload.get("candidates") or []) if isinstance(c, dict)]
     cand_src = [c for c in (payload.get("candidate_sources") or []) if isinstance(c, dict)]
@@ -1583,16 +2539,40 @@ def _render_resolve_markdown(payload: dict[str, Any], *, projection: str) -> lis
         lines.append("")
     elif primary and str(projection or payload.get("projection") or "summary") != "locations":
         if file:
+            # Tightening around the anchor is right for a hit inside a big span,
+            # but a definition card *is* the read: clipping it to a few lines is
+            # what forced a second resolve(file, line) to see the body.
+            is_definition = kind in {
+                EntityKind.FUNCTION.value,
+                EntityKind.METHOD.value,
+                EntityKind.KERNEL.value,
+                EntityKind.TYPE.value,
+            }
             src = _render_source(
                 [{"file": file, "line": line, "name": name, "snippet": snippet}],
-                tight=True if str(projection or "") == "summary" else False,
+                tight=str(projection or "") == "summary" and not is_definition,
             )
+            if is_definition:
+                src.extend(_definition_coverage_note(primary, src))
             lines.extend(["**Definition**" if ln == "**Source**" else ln for ln in src])
+    siblings = _render_sibling_definitions(
+        payload, primary, shown_file=file, shown_line=line
+    )
+    lines.extend(siblings)
+    if not siblings:
+        lines.extend(_render_matched_entities(payload))
     calls = payload.get("calls") if isinstance(payload.get("calls"), dict) else None
     if not calls:
         facets = primary.get("facets") if isinstance(primary.get("facets"), dict) else {}
         calls = facets.get("calls") if isinstance(facets.get("calls"), dict) else None
-    lines.extend(_render_call_graph(calls))
+    lines.extend(
+        _render_call_graph(
+            calls,
+            name=seed_name,
+            has_body=_payload_has_definition(payload),
+            home=str(primary.get("file") or ""),
+        )
+    )
     extras = primary.get("extras") if isinstance(primary.get("extras"), dict) else {}
     writers = extras.get("writers") or primary.get("writers") or []
     readers = extras.get("readers") or primary.get("readers") or []
@@ -1638,20 +2618,27 @@ def _render_resolve_markdown(payload: dict[str, Any], *, projection: str) -> lis
     ]
     if used:
         lines.append("**References**")
-        counts: dict[str, int] = {}
+        # Eight rows that were really one call site spread over eight argument
+        # lines read as eight independent places to go look.
+        by_file: dict[str, list[int]] = {}
+        rival_by_file: dict[str, set[str]] = {}
         for row in used:
-            file, _line, _, _ = _site_line(row)
-            if file:
-                counts[file] = counts.get(file, 0) + 1
-        if len(used) <= 8:
-            for row in used:
-                file, line, _, _ = _site_line(row)
-                if file and line:
-                    lines.append(f"- {file}:{line}")
-        else:
-            for file, n in list(counts.items())[:8]:
-                lines.append(f"- {file} · {n} refs")
-            lines.append(f"{len(used)} references across {len(counts)} files")
+            file, line, _, _ = _site_line(row)
+            if file and line:
+                by_file.setdefault(file, []).append(int(line))
+                rival = str(row.get("rival_owner") or "")
+                if rival:
+                    rival_by_file.setdefault(file, set()).add(rival)
+        total = sum(len(v) for v in by_file.values())
+        leaf = seed_name.replace(".", "::").rsplit("::", 1)[-1]
+        for file, line_nos in list(by_file.items())[:8]:
+            spans = _collapse_runs(sorted(set(line_nos)))
+            rivals = sorted(rival_by_file.get(file) or ())
+            verb = "declare their own" if len(rivals) > 1 else "declares its own"
+            note = f"  (in {', '.join(rivals)}, which {verb} {leaf})" if rivals else ""
+            lines.append(f"- {file}:{', '.join(spans)}{note}")
+        if len(by_file) > 8:
+            lines.append(f"{total} references across {len(by_file)} files")
         lines.append("")
     dim_names = [str(n).strip() for n in (payload.get("dim_names") or []) if str(n).strip()]
     if isinstance(support, dict) and support:
@@ -1710,11 +2697,91 @@ def _render_resolve_markdown(payload: dict[str, Any], *, projection: str) -> lis
     if bundle:
         facets.pop("resource", None)
         facets.pop("controls_proj", None)
-    lines.extend(_render_facets(facets, projection=projection))
+    lines.extend(_render_operations(payload.get("operations")))
+    lines.extend(
+        _render_operations(
+            payload.get("delegated_operations"),
+            title="Pipeline operations via callees (depth 1)",
+        )
+    )
+    lines.extend(_render_unit_resources(payload.get("unit_resources")))
+    lines.extend(_render_tiling_data_fields(payload.get("tiling_data_fields")))
+    lines.extend(_render_facets(facets, projection=projection, seed_name=seed_name))
+    lines.extend(_render_other_identities(cards[1:]))
     hint = str(payload.get("hint") or "")
     if hint:
         lines.extend([hint, ""])
     return lines
+
+
+def _definition_coverage_note(card: dict[str, Any], rendered: list[str]) -> list[str]:
+    """Say so when the body shown is a window, not the definition.
+
+    Fitting the card to a size budget can cut the body down to a handful of
+    lines. Without this the reader sees a short function and moves on, which is
+    a worse failure than returning nothing.
+    """
+    start = int(card.get("line_start") or card.get("line") or 0)
+    end = int(card.get("line_end") or 0)
+    if start <= 0 or end <= start:
+        return []
+    span = end - start + 1
+    numbers = [
+        int(m.group(1))
+        for m in (_NUMBERED_LINE_RE.match(row) for row in rendered)
+        if m
+    ]
+    shown = len(numbers)
+    if shown <= 0 or shown >= span:
+        return []
+    # "any part of 2379-2663" invites a line the reader already has, and a site
+    # resolve answers with the same window it just returned. One reader spent
+    # eight calls that way; another stopped at the cut. Name the line that
+    # begins what is missing.
+    resume = max(numbers) + 1 if numbers else start
+    tail = end - resume + 1
+    where = f"resolve file={card.get('file') or ''} line={resume}"
+    rest = (
+        # Naming the end as well takes the tail in one call. Without it the
+        # reader re-enters at the resume line and gets another window, which is
+        # why one of them gave up on the last forty lines rather than page.
+        f"{where} line_end={end} for the remaining {tail} lines ({resume}-{end})"
+        if resume <= end
+        else f"{where} for the rest"
+    )
+    return [f"(showing {shown} of {span} lines; {rest})", ""]
+
+
+_NUMBERED_LINE_RE = re.compile(r"^\s*(\d+)\|")
+
+
+def _render_other_identities(cards: list[dict[str, Any]]) -> list[str]:
+    """Resource and sync facts carried by the same name under another kind.
+
+    One name is often both a plain field declaration and the event that field
+    identifies. Whichever card ranks first, the semantics live on the other one,
+    so picking a winner loses them; both are stated instead.
+    """
+    blocks: list[str] = []
+    for card in cards:
+        if not isinstance(card, dict):
+            continue
+        facets = card.get("facets") if isinstance(card.get("facets"), dict) else {}
+        resource = facets.get("resource") if isinstance(facets.get("resource"), dict) else {}
+        rendered = _render_resource(resource)
+        if not rendered:
+            continue
+        kind = str(card.get("kind") or "")
+        file = str(card.get("file") or "")
+        line = int(card.get("line") or 0)
+        head = f"Also {kind}" if kind else "Also"
+        if file and line:
+            head += f"  {file}:{line}"
+        blocks.append(head)
+        blocks.extend(("  " + row) if row.strip() else row for row in rendered)
+    if blocks:
+        blocks.append("")
+    return blocks
 
 
 def _render_contract_markdown(payload: dict[str, Any]) -> list[str]:
@@ -2031,7 +3098,17 @@ def _overlay_site(card: dict[str, Any], site: dict[str, Any], query: Any) -> dic
     out["line"] = line
     if line_end:
         out["line_end"] = line_end
-    if snippet:
+    # The overlay re-reads the site with a use-site budget. When the card
+    # already carries a recorded span, that rebuild is narrower than what it
+    # replaces, and a declaration whose span is a single line loses its body.
+    existing = str(card.get("snippet") or "") if _file_matches(
+        str(card.get("file") or ""), file
+    ) else ""
+    if snippet and snippet.count("\n") >= existing.count("\n"):
+        out["snippet"] = snippet
+    elif existing:
+        out["snippet"] = existing
+    elif snippet:
         out["snippet"] = snippet
     elif site.get("snippet"):
         out["snippet"] = str(site.get("snippet") or "")
@@ -2236,7 +3313,7 @@ def attach_explore_fields(
                 }
             )
         if uses:
-            payload["used_at"] = uses
+            payload["used_at"] = _mark_rival_owner_uses(query, primary, uses)
         _attach_call_site_fanout(query, payload, primary)
         return _finish()
     try:
@@ -2317,7 +3394,7 @@ def attach_explore_fields(
                 }
             )
         if used:
-            payload["used_at"] = used
+            payload["used_at"] = _mark_rival_owner_uses(query, primary, used)
         if str(primary.get("kind") or seed_kind or "") not in _CONTRACT_KINDS:
             payload["completeness"] = COMPLETE if _has_definition(primary) else INCOMPLETE
             payload["unresolved_reason"] = (

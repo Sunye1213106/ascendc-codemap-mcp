@@ -48,11 +48,20 @@ _FUNCTION_DEF_KINDS = frozenset(
 
 
 def _cursor_definition_span(cursor) -> tuple[int, int]:
-    """Definition body extent; start==end when extent is unavailable."""
-    start = int(getattr(getattr(cursor, "location", None), "line", 0) or 0)
+    """Definition extent; start==end when the extent is unavailable.
+
+    ``cursor.location`` is the name token, so an out-of-class template method
+    would start at its own name and leave ``template <...>`` and the return type
+    outside the span. ``extent.start`` covers the whole declaration.
+    """
+    name_line = int(getattr(getattr(cursor, "location", None), "line", 0) or 0)
+    start = name_line
     end = start
     try:
         ext = getattr(cursor, "extent", None)
+        start_line = int(getattr(getattr(ext, "start", None), "line", 0) or 0)
+        if 0 < start_line < start or start <= 0:
+            start = start_line
         end_line = int(getattr(getattr(ext, "end", None), "line", 0) or 0)
         if end_line > end:
             end = end_line
@@ -70,7 +79,14 @@ def _remember_func(
     start: int,
     end: int,
 ) -> "FuncRecord":
-    """Keep the widest definition span for a short name (header vs cpp)."""
+    """Keep the widest definition span for a short name (header vs cpp).
+
+    The key is a short name, so unrelated definitions collide -- an in-class
+    declaration and every out-of-class override answer to ``Process``. Taking
+    the widest is fine; growing the kept end from a *different* definition is
+    not, because the result is a span that starts in one function and ends in
+    another, and every line in between then resolves to the wrong owner.
+    """
     rec = functions.get(name)
     if rec is None:
         rec = FuncRecord(name=name, file=file, line=start, line_end=end)
@@ -82,7 +98,9 @@ def _remember_func(
         rec.file = file
         rec.line = start
         rec.line_end = end
-    else:
+    elif file == rec.file and int(rec.line or 0) <= int(start or 0) <= max(
+        int(rec.line_end or 0), int(rec.line or 0)
+    ):
         rec.line_end = max(int(rec.line_end or 0), int(end or 0))
     return rec
 
@@ -112,6 +130,15 @@ class PathCond:
     negated: bool
     file: str
     line: int
+    #: First and last line of the branch this guard opens — the `then` block for
+    #: a plain guard, the `else` block for a negated one, the loop or `case` body
+    #: otherwise. `line` alone only says where the condition is written, which
+    #: cannot answer "does this guard hold at line N"; the body range can.
+    #: Starting the range at the condition line instead would make a negated
+    #: guard span the `then` block it excludes, so sites there would be reported
+    #: under the opposite of the truth. Both 0 when there is no usable extent.
+    body_start: int = 0
+    line_end: int = 0
     #: What kind of statement put this guard on the path — `if`, `ternary`,
     #: `switch`, a loop (`for` / `while` / `do` / `cxx_for_range`),
     #: `guard_clause` for the negation implied by an earlier `if (c) return;`,
@@ -663,6 +690,25 @@ def _file_of(cursor) -> str | None:
     except Exception:
         return None
     return _norm(f.name) if f is not None else None
+
+
+def _branch_body_span(stmt) -> tuple[int, int]:
+    """Line range of a guarded branch body, or (0, 0) when clang cannot say.
+
+    A guard recorded at its condition line answers "where is this written"
+    but not "does it hold at line N", which is what every later question
+    about a call or a read under that guard actually needs.
+    """
+    if stmt is None:
+        return (0, 0)
+    try:
+        start = int(stmt.extent.start.line or 0)
+        end = int(stmt.extent.end.line or 0)
+    except Exception:  # noqa: BLE001
+        return (0, 0)
+    if start <= 0 or end < start:
+        return (0, 0)
+    return (start, end)
 
 
 def _in_scope(
@@ -2016,13 +2062,13 @@ class _Walker:
         if then_stmt is not None:
             self.walk(
                 then_stmt,
-                stack + [PathCond(cond_text, False, file, line)],
+                stack + [PathCond(cond_text, False, file, line, *_branch_body_span(then_stmt))],
                 func,
             )
         if else_stmt is not None:
             self.walk(
                 else_stmt,
-                stack + [PathCond(cond_text, True, file, line)],
+                stack + [PathCond(cond_text, True, file, line, *_branch_body_span(else_stmt))],
                 func,
             )
 
@@ -2037,13 +2083,23 @@ class _Walker:
         if rest:
             self.walk(
                 rest[0],
-                stack + [PathCond(cond_text, False, file, line, kind="ternary")],
+                stack
+                + [
+                    PathCond(
+                        cond_text, False, file, line, *_branch_body_span(rest[0]), kind="ternary"
+                    )
+                ],
                 func,
             )
         if len(rest) > 1:
             self.walk(
                 rest[1],
-                stack + [PathCond(cond_text, True, file, line, kind="ternary")],
+                stack
+                + [
+                    PathCond(
+                        cond_text, True, file, line, *_branch_body_span(rest[1]), kind="ternary"
+                    )
+                ],
                 func,
             )
 
@@ -2059,7 +2115,16 @@ class _Walker:
             self.walk(
                 body,
                 stack
-                + [PathCond(f"switch({cond_text})", False, file, line, kind="switch")],
+                + [
+                    PathCond(
+                        f"switch({cond_text})",
+                        False,
+                        file,
+                        line,
+                        *_branch_body_span(body),
+                        kind="switch",
+                    )
+                ],
                 func,
             )
 
@@ -2096,7 +2161,16 @@ class _Walker:
                 self.walk(
                     ch,
                     stack
-                    + [PathCond(f"{kind}({cond_text})", False, file, line, kind=kind)],
+                    + [
+                        PathCond(
+                            f"{kind}({cond_text})",
+                            False,
+                            file,
+                            line,
+                            *_branch_body_span(ch),
+                            kind=kind,
+                        )
+                    ],
                     func,
                 )
         finally:
