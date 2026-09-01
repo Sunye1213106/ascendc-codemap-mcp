@@ -296,15 +296,22 @@ Query 只读已提交的 `.uo`（`source_line` / 图），不打开工作区文�
 | 一个名字             | `codemap_trace`  | `symbol`        |
 | 一个 `file:line`   | `codemap_source` | `file` + `line` |
 
-`trace` 的形态由参数在不在决定，不用声明模式：`symbol` 单传是那个名字的全部语义事实（定义体、每个写入点及其取值/守卫/被谁调用、读者、kernel 消费者、调用图、编译期合法键）；再给 `to_symbol` 是两点间最短关系路径；给 `dim` + `value` 是编译期合法键空间。`relation` 可选收窄到 `call` / `data` / `control` / `compile`，不填就是全部——**最短的调用就是最完整的调用**。
+`trace` 的形态由参数在不在决定，不用声明模式：
 
-`source` 不收 `symbol`，`trace` 不收 `file` / `line`：混着传返回 `INVALID_QUERY` 并附合法 filter 清单，不会去猜你要哪个。
+- 只传 `symbol`：那个名字的全部语义事实（定义体、每个写入点及其取值/守卫/被谁调用、读者、kernel 消费者、调用图、编译期合法键）。这是默认 80% 工作量。
+- 再给 `to_symbol`：两点之间的**有向四族菜单**（call / data / control / compile，每族最多两条短路径）。这是关系菜单，不是全路径导出，也不是「最短一条 = 完整答案」。写链仍用 `trace symbol=` 看 Writes。
+- 给 `dim` + `value`：编译期合法键空间；`dim=*` 列出本算子全部 dim。
+
+`relation=` 可选收窄到 `call` / `data` / `control` / `compile`（逗号分隔）。省略则四族都给；指定一族只跑该族。一条 1 跳 READS 不是写链；某个族 `no path` 只表示图上没建那类边。
+
+`source` 不收 `symbol`，`trace` 不收 `file` / `line`：混着传会**丢掉非法参数、保留合法的**（`trace` 留 `symbol`，`source` 留 `file`/`line`），不会去猜你要哪个。`source` 的标题是覆盖所问窗口**主体**的包围函数：`line` 已在函数体内则保持该函数；`line` 落在上一函数尾巴、窗口主体已是下一函数时改挂新身份，`Called by` 跟着走。`line_end=` 裁 snippet。
 
 CLI：
 
 ```bash
 ascendc-codemap-mcp discover --project <算子目录>
 ascendc-codemap-mcp query --codemap-id <id> --operation trace --symbol IsPse
+ascendc-codemap-mcp query --codemap-id <id> --operation trace --symbol DoOpTiling --to-symbol DoSparse
 ascendc-codemap-mcp query --codemap-id <id> --operation search --pattern BufferNum
 ascendc-codemap-mcp query --codemap-id <id> --operation source --file op_host/x.cpp --line 1673
 ```

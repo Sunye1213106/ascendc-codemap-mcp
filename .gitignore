@@ -9,9 +9,11 @@ build/
 *.uo
 .ascendc-codemap/
 _cann/
+_probe/
 .pytest_tmp/
 benchmarks/_*.json
 benchmarks/_*.txt
+benchmarks/_*.py
 benchmarks/*.json
 benchmarks/*.txt
 _eval/

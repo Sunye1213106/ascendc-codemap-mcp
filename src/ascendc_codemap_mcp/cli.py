@@ -45,7 +45,7 @@ def _main(argv: list[str] | None = None) -> int:
             "  discover  [--project DIR] [--architecture ARCH]\n"
             "  index     --project DIR --architecture ARCH\n"
             "  update    (--codemap-id ID | --project DIR --architecture ARCH) [--confirm-scope]\n"
-            "  query     (--codemap-id ID | --project DIR --architecture ARCH) [--operation OP] [--symbol S] [--file F --line N]\n"
+            "  query     (--codemap-id ID | --project DIR --architecture ARCH) [--operation OP] [--symbol S] [--to-symbol S] [--file F --line N]\n"
             "  status    (--codemap-id ID | --project DIR --architecture ARCH)\n"
         )
         return 0
@@ -117,6 +117,7 @@ def _main(argv: list[str] | None = None) -> int:
 
         parser.add_argument("--operation", default="resolve", choices=PUBLIC_OPERATIONS)
         parser.add_argument("--symbol", default="")
+        parser.add_argument("--to-symbol", default="", dest="to_symbol")
         parser.add_argument("--name", default="")
         parser.add_argument("--pattern", default="", dest="search_pattern")
         parser.add_argument("--kind", default="")
@@ -128,6 +129,7 @@ def _main(argv: list[str] | None = None) -> int:
         parser.add_argument("--operator", default="")
         parser.add_argument("--dim", default="")
         parser.add_argument("--value", default="")
+        parser.add_argument("--relation", default="")
         parser.add_argument("--file", default="")
         parser.add_argument("--line", type=int, default=0)
         parser.add_argument("--line-end", type=int, default=0)
@@ -197,6 +199,8 @@ def _main(argv: list[str] | None = None) -> int:
                 operator=ns.operator,
                 dim=ns.dim,
                 value=ns.value,
+                relation=ns.relation,
+                to_symbol=ns.to_symbol,
                 codemap_id=ns.codemap_id,
                 limit=ns.limit,
                 cursor=ns.cursor,

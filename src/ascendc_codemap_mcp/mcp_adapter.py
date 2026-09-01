@@ -318,7 +318,7 @@ def codemap_source(
     architecture: str = "",
     limit: int = 8,
 ) -> CallToolResult:
-    """Read indexed source at a location, titled as the enclosing function. line_end= crops the snippet to that range without changing whose card this is. Callers of that function are included. The returned source is already Read — do not open the file again. Takes no symbol."""
+    """Read indexed source at a location, titled as the enclosing function that owns most of the asked window. Keep that function when line is inside it; retitle when line sits in the previous function's tail. line_end= crops the snippet. Callers follow that identity. The returned source is already Read — do not open the file again. Takes no symbol."""
     return _query_result(
         query_impl(
             operation="source",

@@ -87,7 +87,7 @@ Output order:
 | `source` | summary + the smallest statement window that carries the meaning |
 | `locations` | Exhaustive sites |
 
-Happy path: unknown → `search`; known ident or `file:line` → `resolve`. `trace` proves A→B. `find` / `contract` / `impact` / `entry` stay internal.
+Happy path: unknown → `search`; known ident → `trace`; `file:line` → `source`. `trace` + `to_symbol` is a directed four-family menu (call / data / control / compile), not a dump of simple paths. `find` / `contract` / `impact` / `entry` stay internal.
 
 Query snippets come from `.uo` `source_line` / `source_span`. Missing → `source unavailable in snapshot`.
 
