@@ -1,6 +1,6 @@
 # AscendC CodeMap MCP
 
-![AscendC CodeMap MCP：提取与查询框架](docs/codemap-framework.png)
+![CodeMap：面向 AscendC 算子的语义索引与查询服务](docs/codemap-overview.jpg)
 
 按 operator + architecture 编译得到的、自包含 AscendC 语义索引。构建把 C++ / CANN DSL 编成唯一、可信、可追溯的语义事实；`.uo` 是唯一产品真值；Query 把这些事实压缩成面向 AI 的上下文。Agent 只负责理解任务和使用事实。
 
