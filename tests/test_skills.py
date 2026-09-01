@@ -15,9 +15,11 @@ def test_query_skill_has_single_owner() -> None:
     canonical = canonical_query_skill().read_text(encoding="utf-8")
     bundled = (bundled_root() / "query-codemap" / "SKILL.md").read_text(encoding="utf-8")
     assert canonical == bundled
-    assert "Unknown → search" in canonical
+    # The routing rule has to be the first thing readable, and it has to route
+    # on what the caller holds rather than on a mode it must name.
+    assert "no idea where it lives" in canonical
+    assert "| a name |" in canonical
     assert "operation=find" not in canonical
-    assert "find kind" not in canonical
 
 
 def test_bundled_skills_exist() -> None:
@@ -32,9 +34,11 @@ def test_bundled_skills_exist() -> None:
     text = (root / "query-codemap" / "SKILL.md").read_text(encoding="utf-8")
     assert "pilot_cli" not in text
     assert "/uo-init" not in text
-    assert "codemap_query" in text
+    for tool in ("codemap_search", "codemap_trace", "codemap_source"):
+        assert tool in text
+    assert "codemap_query" not in text, "the compat tool must not be taught"
     assert "codemap_id" in text
-    assert "search works like regex" in text
+    assert "Regex over indexed source lines" in text
     assert "kind=" in text
     assert "file=" in text
     assert "glob/path" in text or "path filter" in text
@@ -61,10 +65,10 @@ def test_install_skills_under_fake_home(tmp_path: Path, monkeypatch) -> None:
     alias = tmp_path / ".cursor" / "skills" / "query-codemap" / "SKILL.md"
     assert alias.is_file()
     body = skill.read_text(encoding="utf-8")
-    assert "codemap_query" in body
+    assert "codemap_trace" in body
     assert "codemap_explore" not in body
     assert "ascendc-codemap-mcp query" in body
-    assert "search works like regex" in body
+    assert "Regex over indexed source lines" in body
     assert "UNKNOWN" not in body
 
 

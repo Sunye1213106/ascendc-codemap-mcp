@@ -90,7 +90,7 @@ def test_a_body_over_the_hard_cap_says_how_to_read_the_rest() -> None:
     text = _card("CalGQABandIndex")
     note = [ln for ln in text.splitlines() if "showing" in ln]
     assert note, "a clipped body must say so"
-    assert "resolve file=" in text
+    assert "source file=" in text, "the way on has to name the tool that reads lines"
 
 
 def test_the_way_on_names_the_line_the_body_stopped_at() -> None:
@@ -102,7 +102,7 @@ def test_the_way_on_names_the_line_the_body_stopped_at() -> None:
     """
     text = _card("CalGQABandIndex")
     nums = [int(m.group(1)) for m in re.finditer(r"^\s*(\d+)\|", text, re.M)]
-    note = next(ln for ln in text.splitlines() if "showing" in ln and "resolve" in ln)
+    note = next(ln for ln in text.splitlines() if "showing" in ln and "source" in ln)
     assert f"line={max(nums) + 1}" in note, note
     # And that line has to actually return what it promises.
     tail = _resolve_site("op_kernel/arch35/deter.h", max(nums) + 1)
@@ -134,7 +134,7 @@ def test_a_long_callee_list_does_not_cost_the_body_its_lines() -> None:
     nums = [int(m.group(1)) for m in re.finditer(r"^\s*(\d+)\|", text, re.M)]
     assert len(nums) >= 240, f"body cut to {len(nums)} lines"
     assert nums == list(range(nums[0], nums[-1] + 1)), "gaps in body"
-    assert "resolve file=" in text, "a clipped body must say how to read the rest"
+    assert "source file=" in text, "a clipped body must say how to read the rest"
 
 
 def test_the_rendered_text_is_not_charged_against_the_fact_budget() -> None:

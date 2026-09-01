@@ -38,7 +38,9 @@ class CodemapHandle(BaseModel):
     source_revision: str = ""
     indexed_revision: str = ""
     freshness: str = ""
-    semantic_completeness: float | None = None
+    #: `complete` / `partial` from the analyze stage, or None when the build
+    #: predates the stamp. Never a number: it is a verdict, not a ratio.
+    semantic_completeness: str | None = None
     format: str = "codemap-uo"
     indexed: bool | None = None
 

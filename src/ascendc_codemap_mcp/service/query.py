@@ -527,7 +527,9 @@ def _run_query(
         if nxt:
             payload["next_cursor"] = nxt
         render_ms = 0.0
-        if engine in {"codemap_query", "codemap_evidence"} or payload.get("text"):
+        existing_text = str(payload.get("text") or "")
+        need_render = engine == "codemap_evidence" or not existing_text
+        if need_render and (engine in {"codemap_query", "codemap_evidence"} or payload.get("text") is not None):
             from ascendc_codemap_mcp.engine.query.explore import render_explore_markdown
 
             t_render = time.perf_counter()
@@ -545,6 +547,17 @@ def _run_query(
             "render_ms": render_ms,
             "response_chars": len(text),
         }
+        if text:
+            # These existed only in structured output, which the transcript of a
+            # session does not show. Without them a reader attributing minutes of
+            # latency has nothing to divide it by, and the guess landed on the
+            # graph query — which measures in single-digit milliseconds.
+            payload["text"] = (
+                f"{text.rstrip()}\n\n"
+                f"[{server_ms:.0f} ms server · {render_ms:.0f} ms render · {len(text)} chars]\n"
+            )
+            text = str(payload["text"])
+            timing["response_chars"] = len(text)
         extra = {
             "engine": engine or "codemap_query",
             "shape": payload.get("shape"),

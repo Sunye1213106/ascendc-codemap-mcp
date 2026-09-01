@@ -162,7 +162,9 @@ def _compat_result(payload: dict[str, Any]) -> CallToolResult:
 
 
 DEFAULT_MCP_TOOLS = (
-    "codemap_query",
+    "codemap_search",
+    "codemap_trace",
+    "codemap_source",
     "codemap_doctor",
     "codemap_index",
     "codemap_update",
@@ -246,9 +248,96 @@ def codemap_status(
     )
 
 
-@mcp.tool(title="Query CodeMap", annotations=READ, structured_output=True)
+@mcp.tool(title="Search CodeMap", annotations=READ, structured_output=True)
+def codemap_search(
+    pattern: str = "",
+    codemap_id: str = "",
+    project: str = "",
+    architecture: str = "",
+    file: str = "",
+    kind: str = "",
+    cursor: str = "",
+    limit: int = 20,
+) -> CallToolResult:
+    """Find a name you do not have yet: regex over the indexed source snapshot. Enum values, string literals, macros, and comments all match, not just symbol names. file= is an optional glob (** matches zero directories); kind= restricts to an entity kind. Returns file:line hits grouped by unit — feed a name to codemap_trace, or a location to codemap_source. Identity is codemap_id, or project+architecture."""
+    return _query_result(
+        query_impl(
+            operation="search",
+            codemap_id=codemap_id,
+            project=project,
+            architecture=architecture,
+            pattern=pattern,
+            file=file,
+            kind=kind,
+            cursor=cursor,
+            limit=limit,
+        )
+    )
+
+
+@mcp.tool(title="Trace CodeMap symbol", annotations=READ, structured_output=True)
+def codemap_trace(
+    symbol: str = "",
+    to_symbol: str = "",
+    codemap_id: str = "",
+    project: str = "",
+    architecture: str = "",
+    dim: str = "",
+    value: str = "",
+    relation: str = "",
+    kind: str = "",
+    cursor: str = "",
+    limit: int = 8,
+) -> CallToolResult:
+    """Semantic facts for a name you already have. Three shapes: symbol= alone returns one closed card (definition body, every write with its value, its guard and the call that reaches it, reads, kernel consumers, Calls / Called by, compiled legal keys) — this is the default and it is complete, so start here; symbol= plus to_symbol= returns the shortest relation path between them (call chain, value propagation, guard reachability); dim= plus value= returns the compiled legal key space — use it for any "which combinations are actually built" question instead of reading dispatch macros, because it is the compiler's answer and source inference is not. relation= optionally narrows to call, data, control or compile (comma-separated); omit it to get every family, which is what you usually want. Takes no file/line: use codemap_source to read lines."""
+    return _query_result(
+        query_impl(
+            operation="trace",
+            codemap_id=codemap_id,
+            project=project,
+            architecture=architecture,
+            symbol=symbol,
+            to_symbol=to_symbol,
+            dim=dim,
+            value=value,
+            relation=relation,
+            kind=kind,
+            cursor=cursor,
+            limit=limit,
+        )
+    )
+
+
+@mcp.tool(title="Read CodeMap source", annotations=READ, structured_output=True)
+def codemap_source(
+    file: str = "",
+    line: int = 0,
+    line_end: int = 0,
+    codemap_id: str = "",
+    project: str = "",
+    architecture: str = "",
+    limit: int = 8,
+) -> CallToolResult:
+    """Read indexed source at a location, with the state changes, branches and tiling fields of that unit. line_end= takes a range, which is how you finish a snippet that was cut. The returned source is already Read — do not open the file again. Callers and definition sites are not computed here; they belong to a name, so ask codemap_trace for those. Takes no symbol."""
+    return _query_result(
+        query_impl(
+            operation="source",
+            codemap_id=codemap_id,
+            project=project,
+            architecture=architecture,
+            file=file,
+            line=line,
+            line_end=line_end,
+            limit=limit,
+        )
+    )
+
+
+# Superseded by the three above. Sessions that already handshook this name keep
+# working; `listed_tool_names` keeps it out of the advertised set.
+@mcp.tool(title="Query CodeMap (compat)", annotations=READ, structured_output=True)
 def codemap_query(
-    operation: Literal["search", "resolve"] = "resolve",
+    operation: Literal["search", "resolve", "trace", "source"] = "resolve",
     codemap_id: str = "",
     project: str = "",
     architecture: str = "",
@@ -258,11 +347,14 @@ def codemap_query(
     file: str = "",
     line: int = 0,
     line_end: int = 0,
+    to_symbol: str = "",
+    dim: str = "",
+    value: str = "",
     kind: str = "",
     cursor: str = "",
     limit: int = 20,
 ) -> CallToolResult:
-    """search ≈ regex over the indexed source snapshot (pattern=; name= is an alias). Enum values, strings, macros, and comments all match — not just symbol names. file= is an optional glob; ** matches zero directories. resolve ≈ read + semantic context; line_end= reads a range, which is how you finish a snippet that was cut. Identity is codemap_id or project+architecture."""
+    """Deprecated. Use codemap_search (find a name), codemap_trace (facts about a name), or codemap_source (read lines)."""
     return _query_result(
         query_impl(
             operation=operation,
@@ -275,6 +367,9 @@ def codemap_query(
             file=file,
             line=line,
             line_end=line_end,
+            to_symbol=to_symbol,
+            dim=dim,
+            value=value,
             kind=kind,
             cursor=cursor,
             limit=limit,
@@ -294,7 +389,7 @@ def codemap_evidence(
     cursor: str = "",
     expected_snapshot_id: str = "",
 ) -> Envelope:
-    """Debug/explicit evidence expansion only. Do not use to read ordinary source; use resolve(file,line). Prefer evidence_id. Pass expected_snapshot_id from evidence[].snapshot_id."""
+    """Debug/explicit evidence expansion only. Do not use to read ordinary source; codemap_source does that. Prefer evidence_id. Pass expected_snapshot_id from evidence[].snapshot_id."""
     return _envelope(
         evidence_impl(
             codemap_id=codemap_id,
@@ -484,8 +579,9 @@ def query_operator(codemap_id: str, focus: str = "") -> str:
     return (
         f"Query AscendC CodeMap `{codemap_id}` with MCP tools on server {SERVER_NAME}."
         f"{extra}\n"
-        "Unknown name → search. Known symbol or file+line → resolve. "
-        "search file= is an optional glob/path filter. "
+        "Unknown name → codemap_search. Known symbol → codemap_trace "
+        "(add to_symbol for a path; dim/value for the compiled key space). "
+        "file:line → codemap_source. "
         "The returned source is already Read — do not open those files again."
     )
 

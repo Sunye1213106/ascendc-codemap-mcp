@@ -104,7 +104,7 @@ class QueryCache:
 
     def acquire(self, product: str | Path) -> Any:
         from ascendc_codemap_mcp.engine.query.sql import UoSqlQuery
-        from ascendc_codemap_mcp.engine.store.reader import mark_uo_in_use
+        from ascendc_codemap_mcp.engine.store.reader import lease_query_connection, mark_uo_in_use
 
         path = Path(product).expanduser().resolve()
         key = str(path)
@@ -112,22 +112,24 @@ class QueryCache:
         mtime = self._mtime(path)
         with self._lock:
             entry = self._entries.get(key)
-            if entry is not None and entry.mtime_ns != mtime:
-                if entry.inuse > 0:
-                    entry.inuse += 1
-                    return entry.query
+            if entry is not None and entry.mtime_ns != mtime and entry.inuse == 0:
                 self._entries.pop(key, None)
                 self._close(entry)
                 entry = None
             if entry is None:
                 self._evict_unlocked()
-                query = UoSqlQuery(path)
-                entry = _Entry(query, mtime)
+                entry = _Entry(UoSqlQuery(path), mtime)
                 self._entries[key] = entry
             else:
                 self._entries.move_to_end(key)
             entry.inuse += 1
-            return entry.query
+            query = entry.query
+        try:
+            lease_query_connection(path)
+        except Exception:
+            self.release(path)
+            raise
+        return query
 
     def release(self, product: str | Path) -> None:
         key = str(Path(product).expanduser().resolve())
@@ -135,10 +137,16 @@ class QueryCache:
         with self._lock:
             entry = self._entries.get(key)
             if entry is None:
+                from ascendc_codemap_mcp.engine.store.reader import release_query_connection
+
+                release_query_connection(key)
                 return
             if entry.inuse > 0:
                 entry.inuse -= 1
             idle = entry.inuse == 0
+        from ascendc_codemap_mcp.engine.store.reader import release_query_connection
+
+        release_query_connection(key)
         if idle:
             from ascendc_codemap_mcp.engine.store.reader import mark_uo_idle
 

@@ -60,7 +60,7 @@ Codebase Memory 与 CodeGraph 是通用代码图：多语言、通用导航。Co
 
 他们更擅长「代码在哪、谁调用谁」。CodeMap 更希望回答：**这个算子为什么走到这个 Kernel，以及这个值怎么从 Host 传下来。**
 
-本仓库不把 memory / ADR / 文档检索、默认 Cypher/SQL 或可视化做成产品功能。公开查询只有 `search` 与 `resolve`。
+本仓库不把 memory / ADR / 文档检索、默认 Cypher/SQL 或可视化做成产品功能。公开查询只有 `search`、`trace`、`source`。
 
 ## 为什么用 Clang
 
@@ -286,31 +286,42 @@ ascendc-codemap-mcp status --codemap-id <id>
 
 ## 查询
 
-Query 只读已提交的 `.uo`（`source_line` / 图），不打开工作区文件。不知道 ident 时先 `search`，知道了再 `resolve`。
+Query 只读已提交的 `.uo`（`source_line` / 图），不打开工作区文件。
+
+三个工具按**你手上有什么**分，参数不重叠，所以没有「该传哪个」的判断：
+
+| 你手上有             | 用                | 必填              |
+| ---------------- | ---------------- | --------------- |
+| 一个字符串，还不知道在哪     | `codemap_search` | `pattern`       |
+| 一个名字             | `codemap_trace`  | `symbol`        |
+| 一个 `file:line`   | `codemap_source` | `file` + `line` |
+
+`trace` 的形态由参数在不在决定，不用声明模式：`symbol` 单传是那个名字的全部语义事实（定义体、每个写入点及其取值/守卫/被谁调用、读者、kernel 消费者、调用图、编译期合法键）；再给 `to_symbol` 是两点间最短关系路径；给 `dim` + `value` 是编译期合法键空间。`relation` 可选收窄到 `call` / `data` / `control` / `compile`，不填就是全部——**最短的调用就是最完整的调用**。
+
+`source` 不收 `symbol`，`trace` 不收 `file` / `line`：混着传返回 `INVALID_QUERY` 并附合法 filter 清单，不会去猜你要哪个。
 
 CLI：
 
 ```bash
 ascendc-codemap-mcp discover --project <算子目录>
-ascendc-codemap-mcp query --codemap-id <id> --symbol IsPse
+ascendc-codemap-mcp query --codemap-id <id> --operation trace --symbol IsPse
 ascendc-codemap-mcp query --codemap-id <id> --operation search --pattern BufferNum
-ascendc-codemap-mcp query --codemap-id <id> --symbol SyncAll
+ascendc-codemap-mcp query --codemap-id <id> --operation source --file op_host/x.cpp --line 1673
 ```
 
-Agent 用 typed 工具。`operation` 是闭集 enum，缺省 `resolve`。`symbol` 必须是一个标识符；自然语言句子返回 `INVALID_QUERY`（合法 filter 清单 + 已解析 token），不会模糊排名。
-
+`symbol` 必须是一个标识符；自然语言句子返回 `INVALID_QUERY`（合法 filter 清单 + 已解析 token），不会模糊排名。
 
 | 意图                        | 工具                                                         |
 | ------------------------- | ---------------------------------------------------------- |
 | 扫目录、拿到 `codemap.id`       | `codemap_discover`                                         |
 | 新鲜度                       | `codemap://map/{codemap_id}`（CLI 仍可用 `status`）            |
-| 图查询（ident / Dim / 集合）     | `codemap_query`（`operation` + 闭集 filters）                 |
 | 构建前检查                     | `codemap_doctor`                                           |
 | 冷构建                       | `codemap_index`                                            |
 | 增量刷新                      | `codemap_update`                                           |
 
+兼容别名：`index_operator`、`update_operator`；`codemap_query`（旧的单工具形态）仍然接受，但不在默认工具集里。只读工具带 `readOnlyHint`。查询结果走统一 envelope（`ok`、`codemap`、`verdict`、`layer`、`data`、`coverage`、`next_cursor`）和 `structuredContent`。 `codemap_evidence` 不在默认工具集，可用 `ASCENDC_CODEMAP_MCP_TOOLS` 打开。
 
-`codemap_query` 的 `operation`：`search`（源码行）/ `resolve`（缺省，一次闭合的语义读）。Dim 用 `dim` + `value`，不要写 `Dim=` 字符串。兼容别名：`index_operator`、`update_operator`。只读工具带 `readOnlyHint`。查询结果走统一 envelope（`ok`、`codemap`、`verdict`、`layer`、`data`、`coverage`、`next_cursor`）和 `structuredContent`。 `codemap_evidence` 不在默认工具集，可用 `ASCENDC_CODEMAP_MCP_TOOLS` 打开。
+每节都自带完整性：`Writes 3 of 3, complete` 是「算完了，就是 3 个」，`not computed here` 是「这张卡没算这个」。**后者永远不会渲染成「没有」**——那正是上一版把 17 个有 caller 的函数报成 `no resolved caller` 的原因。
 
 跟 `evidence[].id`（`span:...`）走，并把当时的 `snapshot_id` 当作 `expected_snapshot_id`；对不上是 `SNAPSHOT_CHANGED`。`coverage.truncated` 且带了 `next_cursor` 再翻页。`count: 0` 不等于「图上没有」，跟 `hint`。
 

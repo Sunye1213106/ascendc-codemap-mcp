@@ -22,11 +22,14 @@ _IDLE_GEN: dict[str, int] = {}
 
 
 def _idle_sec() -> float:
-    raw = str(os.environ.get("ASCENDC_CODEMAP_SQLITE_IDLE_SEC", "2") or "2").strip()
+    # Agent think-time between tool calls is tens of seconds. Closing the
+    # handle after 2s made every OpenCode round trip a cold SQLite open of a
+    # 100MB+ product, which is the difference between 40ms and multiple seconds.
+    raw = str(os.environ.get("ASCENDC_CODEMAP_SQLITE_IDLE_SEC", "120") or "120").strip()
     try:
         return max(0.0, float(raw))
     except ValueError:
-        return 2.0
+        return 120.0
 
 
 @lru_cache(maxsize=256)
@@ -47,18 +50,13 @@ def _configure_readonly(conn: sqlite3.Connection) -> sqlite3.Connection:
     DeleteFile / rename of the ``.uo``. Keep mmap off there.
     """
     conn.row_factory = sqlite3.Row
-    daemon = str(os.environ.get("UO_QUERY_DAEMON") or "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-    }
     try:
         conn.execute("PRAGMA query_only = 1")
-        conn.execute("PRAGMA cache_size = -32000" if daemon else "PRAGMA cache_size = -8000")
+        conn.execute("PRAGMA cache_size = -32000")
         if sys.platform == "win32":
             conn.execute("PRAGMA mmap_size = 0")
         else:
-            conn.execute("PRAGMA mmap_size = 67108864" if daemon else "PRAGMA mmap_size = 8388608")
+            conn.execute("PRAGMA mmap_size = 67108864")
         conn.execute("PRAGMA temp_store = MEMORY")
     except sqlite3.Error:
         pass
@@ -80,16 +78,97 @@ def _connect_readonly(path: str | Path) -> sqlite3.Connection:
     return _configure_readonly(conn)
 
 
-def shared_uo(path: str | Path) -> sqlite3.Connection:
-    """Thread-local read-only connection for one ``.uo`` path.
+def _pool_max() -> int:
+    raw = str(os.environ.get("ASCENDC_CODEMAP_SQLITE_POOL", "8") or "8").strip()
+    try:
+        return max(1, min(32, int(raw)))
+    except ValueError:
+        return 8
 
-    Opening an 80MB ``.uo`` per query was the Windows freeze: each connect
-    remapped the file. Reuse per thread, never across threads. Call
-    ``mark_uo_idle`` after the last in-flight query so Windows can delete
-    the file without waiting for process exit.
+
+# Connections leased for the duration of one query, reusable across threads.
+# Thread-local slots remain as a fallback for callers that never go through
+# QueryCache.open (tests, dump helpers).
+_TLS = threading.local()
+_POOL: dict[str, list[sqlite3.Connection]] = {}
+_POOL_LIVE: dict[str, int] = {}
+_POOL_COND = threading.Condition(_CONN_LOCK)
+
+
+def lease_query_connection(path: str | Path) -> sqlite3.Connection:
+    """Pin one pooled connection to this thread for the current query.
+
+    Nested leases of the same product reuse the same connection, which is how
+    ``_connect`` is used inside a query. A new thread checks out an idle handle
+    instead of opening another 100MB mapping.
+    """
+    key = _product_key(path)
+    depth = int(getattr(_TLS, "depth", 0) or 0)
+    if depth > 0 and getattr(_TLS, "key", None) == key and getattr(_TLS, "conn", None) is not None:
+        _TLS.depth = depth + 1
+        return _TLS.conn
+    conn = _pool_checkout(key)
+    _TLS.conn = conn
+    _TLS.key = key
+    _TLS.depth = 1
+    return conn
+
+
+def release_query_connection(path: str | Path) -> None:
+    depth = int(getattr(_TLS, "depth", 0) or 0)
+    if depth > 1:
+        _TLS.depth = depth - 1
+        return
+    conn = getattr(_TLS, "conn", None)
+    key = getattr(_TLS, "key", None)
+    _TLS.depth = 0
+    _TLS.conn = None
+    _TLS.key = None
+    if conn is not None and key is not None:
+        _pool_checkin(key, conn)
+
+
+def _pool_checkout(key: str) -> sqlite3.Connection:
+    create = False
+    with _POOL_COND:
+        while True:
+            idle = _POOL.setdefault(key, [])
+            if idle:
+                return idle.pop()
+            live = int(_POOL_LIVE.get(key, 0) or 0)
+            if live < _pool_max():
+                _POOL_LIVE[key] = live + 1
+                create = True
+                break
+            _POOL_COND.wait(timeout=1.0)
+    if create:
+        return _connect_readonly(key)
+    # Waited and still nothing: open a short-lived extra rather than hang.
+    return _connect_readonly(key)
+
+
+def _pool_checkin(key: str, conn: sqlite3.Connection) -> None:
+    with _POOL_COND:
+        idle = _POOL.setdefault(key, [])
+        if len(idle) < _pool_max():
+            idle.append(conn)
+            _POOL_COND.notify()
+            return
+    _close_conn(conn)
+
+
+def shared_uo(path: str | Path) -> sqlite3.Connection:
+    """Read-only connection for one ``.uo`` path.
+
+    Prefer the connection leased for this query so concurrent MCP workers share
+    a small pool instead of one mapping per thread. Fall back to a thread-local
+    handle for callers that never leased.
     """
     key = _product_key(path)
     _cancel_idle(key)
+    leased = getattr(_TLS, "conn", None)
+    if leased is not None and getattr(_TLS, "key", None) == key:
+        return leased
     tid = threading.get_ident()
     slot = (key, tid)
     with _CONN_LOCK:
@@ -171,6 +250,7 @@ def close_uo_connections(path: str | Path | None = None) -> None:
     ``check_same_thread=False`` solely so this close can run after readers
     have drained. SQL still runs only on the creating thread.
     """
+    pooled: list[sqlite3.Connection] = []
     with _CONN_LOCK:
         if path is None:
             items = list(_CONN.items())
@@ -178,6 +258,12 @@ def close_uo_connections(path: str | Path | None = None) -> None:
             timers = list(_IDLE_TIMERS.values())
             _IDLE_TIMERS.clear()
             _IDLE_GEN.clear()
+            for idle in _POOL.values():
+                pooled.extend(idle)
+            _POOL.clear()
+            _POOL_LIVE.clear()
+            _META_CACHE.clear()
+            _POOL_COND.notify_all()
         else:
             key = _product_key(path)
             items = [(slot, conn) for slot, conn in list(_CONN.items()) if slot[0] == key]
@@ -188,10 +274,19 @@ def close_uo_connections(path: str | Path | None = None) -> None:
             if idle is not None:
                 timers.append(idle)
             _IDLE_GEN[key] = _IDLE_GEN.get(key, 0) + 1
+            pooled.extend(_POOL.pop(key, []))
+            _POOL_LIVE.pop(key, None)
+            _META_CACHE.pop(key, None)
+            _POOL_COND.notify_all()
     for timer in timers:
         timer.cancel()
     errors: list[BaseException] = []
     for _, conn in items:
+        try:
+            _close_conn(conn)
+        except sqlite3.ProgrammingError as exc:
+            errors.append(exc)
+    for conn in pooled:
         try:
             _close_conn(conn)
         except sqlite3.ProgrammingError as exc:
@@ -203,9 +298,11 @@ def close_uo_connections(path: str | Path | None = None) -> None:
 def open_handle_count(path: str | Path | None = None) -> int:
     with _CONN_LOCK:
         if path is None:
-            return len(_CONN)
+            pooled = sum(len(v) for v in _POOL.values())
+            return len(_CONN) + pooled
         key = _product_key(path)
-        return sum(1 for slot in _CONN if slot[0] == key)
+        local = sum(1 for slot in _CONN if slot[0] == key)
+        return local + len(_POOL.get(key) or [])
 
 from ascendc_codemap_mcp.engine.ir.codemap import CodeMap
 from ascendc_codemap_mcp.engine.ir.entity import Entity, EntityKind
@@ -243,13 +340,28 @@ def open_uo(path: str | Path) -> sqlite3.Connection:
     return _connect_readonly(path)
 
 
+_META_CACHE: dict[str, tuple[int, dict[str, str]]] = {}
+
+
 def read_meta(path: str | Path) -> dict[str, str]:
-    conn = open_uo(path)
+    key = _product_key(path)
+    try:
+        mtime = int(Path(key).stat().st_mtime_ns)
+    except OSError:
+        mtime = 0
+    hit = _META_CACHE.get(key)
+    if hit is not None and hit[0] == mtime:
+        return dict(hit[1])
+    conn = shared_uo(path) if getattr(_TLS, "conn", None) is not None else open_uo(path)
+    close_after = conn is not getattr(_TLS, "conn", None)
     try:
         rows = conn.execute("SELECT key, value FROM meta").fetchall()
-        return {str(r["key"]): str(r["value"]) for r in rows}
+        meta = {str(r["key"]): str(r["value"]) for r in rows}
     finally:
-        _close_conn(conn)
+        if close_after:
+            _close_conn(conn)
+    _META_CACHE[key] = (mtime, meta)
+    return dict(meta)
 
 
 def read_codemap(

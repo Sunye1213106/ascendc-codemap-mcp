@@ -933,6 +933,31 @@ def _control_projection(query: Any, entity_id: str) -> dict[str, Any]:
     return out
 
 
+def _attach_reach(query: Any, *site_lists: list[dict[str, Any]]) -> None:
+    """Stamp ``reached_by`` onto every site whose writer is called from somewhere.
+
+    Resolved in one lookup for the whole bundle rather than per site, so a flag
+    with eleven writers still costs a single pass over the call edges.
+    """
+    sites = [s for group in site_lists for s in (group or []) if isinstance(s, dict)]
+    names = {
+        str(s.get("function") or s.get("writer") or s.get("name") or "").strip()
+        for s in sites
+    }
+    names.discard("")
+    if not names:
+        return
+    try:
+        reach = query.writer_reach(sorted(names))
+    except Exception:  # noqa: BLE001
+        return
+    for site in sites:
+        fn = str(site.get("function") or site.get("writer") or site.get("name") or "").strip()
+        hits = reach.get(_leaf(fn)) if fn else None
+        if hits:
+            site["reached_by"] = hits
+
+
 def build_symbol_bundle(query: Any, ident: str) -> dict[str, Any] | None:
     """Attrs-first Symbol Bundle for resolve(symbol)."""
     leaf = _leaf(ident)
@@ -1010,6 +1035,7 @@ def build_symbol_bundle(query: Any, ident: str) -> dict[str, Any] | None:
         )
     ):
         return None
+    _attach_reach(query, host_defs, assignments, consumers)
     return {
         "host_value_definitions": host_defs,
         "transport": transport,

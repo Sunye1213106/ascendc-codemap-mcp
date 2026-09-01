@@ -73,25 +73,24 @@ def test_illegal_filter_suggests_legal_rebinding() -> None:
     except InvalidQuery as exc:
         calls = exc.did_you_mean
         assert calls, "expected a repaired call"
-        assert all(c.get("operation") in {"search", "resolve"} for c in calls)
-        assert all("symbol" not in c or c.get("operation") == "resolve" for c in calls)
+        assert all(c.get("operation") in {"search", "trace"} for c in calls)
+        assert all("symbol" not in c or c.get("operation") == "trace" for c in calls)
         assert all("SyncALLCores" in c.values() for c in calls)
     else:
         raise AssertionError("expected INVALID_QUERY")
 
 
-def test_trace_with_one_endpoint_suggests_resolve() -> None:
-    try:
-        validate_plan(operation="trace", from_symbol="SyncALLCores")
-    except InvalidQuery as exc:
-        ops = {c.get("operation") for c in exc.did_you_mean}
-        assert ops <= {"search", "resolve"}
-        assert "resolve" in ops
-        assert "search" in ops
-        assert "impact" not in ops
-        assert "find" not in ops
-    else:
-        raise AssertionError("expected INVALID_QUERY")
+def test_trace_with_one_endpoint_is_the_symbol_bundle() -> None:
+    """One endpoint is a question, not a broken path query.
+
+    It used to be rejected with a pointer at `resolve`, which is the round trip
+    this split exists to remove: a caller who names one symbol wants that
+    symbol's facts, and `from_symbol` is just how it happened to say so.
+    """
+    plan = validate_plan(operation="trace", from_symbol="SyncALLCores")
+    assert plan.operation == "trace"
+    assert plan.symbol == "SyncALLCores"
+    assert not plan.to_symbol
 
 
 def test_find_returns_set_not_ambiguous(tmp_path: Path) -> None:

@@ -88,6 +88,14 @@ class Registry:
     def put(self, ref: CodemapRef) -> CodemapRef:
         with self._lock:
             self._load_unlocked()
+            existing = self._by_id.get(ref.id)
+            if (
+                existing is not None
+                and existing.product == ref.product
+                and existing.architecture == ref.architecture
+                and existing.op_name == ref.op_name
+            ):
+                return existing
             self._by_id[ref.id] = ref
             alias = ref.alias
             ids = self._alias.setdefault(alias, [])
@@ -500,11 +508,11 @@ def public_handle(
     sid = snapshot_id(product, meta) if product is not None and Path(product).is_file() else ""
     completeness = info.get("semantic_completeness")
     if completeness is None:
-        raw = meta.get("semantic_completeness")
-        try:
-            completeness = float(raw) if raw not in (None, "") else None
-        except (TypeError, ValueError):
-            completeness = None
+        # analyze reports this as `complete` / `partial`, and coercing it to a
+        # float turned every build into a null. A caller who cannot tell "not
+        # measured" from "measured as whole" stops trusting the number.
+        raw = meta.get("semantic_completeness") or meta.get("cm_semantic_completeness")
+        completeness = str(raw).strip() if raw not in (None, "") else None
     return {
         "id": ref.id,
         "alias": ref.alias,

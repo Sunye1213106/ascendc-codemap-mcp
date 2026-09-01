@@ -841,6 +841,30 @@ def write_codemap(
     }
 
 
+def upsert_meta(path: str | Path, items: dict[str, Any]) -> int:
+    """Add scalar facts to a committed product's ``meta`` table.
+
+    Only for values the analyze stage measures after the graph is already
+    compiled. ``snapshot_id`` is derived from the graph digest and the counts,
+    never from the whole table, so extra keys do not mint a new snapshot.
+    """
+    if not items:
+        return 0
+    from ascendc_codemap_mcp.engine.store.reader import close_uo_connections
+
+    dest = Path(path).expanduser().resolve()
+    if not dest.is_file():
+        return 0
+    close_uo_connections(dest)
+    conn = sqlite3.connect(str(dest))
+    try:
+        _write_meta(conn, items)
+        conn.commit()
+    finally:
+        conn.close()
+    return len(items)
+
+
 def _write_meta(conn: sqlite3.Connection, items: dict[str, Any]) -> None:
     for key, value in items.items():
         conn.execute(

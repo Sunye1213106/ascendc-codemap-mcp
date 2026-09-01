@@ -401,12 +401,52 @@ def _index_unlocked(
             )
             if k in summary
         },
-        "gaps_count": int(summary.get("gaps_count") or 0) if summary else 0,
+        "coverage": index_coverage(summary),
         "steps": steps,
         "elapsed_s": round(time.perf_counter() - t0, 3),
         "product": product,
         "meta": summary,
     }
+
+
+def index_coverage(meta: dict[str, Any] | None) -> dict[str, Any]:
+    """What this build measured, and what it did not.
+
+    The single ``gaps_count`` this replaces read 0 on a product whose meta
+    table held no such key, next to a null completeness, while the same table
+    recorded seven unresolved kernel sync pairs and a host/kernel path with no
+    evidence behind it. One number cannot carry that, and defaulting it to zero
+    reports the absence of a measurement as a clean bill of health.
+    """
+    meta = dict(meta or {})
+
+    def _int(key: str) -> int | None:
+        raw = meta.get(key)
+        if raw in (None, ""):
+            return None
+        try:
+            return int(str(raw).strip())
+        except (TypeError, ValueError):
+            return None
+
+    measured = str(meta.get("analyze_measured") or "") == "1"
+    gaps = _int("analyze_gap_count")
+    blocking = _int("analyze_locate_blocking")
+    out: dict[str, Any] = {
+        "semantic_completeness": str(meta.get("semantic_completeness") or "") or "not_measured",
+        "analyze_gaps": gaps if measured and gaps is not None else "not_measured",
+        "locate_blocking": blocking if measured and blocking is not None else "not_measured",
+    }
+    closure = str(meta.get("cm_has_strict_kernel_tiling_closure") or "")
+    if closure:
+        out["strict_kernel_tiling_closure"] = closure == "true"
+    host_path = str(meta.get("cm_has_evidence_backed_host_kernel_path") or "")
+    if host_path:
+        out["evidence_backed_host_kernel_path"] = host_path == "true"
+    keys = _int("cm_legal_key_count")
+    if keys is not None:
+        out["compiled_legal_keys"] = keys
+    return out
 
 
 def index_operator(
@@ -507,7 +547,7 @@ def index_operator(
                 "engine": "index_operator",
                 "path": result.get("path") or "",
                 "summary": result.get("summary") or {},
-                "gaps_count": result.get("gaps_count") or 0,
+                "coverage": result.get("coverage") or {},
                 "steps": result.get("steps") or [],
                 "elapsed_s": result.get("elapsed_s"),
             },

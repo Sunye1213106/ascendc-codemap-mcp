@@ -287,6 +287,8 @@ def commit(project_root: Path, payload: dict[str, Any] | None = None) -> dict[st
     root = Path(project_root).expanduser().resolve()
     with stage("commit"), step("commit.write_uo_product"):
         product = _commit_uo_product(root, ctx)
+    if product.get("ok") and product.get("path"):
+        _stamp_completeness(root, ctx, str(product.get("path")))
     if not product.get("ok"):
         try:
             from ascendc_codemap_mcp.engine.runtime import end_session
@@ -308,6 +310,38 @@ def commit(project_root: Path, payload: dict[str, Any] | None = None) -> dict[st
         "reused_analyze": bool(product.get("reused_analyze")),
         **({"error": product.get("error") or "uo_commit_failed"} if not product.get("ok") else {}),
     }
+
+
+def _stamp_completeness(root: Path, ctx: dict[str, Any], product: str) -> None:
+    """Carry the analyze verdict into the product's ``meta`` table.
+
+    It was only ever written to ``ir/codemap_analyze_receipt.yaml``, so nothing
+    downstream could read it: ``semantic_completeness`` came back null and
+    ``gaps_count`` came back 0 because both keys were absent, not because the
+    graph was whole. An index that reports zero gaps it never counted is worse
+    than one that reports nothing.
+    """
+    import yaml
+
+    try:
+        from ascendc_codemap_mcp.engine.store.writer import upsert_meta
+
+        arch = require_architecture(pe._payload_arch(pe._ctx(dict(ctx))))
+        receipt_path = pe._uo_root(root, arch=arch) / "ir" / "codemap_analyze_receipt.yaml"
+        if not receipt_path.is_file():
+            return
+        receipt = yaml.safe_load(receipt_path.read_text(encoding="utf-8")) or {}
+        if not isinstance(receipt, dict):
+            return
+        items = {
+            "semantic_completeness": str(receipt.get("semantic_completeness") or "unknown"),
+            "analyze_gap_count": int(receipt.get("gap_count") or 0),
+            "analyze_locate_blocking": int(receipt.get("locate_blocking") or 0),
+            "analyze_measured": "1",
+        }
+        upsert_meta(product, items)
+    except Exception:  # noqa: BLE001
+        return
 
 
 def verify(project_root: Path, payload: dict[str, Any] | None = None) -> dict[str, Any]:

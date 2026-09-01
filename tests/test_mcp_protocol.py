@@ -11,7 +11,9 @@ from ascendc_codemap_mcp.service.query import query
 
 EXPECTED_TOOLS = [
     "codemap_discover",
-    "codemap_query",
+    "codemap_search",
+    "codemap_trace",
+    "codemap_source",
     "codemap_doctor",
     "codemap_index",
     "codemap_update",
@@ -70,40 +72,49 @@ def test_mcp_server_tool_names() -> None:
         assert name in names
     for name in HIDDEN_TOOLS:
         assert name not in names
-    assert names.index("codemap_query") < names.index("codemap_index")
+    assert names.index("codemap_search") < names.index("codemap_index")
 
 
-def test_query_schema_has_operation_enum() -> None:
+def test_the_three_query_tools_do_not_share_a_seed() -> None:
+    """No tool takes both a symbol and a location.
+
+    A single tool that accepted them together had to guess, and it guessed
+    location: a session that named `SetSplitAxis` forty times got a card about
+    something else in twenty-four of them. Disjoint parameters remove the guess
+    rather than documenting it.
+    """
     from ascendc_codemap_mcp.mcp_adapter import create_server
 
-    tool = _find_tool(create_server(), "codemap_query")
-    schema = getattr(tool, "parameters", None) or getattr(tool, "input_schema", None)
-    assert isinstance(schema, dict)
-    props = schema.get("properties") or {}
-    op = props.get("operation") or {}
-    enum = op.get("enum") or []
-    assert enum == ["search", "resolve"]
-    assert "pattern" in props
-    assert "name" in props
-    assert "from_symbol" not in props
-    assert "to_symbol" not in props
-    assert "projection" not in props
-    assert "expected_snapshot_id" not in props
-    assert "callee" not in props
-    assert "entity_id" not in props
-    assert "ctx" not in props
-    ann = getattr(tool, "annotations", None)
-    assert ann is not None
-    assert ann.read_only_hint is True
+    server = create_server()
+
+    def _props(name: str) -> set[str]:
+        tool = _find_tool(server, name)
+        schema = getattr(tool, "parameters", None) or getattr(tool, "input_schema", None)
+        assert isinstance(schema, dict)
+        ann = getattr(tool, "annotations", None)
+        assert ann is not None and ann.read_only_hint is True
+        return set(schema.get("properties") or {})
+
+    search, trace, source = _props("codemap_search"), _props("codemap_trace"), _props("codemap_source")
+    assert "pattern" in search
+    assert {"symbol", "line"} & search == set()
+    assert {"symbol", "to_symbol", "dim", "value", "relation"} <= trace
+    assert {"file", "line", "line_end"} & trace == set()
+    assert {"file", "line", "line_end"} <= source
+    assert {"symbol", "pattern"} & source == set()
+    for props in (search, trace, source):
+        assert {"projection", "expected_snapshot_id", "entity_id", "ctx"} & props == set()
 
 
 def test_mcp_instructions_are_three_invariants() -> None:
     from ascendc_codemap_mcp.mcp_adapter import INSTRUCTIONS
 
     text = INSTRUCTIONS.strip()
-    assert "Unknown → search" in text
-    assert "Known or file:line → resolve" in text
+    assert "Unknown name → search" in text
+    assert "Known symbol → trace" in text
+    assert "file:line → source" in text
     assert "Query reads snapshot only" in text
+    assert "resolve" not in text
     assert "find" not in text
     assert "COMPLETE" not in text
     assert "UNKNOWN" not in text
@@ -154,11 +165,11 @@ def test_inmemory_client_lists_tools() -> None:
             listed = await client.list_tools()
             tools = getattr(listed, "tools", listed)
             names = [getattr(t, "name", str(t)) for t in tools]
-            assert "codemap_query" in names
+            assert "codemap_trace" in names
             assert "codemap_discover" in names
             assert "codemap_symbol" not in names
             result = await client.call_tool(
-                "codemap_query", {"symbol": "IsPse"}
+                "codemap_trace", {"symbol": "IsPse"}
             )
             structured = getattr(result, "structured_content", None) or {}
             assert structured.get("ok") is False
@@ -379,14 +390,15 @@ def test_query_operator_prompt_has_no_stale_protocol() -> None:
     text = query_operator(codemap_id="p:1::Op@arch35")
     assert "find needs kind" not in text
     assert "completeness=COMPLETE" not in text
-    assert "resolve" in text
-    assert "search" in text
+    assert "resolve" not in text
+    for name in ("codemap_search", "codemap_trace", "codemap_source"):
+        assert name in text
 
 
 def test_query_schema_documents_search_file_filter() -> None:
     from ascendc_codemap_mcp.mcp_adapter import create_server
 
-    tool = _find_tool(create_server(), "codemap_query")
+    tool = _find_tool(create_server(), "codemap_search")
     schema = getattr(tool, "parameters", None) or getattr(tool, "input_schema", None) or {}
     props = schema.get("properties") or {}
     file_prop = props.get("file") or {}
@@ -401,4 +413,6 @@ def test_evidence_description_is_debug_only() -> None:
     tool = _find_tool(create_server(), "codemap_evidence")
     desc = str(getattr(tool, "description", "") or "")
     assert "debug" in desc.lower() or "explicit" in desc.lower()
-    assert "resolve" in desc.lower()
+    # It has to name the tool that reads source, or the reader reaches for this
+    # one to do it: that was the whole reason ordinary reads landed here.
+    assert "codemap_source" in desc.lower()

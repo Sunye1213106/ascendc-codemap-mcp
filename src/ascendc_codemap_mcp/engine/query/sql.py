@@ -231,6 +231,11 @@ DERIVES_PER_TILING_KEY = 3
 CARD_SNIPPET_MAX_LINES = 8
 AROUND_SEED_LIMIT = 16
 AROUND_NEIGHBORS_PER_KIND = 4
+#: trace(symbol, to_symbol) walk bounds. Depth keeps a hit short enough to read;
+#: nodes and fan-out keep a miss from scanning the whole graph.
+_TRACE_NODE_BUDGET = 6000
+_TRACE_MAX_DEPTH = 12
+_TRACE_FANOUT = 200
 _DECLARES_KIND_SQL = (
     "CASE e.kind WHEN 'METHOD' THEN 0 WHEN 'FUNCTION' THEN 1 "
     "WHEN 'FIELD' THEN 2 WHEN 'BUFFER' THEN 3 ELSE 4 END"
@@ -3375,6 +3380,9 @@ class UoSqlQuery:
         ) = None
         self._index_files_cache: dict[tuple[int, str], list[str]] = {}
         self._alloc_index_cache: dict[str, list[dict[str, Any]]] | None = None
+        self._reach_cache: dict[frozenset[str], dict[str, list[dict[str, Any]]]] = {}
+        self._reach_lock = threading.Lock()
+        self._legal_cross_cache: dict[tuple[str, str], dict[str, dict[str, int]]] = {}
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -5748,6 +5756,10 @@ class UoSqlQuery:
         dval = str(value or "").strip()
         if not dname or not dval:
             return {}
+        cache_key = (dname, dval, tuple(only_dims or ()), int(limit_dims))
+        cached = self._legal_cross_cache.get(cache_key)
+        if cached is not None:
+            return cached
         from ascendc_codemap_mcp.engine.tpl_dsl import bool_value_aliases
 
         aliases = [dval]
@@ -5757,23 +5769,21 @@ class UoSqlQuery:
         with self._connect() as conn:
             try:
                 marks = ",".join("?" for _ in aliases)
-                matched_sql = (
-                    "SELECT key_id FROM legal_key_dim "
-                    f"WHERE dim = ? AND value IN ({marks})"
-                )
-                matched_params = (dname, *aliases)
                 sibling_filter = ""
-                sibling_params: tuple[Any, ...] = (*matched_params, dname)
+                sibling_params: tuple[Any, ...] = (dname, *aliases, dname)
                 want = [str(n).strip() for n in (only_dims or ()) if str(n).strip() and str(n).strip() != dname]
                 if want:
                     marks_d = ",".join("?" for _ in want)
-                    sibling_filter = f" AND dim IN ({marks_d})"
-                    sibling_params = (*matched_params, dname, *want)
+                    sibling_filter = f" AND s.dim IN ({marks_d})"
+                    sibling_params = (dname, *aliases, dname, *want)
                 sibling_rows = conn.execute(
                     f"""
-                    SELECT dim, value, COUNT(*) FROM legal_key_dim
-                    WHERE key_id IN ({matched_sql}) AND dim != ?{sibling_filter}
-                    GROUP BY dim, value
+                    SELECT s.dim, s.value, COUNT(*)
+                    FROM legal_key_dim m
+                    JOIN legal_key_dim s ON s.key_id = m.key_id
+                    WHERE m.dim = ? AND m.value IN ({marks})
+                      AND s.dim != ?{sibling_filter}
+                    GROUP BY s.dim, s.value
                     """,
                     sibling_params,
                 ).fetchall()
@@ -5821,6 +5831,7 @@ class UoSqlQuery:
         out: dict[str, dict[str, int]] = {}
         for _share, _interesting, _n, sdim in ranked[: max(1, int(limit_dims))]:
             out[sdim] = present.get(sdim) or {}
+        self._legal_cross_cache[cache_key] = out
         return out
 
     def _legal_pair_cross(
@@ -8072,7 +8083,6 @@ class UoSqlQuery:
                   AND LOWER(IFNULL(r.status, '')) IN ('confirmed', 'extracted', 'verified')
                 """
             ).fetchall()
-        by_rel = self._guard_by_relation()
         index: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
             name = str(_row_get(row, "dst_name") or "")
@@ -8084,26 +8094,21 @@ class UoSqlQuery:
                 continue
             rid = str(_row_get(row, "r.id") or _row_get(row, "id") or "")
             file = str(data.get("file") or "")
-            # Host def-use stores the assigned expression as the source entity,
-            # not under a `rhs` key; reading only `data` reported every write as
-            # a bare line number.
             rhs = str(
                 data.get("rhs")
                 or data.get("expression")
                 or _row_get(row, "src_name")
                 or ""
             ).strip()
-            when = by_rel.get(rid, "")
-            if not when:
-                when = _join_guards(self._branch_guards_at(file, line))
             index.setdefault(file, []).append(
                 {
                     "name": name,
                     "leaf": _last_ident(name).lower(),
                     "line": line,
                     "rhs": rhs,
-                    "when": when,
+                    "when": "",
                     "writer": str(data.get("function") or ""),
+                    "_rid": rid,
                 }
             )
         for sites in index.values():
@@ -8122,21 +8127,99 @@ class UoSqlQuery:
         if loc <= 0:
             return {}
         want = _last_ident(str(name or "").replace(".", "::")).lower()
-        index = self._state_index()
-        for key in self._state_files_for(file):
-            sites = index.get(key) or []
-            left = bisect_left(sites, loc, key=lambda item: item["line"])
-            right = bisect_right(sites, loc, key=lambda item: item["line"])
-            for item in sites[left:right]:
-                if want and item["leaf"] != want:
+        needle = _norm_file(str(file or ""))
+        rows = self._writes_named(want) if want else []
+        for item in rows:
+            if int(item.get("line") or 0) != loc:
+                continue
+            if needle and _norm_file(str(item.get("file") or "")) != needle:
+                if not str(item.get("file") or "").replace("\\", "/").endswith(
+                    needle.replace("\\", "/").rsplit("/", 1)[-1]
+                ):
                     continue
-                return {
-                    "rhs": item["rhs"],
-                    "when": item["when"],
-                    "function": item["writer"] or self._enclosing_name(file, loc),
-                }
+            return {
+                "rhs": str(item.get("rhs") or ""),
+                "when": str(item.get("when") or "") or _join_guards(self._branch_guards_at(file, loc)),
+                "function": str(item.get("writer") or "") or self._enclosing_name(file, loc),
+            }
         enclosing = self._enclosing_name(file, loc)
         return {"function": enclosing} if enclosing else {}
+
+    def _writes_named(self, leaf: str) -> list[dict[str, Any]]:
+        """WRITES/DERIVES targeting one identifier, not every field in the product."""
+        ident = str(leaf or "").strip().lower()
+        if not ident:
+            return []
+        cached = getattr(self, "_writes_named_cache", None)
+        if cached is None:
+            self._writes_named_cache = {}
+            cached = self._writes_named_cache
+        hit = cached.get(ident)
+        if hit is not None:
+            return hit
+        with self._connect() as conn:
+            ids: list[str] = []
+            if self._accel_ready(conn):
+                ids = [
+                    str(r[0])
+                    for r in conn.execute(
+                        "SELECT entity_id FROM entity_name_leaf WHERE leaf = ? AND is_ascendc = 0",
+                        (ident,),
+                    ).fetchall()
+                    if r[0]
+                ]
+            if not ids:
+                clause, params = _leaf_name_where(ident)
+                ids = [
+                    str(r[0])
+                    for r in conn.execute(
+                        f"SELECT e.id FROM entity e WHERE {clause}",
+                        params,
+                    ).fetchall()
+                    if r[0]
+                ]
+            if not ids:
+                cached[ident] = []
+                return []
+            ph = ",".join("?" for _ in ids)
+            rows = conn.execute(
+                f"""
+                SELECT r.data, dst.name AS dst_name, src.name AS src_name
+                FROM relation r
+                JOIN entity dst ON dst.id = r.dst
+                LEFT JOIN entity src ON src.id = r.src
+                WHERE r.kind IN ('WRITES', 'DERIVES')
+                  AND r.dst IN ({ph})
+                  AND LOWER(IFNULL(r.status, '')) IN ('confirmed', 'extracted', 'verified')
+                """,
+                ids,
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            data = _parse_data(_row_get(row, "r.data") or _row_get(row, "data"))
+            line = int(data.get("line") or data.get("line_start") or 0)
+            if line <= 0:
+                continue
+            file = str(data.get("file") or "")
+            rhs = str(
+                data.get("rhs")
+                or data.get("expression")
+                or _row_get(row, "src_name")
+                or ""
+            ).strip()
+            out.append(
+                {
+                    "name": str(_row_get(row, "dst_name") or ""),
+                    "leaf": ident,
+                    "file": file,
+                    "line": line,
+                    "rhs": rhs,
+                    "when": _join_guards(self._branch_guards_at(file, line)),
+                    "writer": str(data.get("function") or ""),
+                }
+            )
+        cached[ident] = out
+        return out
 
     def _enclosing_name(self, file: str, line: int) -> str:
         """Function a cited line sits in. '' when the graph has no span for it."""
@@ -8307,6 +8390,9 @@ class UoSqlQuery:
             if key3 in seen:
                 continue
             seen.add(key3)
+            when = str(item.get("when") or "") or _join_guards(
+                self._branch_guards_at(file, int(item["line"]))
+            )
             if item["name"] not in grouped:
                 grouped[item["name"]] = []
                 order.append(item["name"])
@@ -8315,7 +8401,7 @@ class UoSqlQuery:
                     "name": item["name"],
                     "line": item["line"],
                     "rhs": item["rhs"],
-                    "when": item["when"],
+                    "when": when,
                     "writer": item["writer"],
                 }
             )
@@ -8586,22 +8672,57 @@ class UoSqlQuery:
         if self._event_site_index_cache is not None:
             return self._event_site_index_cache
         with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT r.data, e.kind, e.name, e.data
-                FROM relation r
-                JOIN entity e ON e.id IN (r.src, r.dst) AND e.kind = 'EVENT'
-                WHERE r.kind IN ('SIGNALS', 'AWAITS')
-                """
+            events = conn.execute(
+                "SELECT id, kind, name, data FROM entity WHERE kind = 'EVENT'"
             ).fetchall()
+            ids = [str(row["id"] or row[0]) for row in events]
+            by_id = {
+                str(row["id"] or row[0]): (
+                    str(row["kind"] or ""),
+                    str(row["name"] or ""),
+                    row["data"],
+                )
+                for row in events
+            }
+            rel_rows: list[Any] = []
+            if ids:
+                ph = ",".join("?" for _ in ids)
+                # Two indexed probes. `e.id IN (r.src, r.dst)` made SQLite
+                # nested-loop the whole relation table (~6s on FAG).
+                rel_rows = conn.execute(
+                    f"""
+                    SELECT r.data, r.src, r.dst FROM relation r
+                    WHERE r.kind IN ('SIGNALS', 'AWAITS') AND r.src IN ({ph})
+                    """,
+                    ids,
+                ).fetchall()
+                rel_rows.extend(
+                    conn.execute(
+                        f"""
+                        SELECT r.data, r.src, r.dst FROM relation r
+                        WHERE r.kind IN ('SIGNALS', 'AWAITS') AND r.dst IN ({ph})
+                        """,
+                        ids,
+                    ).fetchall()
+                )
         index: dict[str, list[tuple[int, str, str, str]]] = {}
-        for raw_edge, kind, name, raw_entity in rows:
+        seen: set[tuple[str, int, str]] = set()
+        for raw_edge, src, dst in rel_rows:
             edge = _parse_data(raw_edge)
             line = int(edge.get("line") or 0)
             if line <= 0:
                 continue
-            path = _strip_dot_slash(str(edge.get("file") or "").replace("\\", "/"))
-            index.setdefault(path, []).append((line, str(kind or ""), str(name or ""), raw_entity))
+            for eid in (str(src or ""), str(dst or "")):
+                ent = by_id.get(eid)
+                if not ent:
+                    continue
+                kind, name, raw_entity = ent
+                path = _strip_dot_slash(str(edge.get("file") or "").replace("\\", "/"))
+                key = (path, line, name)
+                if key in seen:
+                    continue
+                seen.add(key)
+                index.setdefault(path, []).append((line, kind, name, raw_entity))
         for bucket in index.values():
             bucket.sort(key=lambda item: item[0])
         self._event_site_index_cache = index
@@ -9784,6 +9905,125 @@ class UoSqlQuery:
             "possible_callers_total": len(possible),
         }
 
+    _REACH_CALLERS_MAX = 2
+
+    def writer_reach(self, names: Sequence[str]) -> dict[str, list[dict[str, Any]]]:
+        """Who calls each of these functions, and on which line.
+
+        Knowing that ``SetSplitAxis:1693`` writes false is half an answer: what
+        settles who overrides whom is that it runs after ``SetSplitAxis:1673``
+        and before ``DoSparse:1099``, and that ordering lives on the call sites,
+        not on the writes. Recovering it cost the agent several extra round
+        trips per flag, so the bundle carries it now.
+        """
+        wanted = {_last_ident(str(n or "")) for n in names or ()}
+        wanted.discard("")
+        if not wanted:
+            return {}
+        cache_key = frozenset(w.lower() for w in wanted)
+        with self._reach_lock:
+            hit = self._reach_cache.get(cache_key)
+            if hit is not None:
+                return hit
+        out = self._writer_reach_uncached(wanted)
+        with self._reach_lock:
+            self._reach_cache[cache_key] = out
+        return out
+
+    def _writer_reach_uncached(self, wanted: set[str]) -> dict[str, list[dict[str, Any]]]:
+        """Incoming CALLS for a handful of callees — never the whole call graph.
+
+        The first version selected every CALLS row and filtered in Python. On
+        FAG that is thousands of edges and ~70ms, paid once per bundle, three
+        times on a source card. The dst index exists specifically for this.
+        """
+        with self._connect() as conn:
+            ids = self._function_ids_for_leaves(conn, wanted)
+            if not ids:
+                return {}
+            ph = ",".join("?" for _ in ids)
+            rows = conn.execute(
+                f"""
+                SELECT d.name AS callee, s.name AS caller,
+                       s.line_start AS s_line, s.line_end AS s_end, r.data AS r_data
+                FROM relation r
+                JOIN entity s ON s.id = r.src
+                JOIN entity d ON d.id = r.dst
+                WHERE r.kind IN ('CALLS', 'CALLS_UNDER_GUARD')
+                  AND r.dst IN ({ph})
+                  AND s.kind IN ('FUNCTION', 'METHOD')
+                """,
+                ids,
+            ).fetchall()
+        out: dict[str, list[dict[str, Any]]] = {}
+        seen: set[tuple[str, str, int]] = set()
+        wanted_l = {w.lower() for w in wanted}
+        for row in rows:
+            callee = _last_ident(str(row["callee"] or ""))
+            if callee.lower() not in wanted_l:
+                continue
+            caller = _last_ident(str(row["caller"] or ""))
+            if not caller or caller == callee or _is_noise_name_sql(caller):
+                continue
+            data = _parse_data(row["r_data"])
+            start = int(row["s_line"] or 0)
+            end = int(row["s_end"] or 0)
+            for site in self._call_site_lines(data):
+                if end > start > 0 and not (start <= site <= end):
+                    continue
+                key = (callee, caller, site)
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.setdefault(callee, []).append({"caller": caller, "line": site})
+        for callee, hits in out.items():
+            hits.sort(key=lambda h: int(h.get("line") or 0))
+            out[callee] = hits[: self._REACH_CALLERS_MAX]
+        return out
+
+    def _function_ids_for_leaves(self, conn: sqlite3.Connection, leaves: set[str]) -> list[str]:
+        tokens = [x.lower() for x in leaves if x]
+        if not tokens:
+            return []
+        if self._accel_ready(conn):
+            ph = ",".join("?" for _ in tokens)
+            rows = conn.execute(
+                f"""
+                SELECT DISTINCT n.entity_id
+                FROM entity_name_leaf n
+                JOIN entity e ON e.id = n.entity_id
+                WHERE n.leaf IN ({ph}) AND n.is_ascendc = 0
+                  AND e.kind IN ('FUNCTION', 'METHOD')
+                """,
+                tokens,
+            ).fetchall()
+            return [str(r[0]) for r in rows if r[0]]
+        ids: list[str] = []
+        for leaf in tokens:
+            clause, params = _leaf_name_where(leaf)
+            rows = conn.execute(
+                f"""
+                SELECT e.id FROM entity e
+                WHERE e.kind IN ('FUNCTION', 'METHOD') AND {clause}
+                """,
+                params,
+            ).fetchall()
+            ids.extend(str(r[0]) for r in rows if r[0])
+        return list(dict.fromkeys(ids))
+
+    @staticmethod
+    def _call_site_lines(data: dict[str, Any]) -> list[int]:
+        sites = data.get("sites") if isinstance(data.get("sites"), list) else []
+        lines = [
+            int(s.get("line") or 0)
+            for s in sites
+            if isinstance(s, dict) and int(s.get("line") or 0) > 0
+        ]
+        if lines:
+            return lines
+        one = int(data.get("line") or 0)
+        return [one] if one > 0 else []
+
     _UNIT_FIELD_CAP = 3
 
     def _field_leaves_among(self, names: list[str]) -> list[str]:
@@ -10884,11 +11124,16 @@ class UoSqlQuery:
         from ascendc_codemap_mcp.engine.query.completeness import COMPLETE, UNKNOWN
         from ascendc_codemap_mcp.engine.query.evidence import CLOSURE_EDGE_KINDS
 
-        src_name = str(getattr(plan, "from_symbol", "") or "")
+        src_name = str(
+            getattr(plan, "from_symbol", "") or getattr(plan, "symbol", "") or ""
+        )
         dst_name = str(getattr(plan, "to_symbol", "") or "")
         src_hits = self._exact_name_hits(src_name, limit=8)
         dst_hits = self._exact_name_hits(dst_name, limit=8)
         if not src_hits or not dst_hits:
+            missing = [
+                n for n, h in ((src_name, src_hits), (dst_name, dst_hits)) if n and not h
+            ]
             return {
                 "ok": False,
                 "shape": "trace",
@@ -10896,7 +11141,17 @@ class UoSqlQuery:
                 "count": 0,
                 "completeness": UNKNOWN,
                 "unresolved_reason": "NO_SEED",
+                "trace_from": src_name,
+                "trace_to": dst_name,
+                "unknown_endpoints": missing,
                 "path": [],
+                "hint": (
+                    "not in this CodeMap: "
+                    + ", ".join(missing)
+                    + " — search for the name first"
+                )
+                if missing
+                else "",
             }
         src_ids = {str(h.get("id") or "") for h in src_hits if h.get("id")}
         dst_ids = {str(h.get("id") or "") for h in dst_hits if h.get("id")}
@@ -10905,40 +11160,60 @@ class UoSqlQuery:
         placeholders = ",".join("?" for _ in kinds)
         parent: dict[str, tuple[str, str]] = {}
         found = ""
+        # An 80-node cap over a 31k-entity graph reported "no path" for pairs a
+        # dozen edges apart -- a host flag and the key that reads it. The walk
+        # is bounded by depth so a hit is still a short explanation, and by
+        # nodes so a miss still returns.
+        node_budget = _TRACE_NODE_BUDGET
+        max_depth = _TRACE_MAX_DEPTH
         with self._connect() as conn:
-            queue: deque[str] = deque(src_ids)
+            queue: deque[tuple[str, int]] = deque((sid, 0) for sid in src_ids)
             seen: set[str] = set(src_ids)
-            while queue and len(seen) < 80:
-                cur = queue.popleft()
+            while queue and len(seen) < node_budget:
+                cur, depth = queue.popleft()
                 if cur in dst_ids and cur not in src_ids:
                     found = cur
                     break
+                if depth >= max_depth:
+                    continue
                 for row in conn.execute(
                     f"""
                     SELECT kind, src, dst FROM relation
                     WHERE (src = ? OR dst = ?) AND kind IN ({placeholders})
-                    LIMIT 40
+                    LIMIT ?
                     """,
-                    (cur, cur, *kinds),
+                    (cur, cur, *kinds, _TRACE_FANOUT),
                 ):
                     nxt = str(row["dst"] or "") if str(row["src"] or "") == cur else str(row["src"] or "")
                     if not nxt or nxt in seen:
                         continue
                     seen.add(nxt)
                     parent[nxt] = (cur, str(row["kind"] or ""))
-                    queue.append(nxt)
+                    queue.append((nxt, depth + 1))
                     if nxt in dst_ids:
                         found = nxt
                         queue.clear()
                         break
+        explored = len(seen)
+        exhausted = explored < node_budget
+        depth_bound = not exhausted or bool(queue)
         if not found:
+            # A capped walk that gave up and a walk that proved there is no
+            # edge are different answers. Only the second one is "no path".
             return {
                 "ok": False,
                 "shape": "trace",
                 "cards": [src_hits[0], dst_hits[0]],
                 "count": 2,
                 "completeness": UNKNOWN,
-                "unresolved_reason": "NO_PATH",
+                "unresolved_reason": "NO_PATH" if not depth_bound else "SEARCH_BUDGET",
+                "trace_from": src_name,
+                "trace_to": dst_name,
+                "trace_relations": list(kinds),
+                "explored": explored,
+                "node_budget": node_budget,
+                "max_depth": max_depth,
+                "exhausted": not depth_bound,
                 "path": [],
             }
         steps: list[dict[str, Any]] = []
@@ -10954,6 +11229,7 @@ class UoSqlQuery:
             if step.get("from") and step.get("to") and step.get("kind")
         ]
         complete = bool(hops) and len(hops) == len(steps)
+        self._name_trace_steps(steps)
         return {
             "ok": True,
             "shape": "trace",
@@ -10961,9 +11237,50 @@ class UoSqlQuery:
             "count": len(steps),
             "completeness": COMPLETE if complete else UNKNOWN,
             "unresolved_reason": "" if complete else "NO_PATH",
+            "trace_from": src_name,
+            "trace_to": dst_name,
+            "trace_relations": list(kinds),
+            "explored": explored,
+            "node_budget": node_budget,
+            "max_depth": max_depth,
+            "exhausted": not depth_bound,
             "path": steps[: max(1, int(limit)) * 4],
             "truncated": False,
         }
+
+    def _name_trace_steps(self, steps: list[dict[str, Any]]) -> None:
+        """Replace raw entity ids on each hop with name / kind / location.
+
+        A path printed as ``E_FUNCTION_4d3f8d7886ef -> E_BRANCH_...`` is a fact
+        the reader has to run more queries to read.
+        """
+        ids = {str(s.get(k) or "") for s in steps for k in ("from", "to")}
+        ids.discard("")
+        if not ids:
+            return
+        brief: dict[str, dict[str, Any]] = {}
+        with self._connect() as conn:
+            for chunk in _chunks(sorted(ids)):
+                marks = ",".join("?" for _ in chunk)
+                for row in conn.execute(
+                    f"SELECT id, kind, name, file, line_start FROM entity WHERE id IN ({marks})",
+                    tuple(chunk),
+                ):
+                    brief[str(row["id"])] = {
+                        "name": str(row["name"] or ""),
+                        "kind": str(row["kind"] or ""),
+                        "file": _norm_file(str(row["file"] or "")),
+                        "line": int(row["line_start"] or 0),
+                    }
+        for step in steps:
+            for end in ("from", "to"):
+                info = brief.get(str(step.get(end) or ""))
+                if not info:
+                    continue
+                step[f"{end}_name"] = info["name"]
+                step[f"{end}_kind"] = info["kind"]
+                step[f"{end}_file"] = info["file"]
+                step[f"{end}_line"] = info["line"]
 
     def legal_key_query(
         self,

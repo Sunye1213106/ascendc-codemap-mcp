@@ -311,14 +311,21 @@ def test_g15_g16_search_isbn2_units() -> None:
 
 
 def test_g17_mcp_schema_public_operations() -> None:
-    tool = _find_tool(create_server(), "codemap_query")
-    schema = getattr(tool, "parameters", None) or getattr(tool, "input_schema", None)
-    assert isinstance(schema, dict)
-    props = schema.get("properties") or {}
-    enum = (props.get("operation") or {}).get("enum") or []
-    assert list(enum) == list(PUBLIC_OPERATIONS)
-    for key in ("from_symbol", "to_symbol", "projection", "expected_snapshot_id"):
-        assert key not in props
+    """One tool per public operation, and no `operation` string to choose.
+
+    Naming the operation was a decision the caller had to get right before it
+    could ask anything, and the tool it named then re-decided the mode from the
+    filters. Now the tool name *is* the operation.
+    """
+    server = create_server()
+    for operation in PUBLIC_OPERATIONS:
+        tool = _find_tool(server, f"codemap_{operation}")
+        schema = getattr(tool, "parameters", None) or getattr(tool, "input_schema", None)
+        assert isinstance(schema, dict)
+        props = schema.get("properties") or {}
+        assert "operation" not in props
+        for key in ("projection", "expected_snapshot_id"):
+            assert key not in props, (operation, key)
 
 
 def test_g18_invalid_query_suggestions_stay_public() -> None:

@@ -17,12 +17,23 @@ from ascendc_codemap_mcp.engine.passes.consumer_role import CONSUMER_ROLES
 from ascendc_codemap_mcp.engine.query.completeness import COMPLETE, UNKNOWN
 from ascendc_codemap_mcp.engine.query.contract import (
     PUBLIC_OPERATIONS,
+    RELATION_FAMILY_NAMES,
     SEARCH_FILTERS,
     SEARCH_PATTERN_ALIASES,
+    expand_relation,
 )
 from ascendc_codemap_mcp.engine.query.predicate_ast import OPERATORS as AST_OPERATORS
 
-OPERATIONS = ("resolve", "contract", "impact", "entry", "find", "search", "trace")
+OPERATIONS = (
+    "resolve",
+    "contract",
+    "impact",
+    "entry",
+    "find",
+    "search",
+    "trace",
+    "source",
+)
 PROJECTIONS = ("summary", "source", "locations")
 LAYERS = ("host", "kernel", "tiling", "template", "arch")
 ENTRY_ROLES = ("bailout", "guard_clause", "then_body")
@@ -79,7 +90,15 @@ _RESOLVE_FILTERS = frozenset(
 _CONTRACT_FILTERS = _RESOLVE_FILTERS
 _IMPACT_FILTERS = frozenset({"symbol", "entity_id", "file", "line", "kind"})
 _ENTRY_FILTERS = frozenset({"layer", "entry_role", "function", "referenced_symbol"})
-_TRACE_FILTERS = frozenset({"from_symbol", "to_symbol", "relation"})
+# trace is symbol space. It never takes file/line: a caller who has both was
+# answered about the line and told the symbol's name, which is the defect this
+# split exists to remove.
+_TRACE_FILTERS = frozenset(
+    {"symbol", "entity_id", "from_symbol", "to_symbol", "relation", "kind", "dim", "value"}
+)
+# source is line space. It never takes a symbol, so nothing can silently
+# outrank the range the caller asked to read.
+_SOURCE_FILTERS = frozenset({"file", "line", "line_end", "kind"})
 _SEARCH_FILTERS = frozenset(SEARCH_FILTERS)
 # `pattern` is regex over indexed source lines. `name` is a silent alias
 # (SEARCH_PATTERN_ALIASES) and is normalized before the illegal-filter check.
@@ -131,8 +150,12 @@ _OP_FILTERS = {
     "impact": _IMPACT_FILTERS,
     "entry": _ENTRY_FILTERS,
     "trace": _TRACE_FILTERS,
+    "source": _SOURCE_FILTERS,
     "search": _SEARCH_FILTERS,
 }
+
+#: Operations whose seed is a name rather than a location.
+_SYMBOL_OPS = frozenset({"resolve", "contract", "impact", "trace"})
 
 
 @dataclass
@@ -156,6 +179,9 @@ class QueryPlan:
     dim: str = ""
     value: str = ""
     relation: str = ""
+    #: Families named by ``relation=``, empty when the caller did not narrow.
+    #: Empty means every family, so an omitted filter is the complete answer.
+    relation_families: frozenset[str] = frozenset()
     consumer_role: str = ""
     from_symbol: str = ""
     to_symbol: str = ""
@@ -215,13 +241,13 @@ def suggest_calls(
     out: list[dict[str, Any]] = []
     name_pat = str(filled.get("pattern") or filled.get("name") or "")
     if (
-        operation in {"resolve", "contract", "impact"}
+        operation in _SYMBOL_OPS
         and name_pat
         and ("name" in illegal or "pattern" in illegal)
     ):
         out.append({"operation": "search", "pattern": name_pat})
         if "*" not in name_pat and "?" not in name_pat and _looks_like_ident(name_pat):
-            out.append({"operation": "resolve", "symbol": name_pat})
+            out.append({"operation": "trace", "symbol": name_pat})
     for key in illegal:
         value = str(filled.get(key) or "").strip()
         if not value:
@@ -240,9 +266,9 @@ def suggest_calls(
                 search_call["kind"] = kind
             if search_call not in out:
                 out.append(search_call)
-            resolve_call = {"operation": "resolve", "symbol": value}
-            if resolve_call not in out:
-                out.append(resolve_call)
+            trace_call = {"operation": "trace", "symbol": value}
+            if trace_call not in out:
+                out.append(trace_call)
             if len(out) >= _MAX_SUGGESTIONS:
                 return out
             continue
@@ -334,6 +360,13 @@ def _looks_like_graph_id(text: str) -> bool:
 
 
 def _has_concrete_seed(operation: str, filled: dict[str, str]) -> bool:
+    if operation == "source":
+        return bool(filled.get("file") and filled.get("line"))
+    if operation == "trace":
+        return bool(
+            filled.get("symbol") or filled.get("from_symbol") or filled.get("entity_id")
+            or filled.get("dim")
+        )
     if operation in {"resolve", "contract", "impact"}:
         return bool(
             filled.get("symbol")
@@ -356,8 +389,6 @@ def _has_concrete_seed(operation: str, filled: dict[str, str]) -> bool:
         return bool(filled.get("pattern") or filled.get("name"))
     if operation == "entry":
         return True
-    if operation == "trace":
-        return bool(filled.get("from_symbol") and filled.get("to_symbol"))
     return False
 
 
@@ -381,6 +412,10 @@ def validate_plan(**kwargs: Any) -> QueryPlan:
     filled = _filled_filters(**kwargs)
     kind = _norm_kind(filled.get("kind") or kwargs.get("kind") or "")
     dropped: list[str] = []
+    # trace(from_symbol=) was the two-endpoint spelling before trace also served
+    # a single symbol. Both name the same slot.
+    if operation == "trace" and filled.get("from_symbol") and not filled.get("symbol"):
+        filled["symbol"] = filled.pop("from_symbol")
     # entity_id= that is just a C++ ident is a name, not a graph row.
     eid = str(filled.get("entity_id") or "")
     if eid and not _looks_like_graph_id(eid):
@@ -398,26 +433,18 @@ def validate_plan(**kwargs: Any) -> QueryPlan:
             elif alias_key in filled:
                 filled.pop(alias_key, None)
                 dropped.append(alias_key)
-    # resolve(name=) is resolve(symbol=) when name is an identifier.
-    if (
-        operation in {"resolve", "contract", "impact"}
-        and filled.get("name")
-        and not filled.get("symbol")
-    ):
+    # trace(name=) / resolve(name=) is symbol= when name is an identifier.
+    if operation in _SYMBOL_OPS and filled.get("name") and not filled.get("symbol"):
         raw = str(filled.get("name") or "")
         if _looks_like_ident(raw):
             filled["symbol"] = raw
             filled.pop("name", None)
             dropped.append("name")
-    # resolve already has a seed: extra name= is not a second question.
-    if (
-        operation in {"resolve", "contract", "impact"}
-        and filled.get("symbol")
-        and filled.get("name")
-    ):
+    # Already has a seed: extra name= is not a second question.
+    if operation in _SYMBOL_OPS and filled.get("symbol") and filled.get("name"):
         filled.pop("name", None)
         dropped.append("name")
-    if operation in {"resolve", "contract", "impact"} and filled.get("pattern"):
+    if operation in _SYMBOL_OPS and filled.get("pattern"):
         if not filled.get("symbol") and _looks_like_ident(str(filled.get("pattern") or "")):
             filled["symbol"] = filled["pattern"]
         filled.pop("pattern", None)
@@ -461,15 +488,11 @@ def validate_plan(**kwargs: Any) -> QueryPlan:
             or remaining.get("pattern")
             or remaining.get("name")
         )
-        if (
-            operation in {"resolve", "contract", "impact"}
-            and ident_dropped
-            and not remaining_ident
-        ):
+        if operation in _SYMBOL_OPS and ident_dropped and not remaining_ident:
             ident_val = str(filled.get(ident_dropped[0]) or "")
             if _looks_like_ident(ident_val):
                 suggestions = [
-                    {"operation": "resolve", "symbol": ident_val},
+                    {"operation": "trace", "symbol": ident_val},
                     {"operation": "search", "pattern": ident_val},
                 ]
             else:
@@ -530,24 +553,27 @@ def validate_plan(**kwargs: Any) -> QueryPlan:
             parsed_tokens=tokens,
             operation=operation,
         )
-    relation = str(filled.get("relation") or "").upper()
+    relation = str(filled.get("relation") or "").strip()
+    relation_kinds, relation_families = expand_relation(relation)
     if relation:
         legal_rel = {k.value for k in RelationKind}
-        if relation not in legal_rel:
+        unknown = sorted(relation_kinds - legal_rel)
+        if unknown:
             raise InvalidQuery(
-                f"unsupported filter: relation={relation}",
-                legal_filters=sorted(legal_rel),
+                f"unsupported filter: relation={','.join(unknown)}",
+                legal_filters=[*RELATION_FAMILY_NAMES, *sorted(legal_rel)],
                 parsed_tokens=tokens,
                 operation=operation,
             )
 
     symbol = str(filled.get("symbol") or "")
-    if operation in {"resolve", "contract", "impact"} and symbol and not _looks_like_ident(symbol):
+    if operation in _SYMBOL_OPS and symbol and not _looks_like_ident(symbol):
         raise InvalidQuery(
             "unsupported filter: symbol (identifier required; natural-language text is not a query)",
             legal_filters=sorted(allowed),
             parsed_tokens=tokens or parsed_tokens(symbol),
             operation=operation,
+            did_you_mean=[{"operation": "search", "pattern": symbol}],
         )
     if operation == "find" and kind and kind not in _FIND_BY_KIND:
         raise InvalidQuery(
@@ -556,22 +582,31 @@ def validate_plan(**kwargs: Any) -> QueryPlan:
             parsed_tokens=tokens,
             operation=operation,
         )
-    if operation == "trace" and not (filled.get("from_symbol") and filled.get("to_symbol")):
-        # One endpoint is a reachable question, just not a trace: route it to the
-        # operation that answers it instead of only naming the missing filter.
-        endpoint = str(filled.get("from_symbol") or filled.get("to_symbol") or "")
+    if operation == "trace" and not _has_concrete_seed("trace", filled):
+        # to_symbol alone names a destination with no journey. Route it to the
+        # call that answers it rather than only listing the missing filter.
+        endpoint = str(filled.get("to_symbol") or "")
         alternatives: list[dict[str, Any]] = []
         if endpoint and _looks_like_ident(endpoint):
-            alternatives = [
-                {"operation": "resolve", "symbol": endpoint},
-                {"operation": "search", "pattern": endpoint},
-            ]
+            alternatives = [{"operation": "trace", "symbol": endpoint}]
         raise InvalidQuery(
-            "trace requires from_symbol and to_symbol",
+            "trace requires symbol (add to_symbol for a path, or dim/value for the compiled key space)",
             legal_filters=sorted(_TRACE_FILTERS),
             parsed_tokens=tokens,
             operation=operation,
             did_you_mean=alternatives,
+        )
+    if operation == "source" and not _has_concrete_seed("source", filled):
+        missing = "line" if filled.get("file") else "file"
+        raise InvalidQuery(
+            f"source requires file and line ({missing} is missing); "
+            "search first if you do not have a location yet",
+            legal_filters=sorted(_SOURCE_FILTERS),
+            parsed_tokens=tokens,
+            operation=operation,
+            did_you_mean=[{"operation": "search", "pattern": str(filled.get("file") or "")}]
+            if filled.get("file")
+            else [],
         )
 
     return QueryPlan(
@@ -582,8 +617,11 @@ def validate_plan(**kwargs: Any) -> QueryPlan:
         pattern=str(filled.get("pattern") or "") if operation == "search" else "",
         entity_id=str(filled.get("entity_id") or ""),
         file=str(filled.get("file") or ""),
-        line=int(kwargs.get("line") or 0),
-        line_end=int(kwargs.get("line_end") or 0),
+        # From `filled`, not `kwargs`: a location dropped for being illegal on
+        # this operation left `file` cleared but `line` set, so the plan carried
+        # a coordinate it had already reported as ignored.
+        line=int(filled.get("line") or 0),
+        line_end=int(filled.get("line_end") or 0),
         kind=kind,
         layer=layer,
         callee=str(filled.get("callee") or ""),
@@ -593,9 +631,10 @@ def validate_plan(**kwargs: Any) -> QueryPlan:
         operator=operator,
         dim=str(filled.get("dim") or ""),
         value=str(filled.get("value") or ""),
-        relation=relation,
+        relation=",".join(sorted(relation_kinds)),
+        relation_families=relation_families,
         consumer_role=role,
-        from_symbol=str(filled.get("from_symbol") or ""),
+        from_symbol=str(filled.get("from_symbol") or (symbol if operation == "trace" else "")),
         to_symbol=str(filled.get("to_symbol") or ""),
         entry_role=entry_role,
         function=str(filled.get("function") or ""),
@@ -675,8 +714,14 @@ def execute(query: Any, plan: QueryPlan) -> dict[str, Any]:
     if plan.operation == "entry":
         payload = query.query_entry(plan, limit=plan.limit)
         return _attach(query, payload, plan, unique_seed=False)
+    if plan.operation == "source":
+        payload = _source_seed(query, plan)
+        return _attach(query, payload, plan, unique_seed=False)
     if plan.operation == "trace":
-        return query.query_trace(plan, limit=plan.limit)
+        if plan.to_symbol:
+            return query.query_trace(plan, limit=plan.limit)
+        payload = _symbol_seed(query, plan)
+        return _attach(query, payload, plan, unique_seed=True)
     if plan.operation == "impact":
         payload = _resolve_seed(query, plan)
         payload = _attach(query, payload, plan, unique_seed=True)
@@ -685,22 +730,68 @@ def execute(query: Any, plan: QueryPlan) -> dict[str, Any]:
         payload = _resolve_seed(query, plan)
         return _attach(query, payload, plan, unique_seed=True)
     payload = _resolve_seed(query, plan)
-    site = bool(plan.file and int(plan.line or 0) > 0)
+    site = _seeds_from_location(plan)
     return _attach(query, payload, plan, unique_seed=not site)
 
 
+def _seeds_from_location(plan: QueryPlan) -> bool:
+    """Whether this plan is answered from a line rather than from a name."""
+    if plan.operation == "source":
+        return True
+    if plan.symbol or plan.entity_id or plan.dim:
+        return False
+    return bool(plan.file and int(plan.line or 0) > 0)
+
+
 def _resolve_seed(query: Any, plan: QueryPlan) -> dict[str, Any]:
-    if plan.file and plan.line > 0:
-        site = getattr(query, "query_site_unit", None)
-        # A caller who named an end asked for those lines, not for the unit that
-        # happens to enclose the start. Sending them through the unit view
-        # returned the same window they were trying to read past.
-        span = int(plan.line_end or 0) > int(plan.line or 0)
-        if callable(site) and not span:
-            return site(plan.file, plan.line, highlight=str(plan.symbol or ""), limit=plan.limit)
-        return query.query_around(
-            plan.file, plan.line, line_end=int(plan.line_end or plan.line), limit=plan.limit
-        )
+    """Compat ``operation=resolve``: a name outranks a location.
+
+    The reverse order shipped, and a caller who passed both got a card about
+    whatever entity happened to start on that line -- a predicate, a log
+    statement -- while still being told it was the answer for the symbol they
+    named. Callers who want the lines now say ``operation=source``.
+    """
+    if _seeds_from_location(plan):
+        return _source_seed(query, plan)
+    return _symbol_seed(query, plan)
+
+
+def _source_seed(query: Any, plan: QueryPlan) -> dict[str, Any]:
+    site = getattr(query, "query_site_unit", None)
+    # A caller who named an end asked for those lines, not for the unit that
+    # happens to enclose the start. Sending them through the unit view
+    # returned the same window they were trying to read past.
+    span = int(plan.line_end or 0) > int(plan.line or 0)
+    if callable(site) and not span:
+        return site(plan.file, plan.line, highlight=str(plan.symbol or ""), limit=plan.limit)
+    return query.query_around(
+        plan.file, plan.line, line_end=int(plan.line_end or plan.line), limit=plan.limit
+    )
+
+
+def _prefer_file(payload: dict[str, Any], file: str) -> dict[str, Any]:
+    """Keep the cards that live in ``file``, when the caller named one.
+
+    file/line no longer routes the query; it still disambiguates one name that
+    several translation units declare.
+    """
+    needle = str(file or "").strip().replace("\\", "/").lower()
+    if not needle:
+        return payload
+    cards = [c for c in (payload.get("cards") or []) if isinstance(c, dict)]
+    kept = [
+        c
+        for c in cards
+        if needle in str(c.get("file") or "").replace("\\", "/").lower()
+        or str(c.get("file") or "").replace("\\", "/").lower().endswith(needle)
+    ]
+    if kept and len(kept) < len(cards):
+        payload["cards"] = kept
+        payload["count"] = len(kept)
+    return payload
+
+
+def _symbol_seed(query: Any, plan: QueryPlan) -> dict[str, Any]:
     symbol = plan.symbol
     if plan.entity_id:
         if _looks_like_graph_id(plan.entity_id):
@@ -731,7 +822,7 @@ def _resolve_seed(query: Any, plan: QueryPlan) -> dict[str, Any]:
         if cards:
             payload["cards"] = cards
             payload["count"] = len(cards)
-    return payload
+    return _prefer_file(payload, plan.file)
 
 
 def _attach(query: Any, payload: dict[str, Any], plan: QueryPlan, *, unique_seed: bool) -> dict[str, Any]:
@@ -746,6 +837,10 @@ def _attach(query: Any, payload: dict[str, Any], plan: QueryPlan, *, unique_seed
         or plan.dim
         or (f"{plan.file}:{plan.line}" if plan.file else "")
     )
+    if plan.relation_families:
+        # Set before rendering: the renderer narrows the card it is about to
+        # emit, and states which families it left out.
+        payload["relation_families"] = sorted(plan.relation_families)
     payload = attach_explore_fields(
         query,
         payload,
@@ -754,7 +849,7 @@ def _attach(query: Any, payload: dict[str, Any], plan: QueryPlan, *, unique_seed
         projection=plan.projection,
         operation=plan.operation,
         seed_kind=plan.kind,
-        file_filter=plan.file if not (plan.file and plan.line > 0) else "",
+        file_filter="" if _seeds_from_location(plan) else plan.file,
     )
     if plan.dropped:
         note = "ignored filters: " + ", ".join(plan.dropped)

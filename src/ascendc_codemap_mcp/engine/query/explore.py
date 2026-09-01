@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from ascendc_codemap_mcp.engine.ir.entity import EntityKind
 from ascendc_codemap_mcp.engine.ir.relation import RelationKind
@@ -287,6 +287,19 @@ def _loc_row(ent: dict[str, Any], *, role: str, snippet: str = "") -> dict[str, 
 
 def _last_ident(name: str) -> str:
     return str(name or "").replace(".", "::").split("::")[-1].strip()
+
+
+_PLAIN_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _is_plain_ident(text: str) -> bool:
+    """Whether this can be pasted after ``symbol=`` and still parse.
+
+    Cards whose subject was an expression printed follow-ups like
+    ``symbol=isSparse)`` and ``symbol=context_->GetAttrs()->GetAttrNum()>IDX``.
+    Both are calls the reader cannot make, and one of them was tried anyway.
+    """
+    return bool(_PLAIN_IDENT_RE.fullmatch(str(text or "").strip()))
 
 
 def _norm_path(path: str) -> str:
@@ -1017,12 +1030,12 @@ def _render_resolvable(payload: dict[str, Any]) -> list[str]:
     rows = [r for r in (payload.get("resolvable_symbols") or []) if isinstance(r, dict)]
     if not rows:
         return []
-    lines = ["Resolve for the full picture (writers, guards, consumers)"]
+    lines = ["Trace for the full picture (writers, guards, consumers)"]
     for row in rows:
         symbol = str(row.get("symbol") or "")
         kinds = ", ".join(str(k) for k in (row.get("kinds") or []) if k)
-        if symbol:
-            lines.append(f"  resolve symbol={symbol}" + (f"   {kinds}" if kinds else ""))
+        if symbol and _is_plain_ident(_last_ident(symbol)):
+            lines.append(f"  trace symbol={symbol}" + (f"   {kinds}" if kinds else ""))
     lines.append("")
     return lines
 
@@ -1267,15 +1280,58 @@ def _render_write_site(site: dict[str, Any]) -> str:
     return bit
 
 
+def _render_reach(site: dict[str, Any]) -> list[str]:
+    """The call that reaches this write, indented under it.
+
+    Three writes to one flag are three candidate answers until you know the
+    order they run in, and the order is a property of the calls, not the
+    writes. Pinning it took the agent its own round trips per flag.
+    """
+    hits = [h for h in (site.get("reached_by") or []) if isinstance(h, dict)]
+    if not hits:
+        return []
+    parts = []
+    for hit in hits:
+        caller = str(hit.get("caller") or "").strip()
+        if not caller:
+            continue
+        line = int(hit.get("line") or 0)
+        parts.append(f"{caller}:{line}" if line else caller)
+    return [f"      reached by {', '.join(parts)}"] if parts else []
+
+
+def _render_write_tree(sites: Sequence[dict[str, Any]]) -> list[str]:
+    out: list[str] = []
+    for site in sites:
+        out.append(_render_write_site(site))
+        out.extend(_render_reach(site))
+    return out
+
+
+def _section_head(label: str, shown: int, total: int, *, computed: bool = True) -> str:
+    """``<label>  N of M, complete`` — never a bare count.
+
+    A section that prints three writes and stops is indistinguishable from a
+    symbol that has three writes, and the reader has no way to ask which. The
+    same collapse of "not computed" into "none" is what produced seventeen
+    false `no resolved caller` verdicts, so every section states its own
+    standing.
+    """
+    if not computed:
+        return f"{label}  not computed here"
+    if total <= shown:
+        return f"{label}  {shown} of {shown}, complete"
+    return f"{label}  {shown} of {total} shown"
+
+
 def _render_bundle(bundle: dict[str, Any]) -> list[str]:
     if not isinstance(bundle, dict):
         return []
     lines: list[str] = []
     host = [s for s in (bundle.get("host_value_definitions") or []) if isinstance(s, dict)]
     if host:
-        lines.append("Host value definitions")
-        for site in host:
-            lines.append(_render_write_site(site))
+        lines.append(_section_head("Host value definitions", len(host), len(host)))
+        lines.extend(_render_write_tree(host))
     transport = [s for s in (bundle.get("transport") or []) if isinstance(s, dict)]
     if transport:
         lines.append("Transport")
@@ -1301,7 +1357,7 @@ def _render_bundle(bundle: dict[str, Any]) -> list[str]:
             lines.append(bit.rstrip())
     consumers = [s for s in (bundle.get("kernel_consumers") or []) if isinstance(s, dict)]
     if consumers:
-        lines.append("Kernel consumers")
+        lines.append(_section_head("Kernel consumers", len(consumers), len(consumers)))
         for row in consumers:
             name = str(row.get("name") or "")
             line = int(row.get("line") or 0)
@@ -1310,6 +1366,7 @@ def _render_bundle(bundle: dict[str, Any]) -> list[str]:
             if when:
                 bit += f"  when {when}"
             lines.append(bit)
+            lines.extend(_render_reach(row))
     assignments = [s for s in (bundle.get("assignments") or []) if isinstance(s, dict)]
     # A name that is both a TILING_FIELD and a FIELD carries two site lists that
     # describe the same writes; printing both reads as two findings.
@@ -1320,9 +1377,8 @@ def _render_bundle(bundle: dict[str, Any]) -> list[str]:
         if (str(s.get("file") or ""), int(s.get("line") or 0)) not in host_sites
     ]
     if assignments:
-        lines.append("Assignments")
-        for site in assignments:
-            lines.append(_render_write_site(site))
+        lines.append(_section_head("Writes", len(assignments), len(assignments)))
+        lines.extend(_render_write_tree(assignments))
     consumed = _consumer_names(bundle.get("consumed_by"))
     if consumed:
         lines.append("Consumed by")
@@ -1942,7 +1998,17 @@ def _render_call_graph(
     name: str = "",
     has_body: bool = False,
     home: str = "",
+    computed: bool = True,
 ) -> list[str]:
+    """Call edges, and which of four states the empty case is in.
+
+    ``computed=False`` means no caller search was run for the subject of this
+    card -- true of a source card, whose call facts belong to whichever entity
+    encloses the line, not to anything the reader named. Printing that as "no
+    resolved caller" is how ``DoSparse`` came back with no callers on a card
+    that had just printed its body, while the graph held
+    ``DoOpTiling -> DoSparse @819`` the whole time.
+    """
     if not isinstance(calls, dict):
         return []
     lines: list[str] = []
@@ -1960,6 +2026,13 @@ def _render_call_graph(
         lines.append(_head("Called by", called_by, "called_by_total"))
         for row in called_by:
             lines.extend(_call_loc(row, home=home))
+        lines.append("")
+    elif not computed:
+        leaf = _last_ident(name) or name
+        subject = f" for {leaf}" if leaf else ""
+        follow = f" — trace symbol={leaf}" if _is_plain_ident(leaf) else ""
+        lines.append("**Called by**")
+        lines.append(f"- not computed{subject} on a source card{follow}")
         lines.append("")
     else:
         # A tiling template's hooks are invoked by the framework base class,
@@ -2136,10 +2209,11 @@ def _site_coverage_line(
     if not ident:
         return f"Coverage: {where} · lists complete for this unit"
     leaf = _last_ident(ident) or ident
+    follow = f" — trace symbol={leaf}" if _is_plain_ident(leaf) else ""
     tail = (
         f"state changes and fields below are every one in this unit; "
         f"definition sites, callers and guards for {leaf} are on its symbol "
-        f"card — resolve symbol={leaf}"
+        f"card{follow}"
     )
     return f"Coverage: {where} · {tail}"
 
@@ -2200,7 +2274,19 @@ def _render_site_markdown(payload: dict[str, Any], *, projection: str) -> list[s
         enc = payload.get("enclosing") if isinstance(payload.get("enclosing"), dict) else {}
         facets = enc.get("facets") if isinstance(enc.get("facets"), dict) else {}
         calls = facets.get("calls") if isinstance(facets.get("calls"), dict) else None
-    lines.extend(_render_call_graph(calls, home=str(payload.get("file") or "")))
+    # A source card is a read of a range. Its call facts belong to whatever
+    # entity encloses the line, so an empty incoming list here is "nobody
+    # asked", not "nobody calls it", and the body printed above is a definition
+    # whatever this section believes.
+    lines.extend(
+        _render_call_graph(
+            calls,
+            name=ident,
+            has_body=bool(snippet and fn_start and fn_end >= fn_start),
+            home=str(payload.get("file") or ""),
+            computed=False,
+        )
+    )
     lines.extend(_render_operations(payload.get("operations")))
     lines.extend(_render_unit_resources(payload.get("unit_resources")))
     lines.extend(_render_unit_fields(payload.get("field_bundles")))
@@ -2337,14 +2423,33 @@ def _render_sibling_definitions(
     if not rest:
         return []
     lines = ["**Other definitions of this name**"]
-    for row in rest:
+    for row, extra in _fold_by_file(rest):
         file = str(row.get("file") or "")
         line = int(row.get("line") or 0)
         name = str(row.get("name") or "")
         qualifier = f"  {name}" if name and _last_ident(name) != leaf else ""
-        lines.append(f"- {file}:{line}{qualifier}   resolve file={file} line={line}")
+        more = f"  (+{extra} more in this file)" if extra else ""
+        lines.append(f"- {file}:{line}{qualifier}{more}   source file={file} line={line}")
     lines.append("")
     return lines
+
+
+def _fold_by_file(rows: Sequence[dict[str, Any]]) -> list[tuple[dict[str, Any], int]]:
+    """One row per file, carrying how many more it stands for.
+
+    A flag written on eight consecutive lines of one translation unit is one
+    fact about that unit, not eight findings. Listing each separately pushed the
+    write tree below eleven rows of the same file and cost the reader the part
+    of the card that answers the question.
+    """
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        groups.setdefault(_norm_path(str(row.get("file") or "")), []).append(row)
+    out: list[tuple[dict[str, Any], int]] = []
+    for group in groups.values():
+        head = min(group, key=lambda r: int(r.get("line") or 0))
+        out.append((head, len(group) - 1))
+    return out
 
 
 def _matched_lookalikes(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -2740,7 +2845,7 @@ def _definition_coverage_note(card: dict[str, Any], rendered: list[str]) -> list
     # begins what is missing.
     resume = max(numbers) + 1 if numbers else start
     tail = end - resume + 1
-    where = f"resolve file={card.get('file') or ''} line={resume}"
+    where = f"source file={card.get('file') or ''} line={resume}"
     rest = (
         # Naming the end as well takes the tail in one call. Without it the
         # reader re-enters at the resume line and gets another window, which is
@@ -2875,6 +2980,79 @@ def _render_impact_markdown(payload: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _rel_summary(rels: list[str]) -> str:
+    """Name the relation set without pasting fourteen enum members."""
+    if not rels:
+        return "all relations"
+    if len(rels) == 1:
+        return rels[0]
+    return f"{len(rels)} relation kinds including CALLS, WRITES, READS"
+
+
+def _trace_endpoint(step: dict[str, Any], end: str) -> str:
+    name = _last_ident(str(step.get(f"{end}_name") or "")) or str(step.get(end) or "?")
+    file = str(step.get(f"{end}_file") or "")
+    line = int(step.get(f"{end}_line") or 0)
+    where = f"  {file}:{line}" if file and line else (f"  {file}" if file else "")
+    return f"{name}{where}"
+
+
+def _render_trace_markdown(payload: dict[str, Any]) -> list[str]:
+    """A path between two names, plus what the walk did and did not cover."""
+    src = str(payload.get("trace_from") or "")
+    dst = str(payload.get("trace_to") or "")
+    steps = [s for s in (payload.get("path") or []) if isinstance(s, dict)]
+    reason = str(payload.get("unresolved_reason") or "")
+    explored = int(payload.get("explored") or 0)
+    budget = int(payload.get("node_budget") or 0)
+    rels = [str(k) for k in (payload.get("trace_relations") or []) if k]
+    lines: list[str] = [f"Path  {src} → {dst}".rstrip()]
+    lines.append("")
+    if reason == "NO_SEED":
+        unknown = [str(x) for x in (payload.get("unknown_endpoints") or []) if x]
+        lines.append(
+            "**No path** — not a name in this CodeMap: " + ", ".join(unknown)
+            if unknown
+            else "**No path** — endpoint not in this CodeMap"
+        )
+        lines.append("")
+        lines.append(f"Search this snapshot for the name first: search pattern={unknown[0]}"
+                     if unknown else "")
+        return [ln for ln in lines if ln is not None]
+    depth = int(payload.get("max_depth") or 0)
+    if not steps:
+        if reason == "SEARCH_BUDGET":
+            lines.append(
+                f"**Not proven** — the walk stopped at {explored} nodes / depth "
+                f"{depth} without reaching {dst}. That is where the search ended, "
+                f"not a proof that no path exists. Narrow it with relation=, or "
+                f"trace to an intermediate name."
+            )
+        else:
+            lines.append(
+                f"**No path** — every node reachable from {src} over "
+                f"{_rel_summary(rels)} was enumerated ({explored} of them) and "
+                f"none is {dst}."
+            )
+        lines.append("")
+        return lines
+    lines.append(f"**{len(steps)} hop{'s' if len(steps) != 1 else ''}**")
+    for i, step in enumerate(steps, start=1):
+        kind = str(step.get("kind") or "?")
+        lines.append(
+            f"{i}. {_trace_endpoint(step, 'from')}  —{kind}→  {_trace_endpoint(step, 'to')}"
+        )
+    lines.append("")
+    lines.append(
+        f"Coverage: breadth-first over {_rel_summary(rels)}; "
+        f"{explored} nodes enumerated"
+        + ("" if payload.get("exhausted") else f", bounded at {budget} nodes / depth {depth}")
+        + ". Shortest path by hop count, not the only one."
+    )
+    lines.append("")
+    return lines
+
+
 def render_explore_markdown(
     payload: dict[str, Any],
     *,
@@ -2902,6 +3080,8 @@ def render_explore_markdown(
         header = ""
     if op == "search" or shape == "search":
         body = _render_search_markdown(payload)
+    elif shape == "trace":
+        body = _render_trace_markdown(payload)
     elif payload.get("resolve_mode") == "site" or shape == "around":
         body = _render_site_markdown(payload, projection=projection)
     elif _is_name_list(payload) or op == "find":
@@ -2962,7 +3142,75 @@ def render_explore_markdown(
                 extra.append(f"  {va} × {{{', '.join(parts)}}}")
         extra.append("")
     lines = ([header, ""] if header else []) + extra + body
-    return cut_explore_text("\n".join(lines).rstrip() + "\n")
+    text = "\n".join(lines).rstrip() + "\n"
+    families = payload.get("relation_families")
+    if families:
+        text = _narrow_to_families(text, frozenset(str(f) for f in families))
+    return cut_explore_text(text)
+
+
+#: Which family each section of a card belongs to. A section absent from this
+#: map is identity (name, location, coverage) and survives every narrowing:
+#: a filter is allowed to drop evidence, never to drop what the card is about.
+_SECTION_FAMILY: dict[str, str] = {
+    "Writes": "data",
+    "Host value definitions": "data",
+    "Transport": "data",
+    "Accessors": "data",
+    "Kernel consumers": "data",
+    "Consumed by": "data",
+    "Reads": "data",
+    "Workspace layout": "data",
+    "Calls": "call",
+    "Called by": "call",
+    "Possible callers": "call",
+    "Call graph": "call",
+    "Guarded by": "control",
+    "Controls": "control",
+    "Active under": "control",
+    "Compiled": "compile",
+    "Host encoding": "compile",
+    "Kernel specialization": "compile",
+    "Dim": "compile",
+    "Cross": "compile",
+}
+
+
+def _narrow_to_families(text: str, families: frozenset[str]) -> str:
+    """Drop sections outside the named families, and say which were dropped.
+
+    A narrowed answer that looks identical to a complete one is the same trap as
+    rendering "not computed" as "none": the reader cannot tell a symbol with no
+    writes from a question that never asked about writes. So the sections come
+    off and the names of the families holding them go on.
+    """
+    out: list[str] = []
+    withheld: set[str] = set()
+    skipping = False
+    for line in text.split("\n"):
+        label = line.strip().strip("*# ").split("  ")[0].strip()
+        family = _SECTION_FAMILY.get(label)
+        if family is not None:
+            skipping = family not in families
+            if skipping:
+                withheld.add(family)
+                continue
+        elif skipping:
+            # A section runs until the next heading; a blank line inside one
+            # does not end it, but an unindented non-heading line does.
+            if line and not line.startswith((" ", "-", "|", "\t")):
+                skipping = False
+            else:
+                continue
+        if not skipping:
+            out.append(line)
+    if withheld:
+        out.append("")
+        out.append(
+            f"Withheld by relation filter: {', '.join(sorted(withheld))}. "
+            f"Drop relation= to see every family."
+        )
+    return "\n".join(out).rstrip() + "\n"
 
 
 #: Kinds that actually carry a host → TilingKey → kernel contract. Only these

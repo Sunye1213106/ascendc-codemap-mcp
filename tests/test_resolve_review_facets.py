@@ -186,7 +186,9 @@ def test_resolve_symbol_lists_assignments(tmp_path: Path) -> None:
         symbol="isBn2MultiBlk",
     )
     text = str((payload.get("data") or {}).get("text") or "")
-    assert "Assignments" in text
+    # The heading states its own completeness, so a card showing three writes
+    # can be told apart from a symbol that has three.
+    assert "Writes  3 of 3, complete" in text, text
     assert "SetSplitAxis" in text
     assert "45" in text
     assert "bnSparseLimit" in text
