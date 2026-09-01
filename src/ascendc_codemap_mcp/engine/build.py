@@ -38,6 +38,7 @@ from ascendc_codemap_mcp.engine.passes.value_defining_sites import enrich_value_
 from ascendc_codemap_mcp.engine.passes.host_checks import enrich_host_checks
 from ascendc_codemap_mcp.engine.passes.tiling_context_apis import enrich_tiling_context_apis
 from ascendc_codemap_mcp.engine.passes.guarded_calls import enrich_guarded_calls
+from ascendc_codemap_mcp.engine.passes.host_virtual_dispatch import enrich_host_virtual_dispatch
 from ascendc_codemap_mcp.engine.passes.constexpr_alias import enrich_constexpr_aliases
 from ascendc_codemap_mcp.engine.passes.host_predicates import enrich_host_predicates
 from ascendc_codemap_mcp.engine.passes.compile_policy import enrich_compile_policy
@@ -56,7 +57,7 @@ from ascendc_codemap_mcp.engine.timing import log as _tlog, timing_enabled
 # Same-process reuse between analyze (commit=False) and commit. Avoids paying
 # the full source-enrichment stack twice in one uo-init run.
 _COMPILE_MEM: dict[str, dict[str, Any]] = {}
-ANALYZE_CACHE_VERSION = 3
+ANALYZE_CACHE_VERSION = 4
 
 
 def _cache_key(op_root: Path, op_name: str, architecture: str) -> str:
@@ -281,6 +282,7 @@ def compile_codemap(
             ("host_defuse_validate", validate_host_defuse, {}),
             ("tiling_registration", enrich_tiling_registrations, {}),
             ("source_gaps", resolve_source_gaps, {}),
+            ("host_virtual_dispatch", enrich_host_virtual_dispatch, {"needs_irs": True}),
             ("class_frontiers", resolve_class_frontiers, {}),
             ("kernel_tiling_closure", finalize_kernel_tiling_closure, {"needs_irs": True, "rebuild_bodies": False}),
             ("kernel_identity", preserve_verified_kernel_identity, {"skip_arch": True}),

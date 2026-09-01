@@ -9,30 +9,15 @@ apart from a section limit.
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from ascendc_codemap_mcp.engine.query.contract import RELATION_FAMILIES, expand_relation
 from ascendc_codemap_mcp.engine.query.typed import InvalidQuery, validate_plan
 from ascendc_codemap_mcp.service.control import status
 from ascendc_codemap_mcp.service.query import query
+from tests.conftest import fag_operator_root
 
-_CANDIDATES = (
-    Path(r"d:\PR-review\TEST\ops-transformer\attention\flash_attention_score_grad"),
-    Path(r"d:\TEST\ops-transformer\attention\flash_attention_score_grad"),
-)
-_REL_UO = Path(".ascendc-codemap/arch35/FlashAttentionScoreGrad.arch35.uo")
-
-
-def _operator() -> Path | None:
-    for root in _CANDIDATES:
-        if (root / _REL_UO).is_file():
-            return root
-    return None
-
-
-FAG = _operator()
+FAG = fag_operator_root()
 
 
 def _text(**kwargs) -> str:
@@ -197,3 +182,54 @@ def test_the_compiled_key_space_is_reachable_without_reading_dispatch() -> None:
     assert "legal_key_count: 224" in text
     dtype = next(ln for ln in text.splitlines() if "InputDType" in ln)
     assert "1" not in dtype.split("{")[1].split("}")[0].split(", "), dtype
+
+
+# ---------------------------------------------------------------- source denoise (ses_fa50)
+
+
+def test_source_span_is_titled_after_the_enclosing_function() -> None:
+    """A search hit range used to title the card after BN2_MAX_D on line 1657."""
+    text = _text(
+        operation="source",
+        file="op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp",
+        line=1657,
+        line_end=1740,
+    )
+    assert text.splitlines()[0].strip() == "SetSplitAxis"
+    assert "BN2_MAX_D" not in text.splitlines()[0]
+    assert "not computed for" not in text
+    site = text.split("At this site", 1)[-1] if "At this site" in text else ""
+    assert "BN2_MAX_D" not in site
+    assert "CONTRACT" not in site
+
+
+def test_source_span_attaches_enclosing_function_callers() -> None:
+    text = _text(
+        operation="source",
+        file="op_host/arch35/flash_attention_score_grad_tiling_normal_regbase.cpp",
+        line=1077,
+        line_end=1149,
+    )
+    assert text.splitlines()[0].strip() == "DoSparse"
+    assert "Called by" in text
+    assert "DoOpTiling" in text
+    assert "819" in text
+    assert "not computed for" not in text
+    assert text.splitlines()[0].strip().startswith("!(") is False
+
+
+def test_unknown_dim_lists_real_compiled_dims() -> None:
+    text = _text(operation="trace", dim="DeterBandScheduleMode")
+    assert "not a compiled dim" in text.lower()
+    assert "IsBn2MultiBlk" in text
+    assert "IsRope" in text
+    assert "Empty query" not in text
+    assert "entity_id" not in text
+    assert "from_symbol" not in text
+
+
+def test_dim_catalog_lists_compiled_dims() -> None:
+    text = _text(operation="trace", dim="*")
+    assert "IsBn2MultiBlk" in text
+    assert "IsRope" in text
+    assert "DTemplateNum" in text

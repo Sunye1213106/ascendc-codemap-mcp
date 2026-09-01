@@ -12,6 +12,20 @@ from ascendc_codemap_mcp.engine.store.reader import close_uo_connections
 from ascendc_codemap_mcp.engine.store.schema import SCHEMA_SQL
 from ascendc_codemap_mcp.service import runtime
 
+FAG_REL_UO = Path(".ascendc-codemap") / "arch35" / "FlashAttentionScoreGrad.arch35.uo"
+FAG_ROOT_CANDIDATES = (
+    Path(r"d:\PR-review\TEST\ops-transformer\attention\flash_attention_score_grad"),
+    Path(r"d:\TEST\ops-transformer\attention\flash_attention_score_grad"),
+)
+
+
+def fag_operator_root() -> Path | None:
+    """Workspace FAG first; the historical d:\\TEST clone is the fallback."""
+    for root in FAG_ROOT_CANDIDATES:
+        if (root / FAG_REL_UO).is_file():
+            return root
+    return None
+
 
 def write_uo_fixture(
     op: Path,

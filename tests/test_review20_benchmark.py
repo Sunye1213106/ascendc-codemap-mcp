@@ -8,11 +8,10 @@ import pytest
 
 from ascendc_codemap_mcp.service.control import status
 from ascendc_codemap_mcp.service.query import query
+from tests.conftest import FAG_REL_UO, fag_operator_root
 
-FAG = Path(
-    r"d:\TEST\ops-transformer\attention\flash_attention_score_grad"
-)
-FAG_UO = FAG / r".ascendc-codemap\arch35\FlashAttentionScoreGrad.arch35.uo"
+FAG = fag_operator_root()
+FAG_UO = (FAG / FAG_REL_UO) if FAG else Path()
 
 # Dialect-first phrases. True names are only the useful-locator check.
 REVIEW20: list[tuple[str, tuple[str, ...], str]] = [

@@ -96,6 +96,13 @@ _ENTRY_FILTERS = frozenset({"layer", "entry_role", "function", "referenced_symbo
 _TRACE_FILTERS = frozenset(
     {"symbol", "entity_id", "from_symbol", "to_symbol", "relation", "kind", "dim", "value"}
 )
+#: What the MCP tool actually exposes. `entity_id` / `from_symbol` still work
+#: on the engine, but listing them on INVALID_QUERY advertised filters the
+#: caller cannot send.
+_TRACE_ADVERTISED_FILTERS = frozenset(
+    {"symbol", "to_symbol", "relation", "kind", "dim", "value"}
+)
+_DIM_CATALOG = frozenset({"*", "all", "dims"})
 # source is line space. It never takes a symbol, so nothing can silently
 # outrank the range the caller asked to read.
 _SOURCE_FILTERS = frozenset({"file", "line", "line_end", "kind"})
@@ -180,7 +187,7 @@ class QueryPlan:
     value: str = ""
     relation: str = ""
     #: Families named by ``relation=``, empty when the caller did not narrow.
-    #: Empty means every family, so an omitted filter is the complete answer.
+    #: Empty means walk every family as a menu, not one mixed shortest path.
     relation_families: frozenset[str] = frozenset()
     consumer_role: str = ""
     from_symbol: str = ""
@@ -342,6 +349,10 @@ def _looks_like_name_pattern(text: str) -> bool:
         return True
     core = s.replace("*", "").replace("?", "").replace("::", "").replace(".", "")
     return bool(core) and all(c.isalnum() or c == "_" for c in core)
+
+
+def _is_dim_catalog(dim: str) -> bool:
+    return str(dim or "").strip().lower() in _DIM_CATALOG
 
 
 def _looks_like_graph_id(text: str) -> bool:
@@ -590,11 +601,11 @@ def validate_plan(**kwargs: Any) -> QueryPlan:
         if endpoint and _looks_like_ident(endpoint):
             alternatives = [{"operation": "trace", "symbol": endpoint}]
         raise InvalidQuery(
-            "trace requires symbol (add to_symbol for a path, or dim/value for the compiled key space)",
-            legal_filters=sorted(_TRACE_FILTERS),
+            "trace requires symbol (add to_symbol for a path, or dim for the compiled key space; dim=* lists every dim)",
+            legal_filters=sorted(_TRACE_ADVERTISED_FILTERS),
             parsed_tokens=tokens,
             operation=operation,
-            did_you_mean=alternatives,
+            did_you_mean=alternatives or [{"operation": "trace", "dim": "*"}],
         )
     if operation == "source" and not _has_concrete_seed("source", filled):
         missing = "line" if filled.get("file") else "file"
@@ -758,12 +769,18 @@ def _resolve_seed(query: Any, plan: QueryPlan) -> dict[str, Any]:
 
 def _source_seed(query: Any, plan: QueryPlan) -> dict[str, Any]:
     site = getattr(query, "query_site_unit", None)
-    # A caller who named an end asked for those lines, not for the unit that
-    # happens to enclose the start. Sending them through the unit view
-    # returned the same window they were trying to read past.
-    span = int(plan.line_end or 0) > int(plan.line or 0)
-    if callable(site) and not span:
-        return site(plan.file, plan.line, highlight=str(plan.symbol or ""), limit=plan.limit)
+    # Identity is the function that owns the window: enclosing ``line`` when
+    # that function still covers most of [line, line_end], otherwise the
+    # function that covers the bulk (a search range that starts in the
+    # previous function's tail). `line_end` still crops the snippet.
+    if callable(site):
+        return site(
+            plan.file,
+            plan.line,
+            highlight=str(plan.symbol or ""),
+            limit=plan.limit,
+            line_end=int(plan.line_end or 0),
+        )
     return query.query_around(
         plan.file, plan.line, line_end=int(plan.line_end or plan.line), limit=plan.limit
     )
@@ -807,6 +824,8 @@ def _symbol_seed(query: Any, plan: QueryPlan) -> dict[str, Any]:
             return payload
         symbol = symbol or plan.entity_id
     if plan.dim:
+        if _is_dim_catalog(plan.dim) and not plan.value:
+            return query.query_index(limit=plan.limit)
         pattern = f"{plan.dim}={plan.value}" if plan.value else f"Dim={plan.dim}"
         return query.query_cover(pattern, limit=plan.limit)
     if not symbol:

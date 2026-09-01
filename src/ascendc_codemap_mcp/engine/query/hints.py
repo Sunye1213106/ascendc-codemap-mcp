@@ -93,11 +93,13 @@ def absent_ident_hint(pattern: str, dim_names: Iterable[str] | None = None) -> s
         extra = f" (+{len(dims) - 12})" if len(dims) > 12 else ""
         sample = dims[0]
         return (
-            f"{name} is absent on this operator. Dims: {shown}{extra}. "
-            f"resolve(symbol={sample}) or find with dim={sample}."
+            f"{name} is not a compiled dim on this operator. Dims: {shown}{extra}. "
+            f"trace dim={sample} lists that dim's built values. "
+            f"trace dim=* lists every dim."
         )
     return (
-        f"{name} is absent on this operator. Empty query lists this operator's Dims."
+        f"{name} is not a compiled dim on this operator, and this snapshot "
+        f"has no compiled dims to list."
     )
 
 

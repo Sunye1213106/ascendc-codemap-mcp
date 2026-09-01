@@ -16,11 +16,11 @@ from ascendc_codemap_mcp.engine.query.rg import path_matches
 from ascendc_codemap_mcp.engine.query.typed import InvalidQuery, validate_plan
 from ascendc_codemap_mcp.service.control import status
 from ascendc_codemap_mcp.service.query import query
-from tests.conftest import write_uo_fixture
+from tests.conftest import FAG_REL_UO, fag_operator_root, write_uo_fixture
 from tests.test_query_surface import _add_source_lines, _insert_entity
 
-FAG = Path(r"d:\TEST\ops-transformer\attention\flash_attention_score_grad")
-FAG_UO = FAG / r".ascendc-codemap\arch35\FlashAttentionScoreGrad.arch35.uo"
+FAG = fag_operator_root()
+FAG_UO = (FAG / FAG_REL_UO) if FAG else Path()
 _HOST = "op_host/arch35/flash_attention_score_grad_tiling_common_regbase.cpp"
 
 

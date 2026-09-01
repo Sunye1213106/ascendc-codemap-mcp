@@ -15,6 +15,11 @@ from typing import Any, Sequence
 from ascendc_codemap_mcp.engine.ir.entity import EntityKind
 from ascendc_codemap_mcp.engine.ir.relation import RelationKind
 from ascendc_codemap_mcp.engine.query.closure import semantic_impact_closure_sql
+from ascendc_codemap_mcp.engine.query.virtual_dispatch import (
+    annotate_call_line,
+    family_sites,
+    render_virtual_dispatch,
+)
 from ascendc_codemap_mcp.engine.query.completeness import (
     AMBIGUOUS,
     COMPLETE,
@@ -1985,11 +1990,17 @@ def _call_loc(row: dict[str, Any], *, home: str = "") -> list[str]:
     if not order:
         line = int(row.get("line") or 0)
         head = f"- {display} @{line}" if line else f"- {display}"
-        return [_tail(head, row.get("when"))]
-    return [
-        _tail(f"- {display} {_site_text(groups[guard], home_base)}", [guard])
-        for guard in order
-    ]
+        lines = [_tail(head, row.get("when"))]
+    else:
+        lines = [
+            _tail(f"- {display} {_site_text(groups[guard], home_base)}", [guard])
+            for guard in order
+        ]
+    family = row.get("virtual_dispatch") if isinstance(row.get("virtual_dispatch"), dict) else None
+    if family:
+        lines = [annotate_call_line(line) for line in lines]
+        lines.extend(render_virtual_dispatch(family, home=home, indent="    "))
+    return lines
 
 
 def _render_call_graph(
@@ -2028,12 +2039,10 @@ def _render_call_graph(
             lines.extend(_call_loc(row, home=home))
         lines.append("")
     elif not computed:
-        leaf = _last_ident(name) or name
-        subject = f" for {leaf}" if leaf else ""
-        follow = f" — trace symbol={leaf}" if _is_plain_ident(leaf) else ""
-        lines.append("**Called by**")
-        lines.append(f"- not computed{subject} on a source card{follow}")
-        lines.append("")
+        # A source card that did not search callers used to print
+        # "not computed for BN2_MAX_D" using the start-line entity as the
+        # subject. That line is noise: omit the section.
+        pass
     else:
         # A tiling template's hooks are invoked by the framework base class,
         # which is not in the tree, so their caller list is empty. Dropping the
@@ -2076,6 +2085,13 @@ def _render_call_graph(
         for row in possible:
             lines.extend(_call_loc(row, home=home))
         lines.append("")
+    family = calls.get("virtual_dispatch") if isinstance(calls.get("virtual_dispatch"), dict) else None
+    outgoing_has_family = any(
+        isinstance(row.get("virtual_dispatch"), dict) for row in outgoing
+    )
+    if family and not outgoing_has_family:
+        # Callee card: the family is the subject, not one of its callees.
+        lines.extend(render_virtual_dispatch(family, home=home, heading=True))
     return lines
 
 
@@ -2163,29 +2179,84 @@ def _render_operations(rows: Any, *, title: str = "Pipeline operations") -> list
     return lines
 
 
-def _render_unit_fields(rows: Any) -> list[str]:
+def _keep_site_extra(row: dict[str, Any]) -> bool:
+    """Whether a neighbour at this line is worth naming.
+
+    CONTRACT constants, log-guard BRANCHes, and predicates that are not an
+    identifier were the bulk of "At this site" on source cards, and they
+    competed with the enclosing function for the reader's attention.
+    """
+    kind = str(row.get("kind") or "").upper()
+    name = str(row.get("name") or "")
+    if kind == EntityKind.CONTRACT.value:
+        return False
+    if kind == EntityKind.PREDICATE.value:
+        return _is_plain_ident(_last_ident(name))
+    if kind == EntityKind.BRANCH.value and _is_validation_name(name):
+        return False
+    return bool(kind or name)
+
+
+def _render_unit_fields(
+    rows: Any,
+    *,
+    window_start: int = 0,
+    window_end: int = 0,
+    file: str = "",
+) -> list[str]:
     items = [r for r in (rows or []) if isinstance(r, dict)]
     if not items:
         return []
+    host_file = _is_host_path(file)
+    lo, hi = int(window_start or 0), int(window_end or 0)
+
+    def _in_window(site: dict[str, Any]) -> bool:
+        ln = int(site.get("line") or 0)
+        if lo > 0 and hi >= lo and ln > 0:
+            return lo <= ln <= hi
+        return True
+
     lines = ["Fields in this unit"]
+    shown = 0
     for item in items:
         name = str(item.get("name") or "")
+        bundle = item.get("bundle") if isinstance(item.get("bundle"), dict) else {}
+        host = [
+            s
+            for s in (bundle.get("host_value_definitions") or [])
+            if isinstance(s, dict) and _in_window(s)
+        ]
+        assignments = [
+            s
+            for s in (bundle.get("assignments") or [])
+            if isinstance(s, dict) and _in_window(s)
+        ]
+        writes = host or assignments
+        consumers = []
+        if not host_file:
+            consumers = [
+                s
+                for s in (bundle.get("kernel_consumers") or [])
+                if isinstance(s, dict) and _in_window(s)
+            ]
+        if not writes and not consumers:
+            continue
         if name:
             lines.append(f"  {name}")
-        bundle = item.get("bundle") if isinstance(item.get("bundle"), dict) else {}
-        host = [s for s in (bundle.get("host_value_definitions") or []) if isinstance(s, dict)]
-        for site in host[:2]:
+        for site in writes[:2]:
             cite = _render_site_cite(site).strip()
             fn = str(site.get("function") or "")
             bit = f"    host {cite}"
             if fn and fn not in bit:
                 bit += f"  {fn}"
             lines.append(bit)
-        consumers = [s for s in (bundle.get("kernel_consumers") or []) if isinstance(s, dict)]
         for row in consumers[:2]:
             cname = str(row.get("name") or "")
             line = int(row.get("line") or 0)
             lines.append(f"    kernel {cname}  {line}".rstrip())
+        shown += 1
+    if shown == 0:
+        return []
     lines.append("")
     return lines
 
@@ -2211,10 +2282,13 @@ def _site_coverage_line(
     leaf = _last_ident(ident) or ident
     follow = f" — trace symbol={leaf}" if _is_plain_ident(leaf) else ""
     tail = (
-        f"state changes and fields below are every one in this unit; "
-        f"definition sites, callers and guards for {leaf} are on its symbol "
-        f"card{follow}"
+        f"state changes and fields below are every one in this window"
     )
+    if ident and _is_plain_ident(leaf):
+        tail += (
+            f"; name matches and guards for {leaf} are on its symbol card"
+            f"{follow}"
+        )
     return f"Coverage: {where} · {tail}"
 
 
@@ -2227,7 +2301,12 @@ def _render_site_markdown(payload: dict[str, Any], *, projection: str) -> list[s
     unit_end = int(payload.get("unit_end") or enclosing.get("line_end") or line or 0)
     fn_start = int(payload.get("function_start") or enclosing.get("line_start") or 0)
     fn_end = int(payload.get("function_end") or enclosing.get("line_end") or 0)
-    ident = str(enclosing.get("name") or "")
+    ident = _last_ident(str(enclosing.get("name") or ""))
+    # CONTRACT / BRANCH / PREDICATE at the requested line are neighbours, never
+    # the card's title. The enclosing function name is the identity; a leftover
+    # expression in `enclosing.name` is dropped rather than printed as a heading.
+    if ident and not _is_plain_ident(ident):
+        ident = ""
     lines: list[str] = []
     if ident:
         lines.append(ident)
@@ -2262,6 +2341,8 @@ def _render_site_markdown(payload: dict[str, Any], *, projection: str) -> list[s
             continue
         if ident_leaf and _last_ident(name).lower() == ident_leaf:
             continue
+        if not _keep_site_extra(row):
+            continue
         seen.add(key)
         extras.append(row)
     if extras:
@@ -2274,22 +2355,25 @@ def _render_site_markdown(payload: dict[str, Any], *, projection: str) -> list[s
         enc = payload.get("enclosing") if isinstance(payload.get("enclosing"), dict) else {}
         facets = enc.get("facets") if isinstance(enc.get("facets"), dict) else {}
         calls = facets.get("calls") if isinstance(facets.get("calls"), dict) else None
-    # A source card is a read of a range. Its call facts belong to whatever
-    # entity encloses the line, so an empty incoming list here is "nobody
-    # asked", not "nobody calls it", and the body printed above is a definition
-    # whatever this section believes.
     lines.extend(
         _render_call_graph(
             calls,
             name=ident,
             has_body=bool(snippet and fn_start and fn_end >= fn_start),
             home=str(payload.get("file") or ""),
-            computed=False,
+            computed=bool(payload.get("calls_computed")),
         )
     )
     lines.extend(_render_operations(payload.get("operations")))
     lines.extend(_render_unit_resources(payload.get("unit_resources")))
-    lines.extend(_render_unit_fields(payload.get("field_bundles")))
+    lines.extend(
+        _render_unit_fields(
+            payload.get("field_bundles"),
+            window_start=unit_start,
+            window_end=unit_end,
+            file=file,
+        )
+    )
     hint = str(payload.get("hint") or "").strip()
     if hint:
         lines.append(hint)
@@ -2416,9 +2500,21 @@ def _render_sibling_definitions(
     rows = _sibling_definition_rows(payload, card)
     leaf = _last_ident(str(card.get("name") or ""))
     here = (str(shown_file or ""), int(shown_line or 0))
+    calls = payload.get("calls") if isinstance(payload.get("calls"), dict) else {}
+    family = calls.get("virtual_dispatch") if isinstance(calls.get("virtual_dispatch"), dict) else None
+    if family is None:
+        facets = card.get("facets") if isinstance(card.get("facets"), dict) else {}
+        faceted = facets.get("calls") if isinstance(facets.get("calls"), dict) else {}
+        family = faceted.get("virtual_dispatch") if isinstance(faceted.get("virtual_dispatch"), dict) else None
+    skip = family_sites(family)
     rest = [
         r for r in rows
-        if isinstance(r, dict) and (str(r.get("file") or ""), int(r.get("line") or 0)) != here
+        if isinstance(r, dict)
+        and (_norm_path(str(r.get("file") or "")), int(r.get("line") or 0)) != (
+            _norm_path(here[0]),
+            here[1],
+        )
+        and (_norm_path(str(r.get("file") or "")), int(r.get("line") or 0)) not in skip
     ]
     if not rest:
         return []
@@ -2565,14 +2661,14 @@ def _coverage_line(payload: dict[str, Any]) -> str:
         )
     elif sites > 1:
         if sites_complete:
-            parts.append(f"{sites} definition sites (all listed)")
+            parts.append(f"{sites} name matches (all listed)")
         else:
             # Saying a list is partial without saying how to finish it just
             # moves the guesswork. Search pages to completion and now declares
             # when it has reached it.
             seed = str(payload.get("explore_pattern") or payload.get("pattern") or "").strip()
             hint = f"; search pattern={seed} for all" if seed else ""
-            parts.append(f"{sites} definition sites (first page only{hint})")
+            parts.append(f"{sites} name matches (first page only{hint})")
     elif sites == 1 and sites_complete:
         # `first_hit` on a name with one definition means unique, not unchecked.
         parts.append("the only definition of this name")
@@ -2984,8 +3080,10 @@ def _rel_summary(rels: list[str]) -> str:
     """Name the relation set without pasting fourteen enum members."""
     if not rels:
         return "all relations"
-    if len(rels) == 1:
+    if len(rels) == 1 and "," not in rels[0]:
         return rels[0]
+    if any("," in r for r in rels):
+        return "relation kinds"
     return f"{len(rels)} relation kinds including CALLS, WRITES, READS"
 
 
@@ -2997,10 +3095,33 @@ def _trace_endpoint(step: dict[str, Any], end: str) -> str:
     return f"{name}{where}"
 
 
+def _render_trace_hops(steps: list[dict[str, Any]]) -> list[str]:
+    lines = [f"**{len(steps)} hop{'s' if len(steps) != 1 else ''}**"]
+    for i, step in enumerate(steps, start=1):
+        kind = str(step.get("kind") or "?")
+        lines.append(
+            f"{i}. {_trace_endpoint(step, 'from')}  —{kind}→  {_trace_endpoint(step, 'to')}"
+        )
+    return lines
+
+
+def _family_heading(entry: dict[str, Any]) -> str:
+    family = str(entry.get("family") or "path")
+    role = str(entry.get("role") or "")
+    if family == "control" or role == "weak":
+        if role and role not in {"weak", ""}:
+            return f"{family} ({role}, weak)"
+        return f"{family}  weak"
+    if role:
+        return f"{family} ({role})"
+    return family
+
+
 def _render_trace_markdown(payload: dict[str, Any]) -> list[str]:
     """A path between two names, plus what the walk did and did not cover."""
     src = str(payload.get("trace_from") or "")
     dst = str(payload.get("trace_to") or "")
+    family_paths = [s for s in (payload.get("family_paths") or []) if isinstance(s, dict)]
     steps = [s for s in (payload.get("path") or []) if isinstance(s, dict)]
     reason = str(payload.get("unresolved_reason") or "")
     explored = int(payload.get("explored") or 0)
@@ -3020,6 +3141,35 @@ def _render_trace_markdown(payload: dict[str, Any]) -> list[str]:
                      if unknown else "")
         return [ln for ln in lines if ln is not None]
     depth = int(payload.get("max_depth") or 0)
+    if family_paths:
+        by_fam: dict[str, list[dict[str, Any]]] = {}
+        order: list[str] = []
+        for entry in family_paths:
+            fam = str(entry.get("family") or "path")
+            if fam not in by_fam:
+                order.append(fam)
+                by_fam[fam] = []
+            by_fam[fam].append(entry)
+        for fam in order:
+            entries = by_fam[fam]
+            found = [e for e in entries if e.get("found") and e.get("steps")]
+            if not found:
+                lines.append(fam)
+                lines.append("  no path")
+                lines.append("")
+                continue
+            for entry in found:
+                lines.append(_family_heading(entry))
+                lines.extend(_render_trace_hops(list(entry.get("steps") or [])))
+                lines.append("")
+        lines.append(
+            f"Coverage: directed family walk, not all simple paths; "
+            f"{explored} nodes enumerated"
+            + ("" if payload.get("exhausted") else f", bounded at {budget} nodes / depth {depth}")
+            + ". Pick a hop name and trace symbol= for its card."
+        )
+        lines.append("")
+        return lines
     if not steps:
         if reason == "SEARCH_BUDGET":
             lines.append(
@@ -3036,18 +3186,13 @@ def _render_trace_markdown(payload: dict[str, Any]) -> list[str]:
             )
         lines.append("")
         return lines
-    lines.append(f"**{len(steps)} hop{'s' if len(steps) != 1 else ''}**")
-    for i, step in enumerate(steps, start=1):
-        kind = str(step.get("kind") or "?")
-        lines.append(
-            f"{i}. {_trace_endpoint(step, 'from')}  —{kind}→  {_trace_endpoint(step, 'to')}"
-        )
+    lines.extend(_render_trace_hops(steps))
     lines.append("")
     lines.append(
-        f"Coverage: breadth-first over {_rel_summary(rels)}; "
+        f"Coverage: directed family walk, not all simple paths; "
         f"{explored} nodes enumerated"
         + ("" if payload.get("exhausted") else f", bounded at {budget} nodes / depth {depth}")
-        + ". Shortest path by hop count, not the only one."
+        + ". Pick a hop name and trace symbol= for its card."
     )
     lines.append("")
     return lines
@@ -3478,9 +3623,14 @@ def attach_explore_fields(
         payload["cards"] = cards
     if unique_seed:
         payload["count"] = len(cards)
-        primary = _expand_statement_snippet(query, primary, raw_cards + extra_seeds)
-        cards[0] = primary
-        payload["cards"] = cards
+        site_has_window = (
+            str(payload.get("resolve_mode") or "") == "site"
+            and bool(payload.get("snippet"))
+        )
+        if not site_has_window:
+            primary = _expand_statement_snippet(query, primary, raw_cards + extra_seeds)
+            cards[0] = primary
+            payload["cards"] = cards
     sites = _definition_site_candidates(cards)
     def_sites = [s for s in sites if _looks_like_definition(s)]
     if file_filter:
@@ -3664,6 +3814,8 @@ def _attach_call_site_fanout(
     query: Any, payload: dict[str, Any], primary: dict[str, Any]
 ) -> None:
     """A definition card for a called ident says how many call sites exist."""
+    if str(payload.get("resolve_mode") or "") == "site":
+        return
     name = str(primary.get("name") or "")
     if not name:
         return

@@ -15,7 +15,7 @@ Identity on every call: `codemap_id`, or `project` + `architecture`. No map → 
 | a name | `codemap_trace` | `symbol` |
 | a `file:line` | `codemap_source` | `file`, `line` |
 
-The parameter sets do not overlap: `trace` takes no `file`/`line`, `source` takes no `symbol`. Mixing them returns `INVALID_QUERY` with the legal filter list.
+The parameter sets do not overlap: `trace` takes no `file`/`line`, `source` takes no `symbol`. Mixing them **drops the illegal parameters** and keeps the legal ones (`trace` keeps `symbol`, `source` keeps `file`/`line`) — it does not guess which you meant.
 
 **If you know the name, call `codemap_trace(symbol=)` and nothing else.** It already contains the definition body, so you do not need a second call to read the lines.
 
@@ -47,7 +47,7 @@ IsBn2MultiBlk
 TILING_KEY
 op_host/arch35/..._common_regbase.cpp:1673
 
-Coverage: 11 definition sites · the rest complete
+Coverage: 11 name matches (first page only; search pattern=isBn2MultiBlk for all) · the rest complete
 
 **Definition**
 1673|      fBaseParams.isBn2MultiBlk =
@@ -70,23 +70,39 @@ Kernel specialization
 - IsRope: {0: 80, 1: 0}
 ```
 
-`reached by` gives the call order, which is what settles who overrides whom. `Kernel specialization` gives co-occurrence in the compiled key space: `IsRope: {0: 80, 1: 0}` says no built key has both `IsRope=1` and this flag set.
+`reached by` gives the call order, which is what settles who overrides whom. `Kernel specialization` gives co-occurrence in the compiled key space: `IsRope: {0: 80, 1: 0}` says no built key has both `IsRope=1` and this flag set. When a card names a TILING_KEY dim, `trace dim=<that name>` lists its built values; `trace dim=*` lists every dim on this operator.
+
+A host `virtual` call is not a single target. `Calls` / `Virtual dispatch` lists the empty base and every override (for example `DoSparse:1110 GetSparseUnpadBlockInfo()` → varlen override at `:953` and empty virtual at `normal_regbase.h:95`). Do not treat the first listed definition as the only body.
 
 ### `codemap_trace(symbol="DoOpTiling", to_symbol="DoSparse")`
 
-Shortest relation path between two names — call chain, value propagation, or guard reachability.
+A short **directed** menu of how two names relate, split by family (call / data / control / compile). At most two paths per family. This is relatedness, not the write-complete chain — for writers still `trace symbol=` the interesting hop.
 
 ```text
 Path  DoOpTiling → DoSparse
 
+call
 **1 hop**
 1. DoOpTiling  ..._normal_regbase.cpp:815  —CALLS→  DoSparse  ..._normal_regbase.cpp:1077
 
-Coverage: breadth-first over 14 relation kinds; 4 nodes enumerated.
-Shortest path by hop count, not the only one.
+data
+  no path
+
+control  weak
+  no path
+
+compile
+  no path
+
+Coverage: directed family walk, not all simple paths; 4 nodes enumerated.
+Pick a hop name and trace symbol= for its card.
 ```
 
-No path is reported as either `NO_PATH` (walked to exhaustion, none exists) or `SEARCH_BUDGET` (hit the bound). They are different answers; do not read the second as the first.
+A 1-hop READS edge is not the write chain. A `relation=data` miss means that family has no indexed edge, not that no semantic data flow exists. Do not treat one mixed shortest hop as the full answer.
+
+### `codemap_trace(dim="*")`
+
+Lists every compiled dim and its built-value distribution. Use this when you do not yet know the dim name. A guessed name that is **not** a compile dim (for example a tiling-data field) returns the real dim list instead of an empty answer.
 
 ### `codemap_trace(dim="IsRope", value="1")`
 
@@ -109,25 +125,25 @@ Read this as: with `IsRope=1` there are 224 built keys; `D` is always 192; `Inpu
 
 ### `codemap_source(file="…_normal_regbase.cpp", line=1099)`
 
-Reads indexed source at a location, plus the state changes, branches and tiling fields of that unit. `line_end=` takes a range, which is how you continue a body that was cut.
+Reads indexed source at a location. The card is titled as the **enclosing function** that owns most of the asked window: keep that function when `line` is inside it and it still covers the bulk; retitle to the next function when `line` sits in the previous function's tail. Callers follow that identity. `line_end=` crops the snippet.
 
 ```text
 DoSparse
 op_host/arch35/..._normal_regbase.cpp:1077-1149
-Coverage: the unit around …:1099 · state changes and fields below are every one
-in this unit; definition sites, callers and guards for DoSparse are on its
-symbol card — trace symbol=DoSparse
 
 Source
 1077|  ge::graphStatus FlashAttentionScoreGradTilingNormalRegbase::DoSparse()
 ...
+
+**Called by**
+- DoOpTiling @819
 ```
 
-The returned source is already read — do not open the file again. Callers and definition sites are not computed here; they belong to a name.
+The returned source is already read — do not open the file again. You do not need `relation=call` to get callers: that is the default on a function source card.
 
 ## Narrowing, when you want it
 
-`relation=` accepts `call`, `data`, `control`, `compile`, comma-separated. Omitting it walks every family, so **the shortest call is also the complete one**. A narrowed card names what it left out:
+`relation=` accepts `call`, `data`, `control`, `compile`, comma-separated. Omitting it returns the four-family menu (directed, short). It is an optional narrowing of a `trace` card, not the way to get callers — source and default `trace` already include call edges. A narrowed card names what it left out:
 
 ```text
 Withheld by relation filter: compile, control. Drop relation= to see every family.
@@ -150,7 +166,7 @@ Every section states its own standing, and the three states are distinct:
 - Two or three `search` calls per question is normal. More than that means you are searching for something you should already have a name for.
 - Three to five `trace` calls per question is normal. More than that means you are re-confirming facts a card already stated.
 - Do not call `source` to double-check something `trace` reported. The write, its value, its guard and its caller are all on the card, with line numbers.
-- Do not read dispatch code to answer a "which combinations are built" question. Call `trace(dim=, value=)`.
+- Do not read dispatch code to answer a "which combinations are built" question. Call `trace dim=*` to list dims, then `trace dim=<name>` or `trace dim=<name> value=<v>`.
 
 ## CLI
 
@@ -158,6 +174,7 @@ Every section states its own standing, and the three states are distinct:
 ascendc-codemap-mcp query --codemap-id ID --operation search --pattern DT_HIFLOAT8
 ascendc-codemap-mcp query --codemap-id ID --operation search --pattern isBn2 --file op_host/**
 ascendc-codemap-mcp query --codemap-id ID --operation trace --symbol IsRope
+ascendc-codemap-mcp query --codemap-id ID --operation trace --dim *
 ascendc-codemap-mcp query --codemap-id ID --operation trace --symbol DoOpTiling --to-symbol DoSparse
 ascendc-codemap-mcp query --codemap-id ID --operation source --file op_kernel/k.h --line 10
 ```

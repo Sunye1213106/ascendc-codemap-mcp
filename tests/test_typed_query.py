@@ -80,6 +80,18 @@ def test_illegal_filter_suggests_legal_rebinding() -> None:
         raise AssertionError("expected INVALID_QUERY")
 
 
+def test_empty_trace_does_not_advertise_internal_filters() -> None:
+    try:
+        validate_plan(operation="trace")
+    except InvalidQuery as exc:
+        assert "entity_id" not in exc.legal_filters
+        assert "from_symbol" not in exc.legal_filters
+        assert "dim" in exc.legal_filters
+        assert "symbol" in exc.legal_filters
+    else:
+        raise AssertionError("expected INVALID_QUERY")
+
+
 def test_trace_with_one_endpoint_is_the_symbol_bundle() -> None:
     """One endpoint is a question, not a broken path query.
 

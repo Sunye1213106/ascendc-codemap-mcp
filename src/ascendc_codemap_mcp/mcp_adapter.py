@@ -289,7 +289,7 @@ def codemap_trace(
     cursor: str = "",
     limit: int = 8,
 ) -> CallToolResult:
-    """Semantic facts for a name you already have. Three shapes: symbol= alone returns one closed card (definition body, every write with its value, its guard and the call that reaches it, reads, kernel consumers, Calls / Called by, compiled legal keys) — this is the default and it is complete, so start here; symbol= plus to_symbol= returns the shortest relation path between them (call chain, value propagation, guard reachability); dim= plus value= returns the compiled legal key space — use it for any "which combinations are actually built" question instead of reading dispatch macros, because it is the compiler's answer and source inference is not. relation= optionally narrows to call, data, control or compile (comma-separated); omit it to get every family, which is what you usually want. Takes no file/line: use codemap_source to read lines."""
+    """Semantic facts for a name you already have. Three shapes: symbol= alone returns one closed card (definition body, every write with its value, its guard and the call that reaches it, reads, kernel consumers, Calls / Called by, compiled legal keys) — this is the default and it is complete, so start here; symbol= plus to_symbol= returns a short directed menu of call / data / control / compile paths (at most two per family; not every simple path); dim= alone lists every compiled dim and its built values (dim=* is the catalog); dim= plus value= filters that space. Use dim= for any "which combinations are actually built" question instead of reading dispatch macros. A name that is not a compiled dim lists the real dim names rather than failing silently. relation= optionally narrows to call, data, control or compile; omit it to get the four-family menu. Takes no file/line: use codemap_source to read lines."""
     return _query_result(
         query_impl(
             operation="trace",
@@ -318,7 +318,7 @@ def codemap_source(
     architecture: str = "",
     limit: int = 8,
 ) -> CallToolResult:
-    """Read indexed source at a location, with the state changes, branches and tiling fields of that unit. line_end= takes a range, which is how you finish a snippet that was cut. The returned source is already Read — do not open the file again. Callers and definition sites are not computed here; they belong to a name, so ask codemap_trace for those. Takes no symbol."""
+    """Read indexed source at a location, titled as the enclosing function. line_end= crops the snippet to that range without changing whose card this is. Callers of that function are included. The returned source is already Read — do not open the file again. Takes no symbol."""
     return _query_result(
         query_impl(
             operation="source",

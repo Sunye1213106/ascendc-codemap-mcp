@@ -528,7 +528,14 @@ def _run_query(
             payload["next_cursor"] = nxt
         render_ms = 0.0
         existing_text = str(payload.get("text") or "")
-        need_render = engine == "codemap_evidence" or not existing_text
+        # Engine attach renders before this layer pages and stamps next_cursor.
+        # Re-render when the page or cursor could not have been in that text.
+        need_render = (
+            engine == "codemap_evidence"
+            or not existing_text
+            or bool(nxt)
+            or truncated
+        )
         if need_render and (engine in {"codemap_query", "codemap_evidence"} or payload.get("text") is not None):
             from ascendc_codemap_mcp.engine.query.explore import render_explore_markdown
 

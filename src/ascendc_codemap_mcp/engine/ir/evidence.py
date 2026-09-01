@@ -202,6 +202,8 @@ _DSL_PROVENANCE = frozenset(
         "source_kernel_template_param_verified",
         # a clang write joined to a clang read on an equal path spelling
         "source_host_dataflow_join",
+        # empty virtual base + override recovered after clang short-name collapse
+        "source_host_virtual_dispatch",
         # clang-extracted return text decoded onto the four ge::graphStatus
         # spellings; the site is a clang fact, the spelling is a fixed catalog
         "host_graph_status",

@@ -387,6 +387,52 @@ def test_trace_complete_requires_hops(tmp_path: Path) -> None:
     assert edata.get("completeness") != "COMPLETE"
 
 
+def test_relation_data_walks_real_kind_tokens(tmp_path: Path) -> None:
+    """relation=data used to pass one comma-joined token to SQL IN ()."""
+    op = tmp_path / "toy_op"
+    op.mkdir()
+    dest = write_uo_fixture(op)
+    conn = sqlite3.connect(str(dest))
+    try:
+        _insert_entity(
+            conn, eid="fn_a", kind="FUNCTION", name="HostPack", file="op_host/t.cpp", line=10
+        )
+        _insert_entity(
+            conn, eid="fld", kind="FIELD", name="packedFlag", file="op_host/t.cpp", line=4
+        )
+        _insert_rel(
+            conn,
+            rid="w1",
+            kind="WRITES",
+            src="fn_a",
+            dst="fld",
+            file="op_host/t.cpp",
+            line=12,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    status(project=str(op), architecture="arch35")
+    ok = query(
+        project=str(op),
+        architecture="arch35",
+        operation="trace",
+        from_symbol="HostPack",
+        to_symbol="packedFlag",
+        relation="data",
+    )
+    data = ok.get("data") or {}
+    text = str(data.get("text") or "")
+    rels = [str(k) for k in (data.get("trace_relations") or [])]
+    assert rels
+    assert all("," not in k for k in rels), rels
+    assert data.get("completeness") == "COMPLETE"
+    path = data.get("path") or []
+    assert path
+    assert any(str(s.get("kind") or "") == "WRITES" for s in path)
+    assert "enumerated (1 of them)" not in text
+
+
 def test_resolve_has_rope_compiled_support(tmp_path: Path) -> None:
     op = tmp_path / "toy_op"
     op.mkdir()

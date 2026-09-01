@@ -18,11 +18,11 @@ from ascendc_codemap_mcp.engine.passes.tiling_accessors import link_tiling_acces
 from ascendc_codemap_mcp.engine.query.sql import UoSqlQuery
 from ascendc_codemap_mcp.service.control import status
 from ascendc_codemap_mcp.service.query import query
-from tests.conftest import write_uo_fixture
+from tests.conftest import FAG_REL_UO, fag_operator_root, write_uo_fixture
 from tests.test_query_surface import _insert_entity
 
-FAG_ROOT = Path(r"D:\TEST\ops-transformer\attention\flash_attention_score_grad")
-FAG_UO = FAG_ROOT / ".ascendc-codemap" / "arch35" / "FlashAttentionScoreGrad.arch35.uo"
+FAG_ROOT = fag_operator_root()
+FAG_UO = (FAG_ROOT / FAG_REL_UO) if FAG_ROOT else Path()
 
 _KERNEL = """
 class Buffer {

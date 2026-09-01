@@ -27,6 +27,7 @@ from ascendc_codemap_mcp.engine.ir.identity import (
 )
 from ascendc_codemap_mcp.engine.ir.relation import RelationKind
 from ascendc_codemap_mcp.engine.semantics.const_expr import occupancy_overlap, worth_sharing
+from ascendc_codemap_mcp.engine.query.virtual_dispatch import classify_decl
 from ascendc_codemap_mcp.engine.source_layout import iter_cpp, selected_host_files, selected_kernel_files
 
 _CPP_SUFFIXES = {".h", ".hpp", ".hh", ".cpp", ".cc", ".cxx"}
@@ -48,7 +49,10 @@ _CLASS_METHOD_RE = re.compile(
     r"(?:[\w:<>,\s*&]{0,200}?\s+)?"
     r"(?P<name>[A-Za-z_]\w*)\s*\([^;{}]{0,800}\)"
     r"(?:\s*const)?"
-    r"(?:\s*=\s*delete)?"
+    r"(?:\s*noexcept(?:\s*\([^)]*\))?)?"
+    r"(?:\s*override)?"
+    r"(?:\s*final)?"
+    r"(?:\s*=\s*(?:delete|default|0))?"
     r"\s*\{",
     re.S,
 )
@@ -994,6 +998,20 @@ def _extract_runtime_structs_and_resources(
                     if not name or name in _METHOD_NAME_SKIP or is_forbidden_callable_name(name):
                         continue
                     line = _line_at(newlines, open_pos + 1 + hit.start("name"))
+                    flags = classify_decl(hit.group(0), line_start=line, line_end=line)
+                    method_attrs: dict[str, Any] = {
+                        "owner": owner,
+                        "source_definition": True,
+                        "architecture": architecture,
+                        "provenance": "source_runtime_method",
+                        "qualified_name": f"{owner}::{name}",
+                    }
+                    if flags.get("virtual"):
+                        method_attrs["is_virtual"] = True
+                    if flags.get("override"):
+                        method_attrs["is_override"] = True
+                    if flags.get("empty"):
+                        method_attrs["empty_body"] = True
                     method = bind_or_create(
                         codemap,
                         EntityKind.METHOD,
@@ -1002,13 +1020,7 @@ def _extract_runtime_structs_and_resources(
                         line=line,
                         owner=owner,
                         architecture=architecture,
-                        attrs={
-                            "owner": owner,
-                            "source_definition": True,
-                            "architecture": architecture,
-                            "provenance": "source_runtime_method",
-                            "qualified_name": f"{owner}::{name}",
-                        },
+                        attrs=method_attrs,
                         status="confirmed",
                     )
                     if method is None:

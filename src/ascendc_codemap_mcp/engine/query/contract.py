@@ -26,9 +26,10 @@ SEARCH_PATTERN_ALIASES: tuple[str, ...] = ("name",)
 #: The only relation vocabulary a caller has to hold. The graph carries
 #: thirty-two kinds; asking an agent to pick among them by name is asking it to
 #: learn the schema, and a wrong pick reads as an empty answer rather than as a
-#: mistake. Four families cover what questions actually divide along, and
-#: omitting the filter walks all of them, so the shortest call is also the
-#: complete one. A raw kind is still accepted for a caller that knows the graph.
+#: mistake. Four families cover what questions actually divide along. Omitting
+#: the filter walks each family separately and returns a short menu — not every
+#: simple path, and not one mixed hop-shortest billed as complete. A raw kind
+#: is still accepted for a caller that knows the graph.
 RELATION_FAMILIES: dict[str, tuple[str, ...]] = {
     "call": ("CALLS", "CALLS_UNDER_GUARD", "LAUNCHES", "EXPANDS_TO", "WRAPS"),
     "data": (

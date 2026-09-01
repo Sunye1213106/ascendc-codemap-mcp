@@ -247,10 +247,10 @@ def test_name_miss_hint_says_absent_and_lists_dims() -> None:
     attach_query_hints(payload, "IsDrop", count=0, mode="name")
     hint = str(payload.get("hint") or "")
     assert "IsDrop" in hint
-    assert "absent" in hint.lower()
+    assert "compiled dim" in hint.lower()
     assert "IsTnd" in hint
     assert "IsRope" in hint
-    assert "resolve(symbol=" in hint or "Dim=" in hint or "IsTnd" in hint
+    assert "trace dim=" in hint
     assert "not proof" not in hint.lower()
 
 
@@ -308,7 +308,7 @@ def test_explore_empty_and_miss_use_declared_dims(tmp_path: Path) -> None:
     miss = query(project=str(op), architecture="arch35", symbol="IsDrop")
     miss_text = str((miss.get("data") or {}).get("text") or "")
     assert miss.get("verdict") == "UNKNOWN"
-    assert "absent" in miss_text.lower()
+    assert "compiled dim" in miss_text.lower()
     assert "IsPse" in miss_text
     assert "not proof" not in miss_text.lower()
 

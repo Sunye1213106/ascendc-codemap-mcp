@@ -42,6 +42,10 @@ def test_bundled_skills_exist() -> None:
     assert "kind=" in text
     assert "file=" in text
     assert "glob/path" in text or "path filter" in text
+    assert "drops the illegal parameters" in text
+    assert "INVALID_QUERY" not in text
+    assert "enclosing function" in text
+    assert "trace dim=*" in text
     assert "UNKNOWN" not in text
     assert "COMPLETE" not in text
     assert "find kind" not in text
